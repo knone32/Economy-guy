@@ -3,7 +3,7 @@
 **版本**：v1.1（继承 v1.0 全部官方要求和核心工程约定；更新 Stage 4 已有证据与真实 API 验收政策）  
 **编制日期**：2026-11-06  
 **仓库**：[`knone32/Economy-guy`](https://github.com/knone32/Economy-guy)（Private）  
-**审查基线 / 最新被测源码**：`main@d27ca91709e076eb9be6ebff8cb8427b52812aa2`（4P-C代码；Base为`e6a88583336e76bda131bed82642e1e33fdd3970`）；报告提交见[S4-P-C](verification/stage4/S4-P-C.md)的Git历史，与源码SHA区分。4P-B及更早证据保持各自历史SHA。  
+**审查基线 / 最新被测源码**：`main@bd59b2e380f51a5839e2cb94fe050f49b26aa823`（4P-D代码；Base为`dda0ca8db5c609cea3d6688b731f0bd7fde3cc5d`）；报告提交见[S4-P-D](verification/stage4/S4-P-D.md)的Git历史，与源码SHA区分。4P-C及更早证据保持各自历史SHA。
 **适用范围**：云帐房 2026 AI 技术创新大赛赛题二「财税 Agent Harness」，**不含** Sky Core 研究及其他 AI 比赛。  
 **文档性质**：项目目标和验收台账；它不是新开发指令，也不是未经运行证明的「已完成认证」。
 
@@ -19,7 +19,8 @@
 | S4-B | DeepSeek Flash 对旧业务代码执行 41 轮、64 次 Chat Completions 尝试；A/B/C **整体 FAIL**，但 Prepare/Commit/审计、任务跨进程等子链路已证实 | **真实 API 运行记录**，对 `08b3ed5` 基线有效 |
 | S4-P-A / 4P1 | 新增无权限自然语言管理候选、具体内容确认、偏好 CRUD 和追问修复；代码 `0c043151`、报告 `7a9f3271` | **238/238 本地回归报告**（219 旧 + 19 新）；**0 次 live API** |
 | S4-P-B | P02/P04/P05及自然候选计划兼容；代码`ccd184ff`，本地256/256；13次真实API尝试 | **DETERMINISTIC PASS / LIVE PARTIAL / PROVIDER_BLOCKED**；L1自然汇总、L3提交/剩余4项/重启读取通过，原L2 NOT_FOUND失败，真实重复未观察到 |
-| S4-P-C / D / E | C：Thinking多轮协议已验收，最终代码d27ca91，274/274及9次HTTP200；D/E仍待执行 | P07跨轮/提交后续问PASS，私有字段遮蔽PASS；原说明扩写MODEL_BEHAVIOR_FAIL保留，P11 OPEN；不代表全项目live完成 |
+| S4-P-C | Thinking多轮协议已验收，最终代码d27ca91，274/274及9次HTTP200（阶段合计24次） | P07跨轮/提交后续问PASS；原说明扩写MODEL_BEHAVIOR_FAIL保留，P11 OPEN |
+| S4-P-D / E | D：代码bd59b2e，304/304；Global/User Profile、冻结连接、安全轮次切换、原生usage/Trace及提交后进度隔离；15次HTTP200，两模型 | D门禁满足；原Pro续问误提修改被DENIED，PARTIAL保留，只读对照PASS；真实第二账户NOT_TESTED；E未执行，不代表官方完整三场景通过 |
 | S4-BR / S4-C / S4-D | 独立真实复核、证据链封板、比赛打包 | 尚未完成，前置依赖见第 8、9 节 |
 
 **事实划线**：GitHub 有测试代码与 Codex 本地 PASS 报告，**不等于这里独立执行了 238 项**；原始日志仍在本地忽略目录。S4-B 的 217,990 个 Token 仅是 60 条成功响应返回的 usage，另外 4 次失败消耗未知，**不等于精确费用或总账单**。
@@ -396,9 +397,9 @@ finance_agent/app/agent.py::Agent.ask  ← 单一模型调用循环
 | **P05 / G02** | 4P-B真实Commit后CLI显示当前4项，新进程读取相同任务与4项；未自动完成 | P0 | **提交后只读进度及重启PASS；同会话PROVIDER_BLOCKED** | 4P-C解除Thinking HTTP400后在E复验；Task Manager不重建 |
 | **P07** | 4P-C私有字段随原assistant消息保留/完整传输，Trace遮蔽、Context含字段计字符、Mock隔离 | P0 | **PASS**：最终d27ca91本地274/274；真实9/9 HTTP200，跨轮最终回复及同进程Commit后4项续问核实 | [S4-P-C](verification/stage4/S4-P-C.md)；阶段共24次HTTP200/124534实际Token（两源码快照分别记录），无遗漏字段400；其他Provider/OFF live未测 |
 | **P11** | 4P-B复合偏好意图先get后NOT_FOUND而停止，无候选/写入 | P0/UX | **OPEN，仅登记，未修复** | [GitHub Issue #1](https://github.com/knone32/Economy-guy/issues/1)；独立修复与live验收留待4P-E前审查，不能以明确新增对照关闭 |
-| **P08** | S4-B 有 32 条无计划时的 `schedule.progress` | P1 | **日志语义偏差** | 4P-D 令“工具观察进度”和“已创建的 Schedule 进度”分离 |
-| **P09** | 目前只有 `OPENAI_*` 或 `KEY/BASE_URL/MODEL` 单套配置 | P1 | **尚未实现 Profile** | 4P-D TOML 命名 Profile、独立密钥环境变量、旧入口兼容 |
-| **P10** | 跨提供商协议历史/临时确认不应被复用 | P1/安全 | **防护目标，尚未有实际违规证据** | 4P-D 安全会话边界；不支持危险的中途自动切换 |
+| **P08** | S4-B 有 32 条无计划时的 `schedule.progress` | P1 | **4P-D修复，D/L通过** | 无计划改tool.progress；真实原生usage/latency和错误分类，计数保持；见[S4-P-D](verification/stage4/S4-P-D.md) |
+| **P09** | 原为单套环境变量配置 | P1 | **4P-D Global/User配置及旧入口通过** | 静态TOML+忽略JSON、可信添加/作用域、Key引用/冻结；同一真实Key演示两个范围，不冒称不同账户 |
+| **P10** | 跨提供商协议历史/临时确认不应被复用 | P1/安全 | **4P-D确定性隔离及同账户两模型live通过** | 可信轮次切换始终重建协议，范围/任务重读；真实跨账户NOT_TESTED，service_account_ref非账户身份证明 |
 | G06/G07 | 规则管理独立变更审计、直接 CLI Trace、Token/latency/费用元数据 | P1 | **部分未实现或非统一** | 尽可能采真实性能数据；不升级成事件平台 |
 | G08/G09/G10 | Context 字符上限、复杂历史引用、预算策略预留接口形状 | P1/已接受 | **已明确简化，不算违约** | 只在实际 live 阻断时加最小修复 |
 | G11 | GUI、生产认证、多 Agent、完整 DAG/高级摘要 | 延后 | **不属于初赛 P0** | 禁止 4P 偷偷引入 |
@@ -423,7 +424,7 @@ finance_agent/app/agent.py::Agent.ask  ← 单一模型调用循环
 | **4P-A** | 无权限自然语言管理候选、可信内容确认、偏好 CRUD、未知追问 | **已完成离线修复**：代码 `0c043151`，19 新用例，总 238/238；0 live | 4P-B/E 针对性 live 验证 |
 | **4P-B** | 已完成业务事实/停止原因分开、财务完整汇总、当前任务剩余展示 | **离线256/256；live部分通过**，代码ccd184ff；见S4-P-B | 原L2 FAIL与真实重复未观察到保留；同会话HTTP400待C/E，不宣布完整live通过 |
 | **4P-C** | DeepSeek Thinking 多轮协议兼容、思考隐私、工具 ID 配对 | **待执行**；P07 真实 HTTP400 已复现 | 离线协议测试后立即 live 同会话工具→再工具，保留 usage |
-| **4P-D** | Provider Profile/独立 Key/安全切换、Trace 语义与最小调用元数据 | **待执行**；P08～P10 | 配置/隔离先确定性；合法凭据下 live 对照；不做自动路由 |
+| **4P-D** | Provider Profile/独立 Key/安全切换、Trace 语义与最小调用元数据 | **304/304及15次HTTP200**；P08～P10；[报告](verification/stage4/S4-P-D.md) | D/L/B：Key冻结/权限与两模型协议通过，F002单次审计+缺项5→4，原续问PARTIAL/只读对照PASS；无自动路由；E未执行 |
 | **4P-E** | 当前提交全量测试与完整官方三场景 live 回归 | **待执行** | 有证据的 A/B/C 与偏好 CRUD，按同一 SHA 统一报告 |
 | **S4-BR** | 外部独立复核 4P-E 真实结果与失败复现 | 待执行 | GitHub 源码/报告、现场保留的 Trace/SQLite 只读证据核对 |
 | **S4-C** | 模型输入/工具/规则/记忆/计数/审计日志证据封板 | 待执行 | 4P-D 元数据基础上整理精简演示证据，不建日志平台 |
