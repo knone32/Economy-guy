@@ -17,7 +17,7 @@
 | app/rules.py | 版本管理与唯一RuleDecision；规则引用和判定共享该证据 |
 | app/tasks.py | TaskPolicy与任务转换；SQLite tasks是唯一持久状态，恢复/完成重查当前业务 |
 | app/preferences.py | 用户×企业明确偏好CRUD；SQLite preferences为唯一持久状态 |
-| app/persistence.py | ManagementIntent/ManagementTurn、内容与旧值绑定的一次性ManagementApproval、结果协议；不含LLM消息格式 |
+| app/persistence.py | 无权限ManagementProposals/ManagementCandidate预览；可信确认后的ManagementIntent/ManagementTurn及一次性ManagementApproval，绑定内容与旧值；不含LLM消息格式 |
 | app/stage3_schema.py | 任务/偏好加法迁移与部分唯一索引 |
 | app/finance.py、queries.py、permissions.py | 精确统计、当前数据库读取、授权 |
 | app/database.py、stage2_schema.py、importer.py | SQLite与加法迁移、安全首次种子导入 |
@@ -46,7 +46,7 @@ Stage 2.5.3规则查询在Handler鉴权后校验日期并比较年月，原版�
 
 Stage 3A：Task Manager限于tasks.py的一个缺失用途任务类型、单用户企业名额与状态转换，不是通用引擎。WriteCoordinator仍只拥有短期修改意图、草稿/确认，不复制持久task。任务与偏好不写发票，取消不回滚invoice_audit。ManagementIntent由可信CLI固定actor/domain/action；服务在写事务内再次鉴权。Registry释放预检只读事务，再由业务服务独立事务处理，避免自身读锁阻塞提交。
 
-Stage 3验收补丁：actor/domain/action本身不再足以授权模型保存具体内容。Agent持有本轮ManagementTurn，Registry只接受该模型会话上下文；tasks/preferences在写入前经persistence.require_management_confirmation返回具体提案及旧对象。可信CLI回调明确确认后，confirm_management形成精确绑定的一次性许可；服务新事务再次校验用户/企业、参数指纹与旧值。取消、跨轮、身份变化或内容/目标错配不写库；直接argparse管理参数仍为可信输入，兼容直接业务API。发票Prepare/Commit、Context、Scheduler实现均未改。真实调用链见flows/tasks-preferences.md。
+Stage 3确认补丁及4P-A：actor/domain/action不授权模型保存具体内容。普通自然语言由Agent持有无写权限的ManagementProposals，Registry经字段/权限/范围预检形成ManagementCandidate，业务服务仅can_propose预览。可信CLI确认具体内容后，confirm_management才建立ManagementTurn/Intent与一次性Approval；服务新事务再次校验用户/企业、参数指纹与旧值。显式/task、/preference保留原动作约束，也必须确认。取消、跨轮、身份变化或内容/目标错配不写库；直接argparse管理参数仍为可信输入，兼容直接业务API。发票Prepare/Commit、Context、Scheduler实现均未改。真实调用链见flows/tasks-preferences.md。
 
 恢复走list_tasks/manage_task(resume)，读取自己的持久记录并重新check_missing_purpose；偏好get/list作为数据，不提升为system。Stage 3B按唯一企业及明确年月选择未完成任务和该企业显式偏好；重启可恢复必要展示锚点，不自动恢复历史聊天、旧草稿/确认。独立子进程恢复测试见tests/test_stage3a.py和test_stage3b.py，调用链见flows/tasks-preferences.md和flows/context-reference.md。
 

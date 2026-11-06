@@ -7,11 +7,32 @@ from uuid import uuid4
 
 
 @dataclass
+class ManagementProposals:
+    """本轮候选预览的生命周期，没有管理/写入权限。"""
+    actor: str
+    source_request: str
+    turn_id: str = field(default_factory=lambda:uuid4().hex)
+    active: bool = True
+
+
+@dataclass(frozen=True)
+class ManagementCandidate:
+    """模型参数只能成为候选；即使有此对象也必须先返回预览。"""
+    actor: str
+    domain: str
+    source_request: str
+    action: str
+    turn: ManagementProposals
+
+
+@dataclass
 class ManagementTurn:
     """可信运行层拥有的本轮许可生命周期；不持久化，不从模型恢复。"""
     actor: str
     turn_id: str = field(default_factory=lambda:uuid4().hex)
     active: bool = True
+    # 自然语言提案确认后创建授权；下一轮/身份变化同时撤销其来源。
+    proposals: ManagementProposals | None = None
 
 
 @dataclass
@@ -39,7 +60,18 @@ def can_manage(intent, user_id, domain, action):
     return (isinstance(intent, ManagementIntent) and intent.actor == user_id
             and intent.domain == domain and bool(intent.source_request.strip())
             and (intent.action is None or intent.action == action)
-            and (intent.turn is None or (intent.turn.active and intent.turn.actor==user_id)))
+            and (intent.turn is None or (intent.turn.active and intent.turn.actor==user_id
+                 and (intent.turn.proposals is None or
+                      (intent.turn.proposals.active and intent.turn.proposals.actor==user_id)))))
+
+
+def can_propose(candidate, user_id, domain, action):
+    """只允许预览；绝不能把候选当作can_manage的授权结果。"""
+    return (isinstance(candidate,ManagementCandidate) and candidate.actor==user_id
+            and candidate.domain==domain and candidate.action==action
+            and bool(candidate.source_request.strip())
+            and candidate.turn.active and candidate.turn.actor==user_id
+            and candidate.source_request==candidate.turn.source_request)
 
 
 def _fingerprint(intent,request_id,payload,current):
@@ -50,20 +82,26 @@ def _fingerprint(intent,request_id,payload,current):
 
 def confirm_management(intent,proposal):
     """仅可信CLI在用户确认具体提案后调用；该函数不是LLM工具。"""
-    if not intent.turn or not can_manage(intent,intent.actor,intent.domain,intent.action):
+    candidate=can_propose(intent,intent.actor,intent.domain,intent.action)
+    if not intent.turn or not (candidate or can_manage(intent,intent.actor,intent.domain,intent.action)):
         raise ValueError("本轮管理确认已失效")
     expected=_fingerprint(intent,proposal['request_id'],proposal['proposal'],proposal['current'])
     if proposal['fingerprint']!=expected:
         raise ValueError("管理提案指纹不一致")
+    if candidate:
+        # 仅在可信入口确认具体内容后建立受限授权，不由模型选工具时建立。
+        intent=ManagementIntent(intent.actor,intent.domain,intent.source_request,intent.action,
+            turn=ManagementTurn(intent.actor,turn_id=intent.turn.turn_id,proposals=intent.turn))
     return replace(intent,approval=ManagementApproval(proposal['request_id'],expected,deepcopy(proposal['current'])))
 
 
 def require_management_confirmation(intent,payload,current):
     """在业务写事务内绑定对象/全部参数/旧值；旧许可不能重复使用。"""
-    if intent.turn is None:
+    candidate=isinstance(intent,ManagementCandidate)
+    if not candidate and intent.turn is None:
         # 直接CLI参数来自用户，未经过模型；保留可信内部Python接口。
         return None
-    approval=intent.approval
+    approval=None if candidate else intent.approval
     if approval is None:
         request_id=uuid4().hex
         proposal={'request_id':request_id,'domain':intent.domain,'original_request':intent.source_request,

@@ -12,7 +12,7 @@ from .responses import scope_mismatch, explicit_scope
 from .tasks import list_tasks, manage_task
 from .preferences import manage_preference
 from .references import resolve_reference
-from .persistence import can_manage, confirm_management, ManagementIntent
+from .persistence import can_manage, can_propose, confirm_management, ManagementIntent, ManagementCandidate, ManagementProposals
 from contextlib import closing
 from copy import deepcopy
 
@@ -55,8 +55,8 @@ DESCRIPTIONS = {
     "get_applicable_rules":"按企业、业务日期和规则类型获取唯一启用依据；不提供管理权限。",
     "prepare_invoice_update":"只生成用途/备注草稿，展示旧值，不保存；必须等待可信CLI最终确认。",
     "list_tasks":"列出当前用户指定企业的持久任务，不创建或修改待办。",
-    "manage_task":"管理明确的后续用途待办；修改需可信/task本轮意图。恢复重查规则与发票，完成必须有业务证据；不能修改发票。",
-    "manage_preference":"用户企业隔离的偏好CRUD；仅明确/preference本轮意图可保存或删除。偏好文本不是权限或写入确认。",
+    "manage_task":"为普通自然语言后续待办提出创建/更正/取消等候选，或查询任务；候选无写入权限，需可信CLI展示具体对象和内容并确认。恢复重查规则与发票，完成必须有业务证据；不能修改发票。",
+    "manage_preference":"用户企业隔离的偏好CRUD；普通自然语言可提出create/update/delete候选，get/list只读。删除需明确key、value为空。所有写候选须可信CLI展示旧值/新值并确认，不能自行声称保存。",
     "resolve_invoice_reference":"仅解析用户本轮明确的第几张发票线索；必须有真实展示锚点，重新鉴权查库，无唯一对象则追问。不能自由猜序号。",
     "set_schedule":"仅真正多步依赖时提出本轮粗计划；不是长期任务或授权。再次调用为一次显式重规划，不创造进展或预算。简单查询直接调用业务工具。",
 }
@@ -197,7 +197,7 @@ def remaining_work_allowed(path,user_id,steps,session,intent,permitted=None):
         return False
 
 
-def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allowed_tools=None, expected_scope=None, management_intent=None, reference_context=None, execution=None, management_confirmation=None):
+def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allowed_tools=None, expected_scope=None, management_intent=None, reference_context=None, execution=None, management_confirmation=None, management_proposals=None):
     """严格按 Schema 校验，身份仅取可信 Session，并复用业务函数。"""
     try:
         if not isinstance(name, str) or name not in REGISTRY:
@@ -266,16 +266,23 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
                 return resolve_reference(db_path,user_id,args["ordinal"],reference_context["scope"],reference_context["anchor_id"])
             if name in {"list_tasks","manage_task","manage_preference"}:
                 writing=(name=='manage_task' and args['action']!='show') or (name=='manage_preference' and args['action'] not in {'get','list'})
-                if writing and (not isinstance(management_intent,ManagementIntent) or management_intent.turn is None):
+                domain='task' if name=='manage_task' else 'preference'
+                intent=management_intent
+                if writing and intent is None and isinstance(management_proposals,ManagementProposals):
+                    # 只选择候选预览，未创建ManagementTurn/Approval，也没有执行许可。
+                    intent=ManagementCandidate(user_id,'task' if name=='manage_task' else 'preference',
+                        management_proposals.source_request,args['action'],management_proposals)
+                if writing and not (can_propose(intent,user_id,domain,args['action']) or
+                        (isinstance(intent,ManagementIntent) and intent.turn is not None)):
                     return tool_result('DENIED',error='模型管理写入缺少本轮内容确认上下文；直接CLI请使用可信业务入口')
                 # 释放只读检查事务；业务服务用新事务重新鉴权并执行，避免自己阻塞写入。
                 connection.rollback()
                 if name == "list_tasks":
                     outcome = list_tasks(db_path,user_id,**args)
                 elif name == "manage_task":
-                    outcome = manage_task(db_path,user_id,**args,intent=management_intent)
+                    outcome = manage_task(db_path,user_id,**args,intent=intent)
                 else:
-                    outcome = manage_preference(db_path,user_id,**args,intent=management_intent)
+                    outcome = manage_preference(db_path,user_id,**args,intent=intent)
                 if outcome['status']=='WAITING_CONFIRMATION' and management_confirmation is not None:
                     # 预览事务已经关闭；不在持有SQLite锁时等待用户输入。
                     proposal=outcome['data']
@@ -287,7 +294,9 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
                         return tool_result('ERROR',error='可信管理确认入口失败，未保存')
                     if accepted is not True:
                         return tool_result('CANCELLED',error='用户未确认该对象和内容，未持久化')
-                    approved=confirm_management(management_intent,proposal)
+                    if not (can_propose(intent,user_id,intent.domain,args['action']) or can_manage(intent,user_id,intent.domain,args['action'])):
+                        return tool_result('DENIED',error='确认上下文已失效，未保存')
+                    approved=confirm_management(intent,proposal)
                     service=manage_task if name=='manage_task' else manage_preference
                     outcome=service(db_path,user_id,**args,intent=approved)
                     outcome['evidence']['management_confirmation']={'source':'trusted_cli','request_id':proposal['request_id'],

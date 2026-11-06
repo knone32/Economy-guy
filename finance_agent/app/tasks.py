@@ -3,7 +3,7 @@ import json
 import sqlite3
 from uuid import uuid4
 from .permissions import check_permission
-from .persistence import can_manage, result, require_management_confirmation
+from .persistence import can_manage, can_propose, result, require_management_confirmation
 from .queries import list_invoices
 from .rules import check_missing_purpose, RuleError
 from .stage2_schema import open_existing
@@ -59,7 +59,7 @@ def manage_task(path, user_id, company_id, action, task_id="", year=2026, month=
         connection.execute("BEGIN IMMEDIATE" if action != "show" else "BEGIN")
         if not check_permission(connection,user_id,company_id,"read").allowed:
             return result("DENIED",error="没有企业读取权限")
-        if action != "show" and not can_manage(intent,user_id,"task",action):
+        if action != "show" and not (can_manage(intent,user_id,"task",action) or can_propose(intent,user_id,"task",action)):
             return result("DENIED",error="本轮没有可信的明确任务管理意图")
         if action == "create":
             if task_id or not note.strip():

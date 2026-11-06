@@ -127,7 +127,7 @@ def main() -> None:
         agent = Agent(args.user, args.db, model, args.mode, args.trace,max_context_chars=args.max_context_chars,
                       block_requests=args.block_requests,max_requests=args.max_requests,max_tools=args.max_tools,
                       max_extensions=args.max_extensions,max_replans=args.max_replans,management_confirmation=confirm_long_term)
-        print("财税Agent（模拟身份）：/edit准备草稿；/task 动作 自然要求；/preference 动作 自然要求；普通输入只读。exit退出。")
+        print("财税Agent（模拟身份）：普通自然语言可提出待办/偏好候选，核对具体内容并确认才保存；/task、/preference兼容。/edit准备发票草稿，仍须最终确认。exit退出。")
         while True:
             try:
                 text = input("你：")

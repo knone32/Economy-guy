@@ -207,9 +207,11 @@ resume和complete重新鉴权、重查当前规则/发票；完成必须缺失�
 /preference update 把C001的reply_format改为详细
 ```
 
-普通输入可调用list_tasks、manage_task(show)、manage_preference(get/list)；持久化修改需本轮ManagementIntent匹配可信用户、domain和action。模型不能自报user_id/confirmed/权限，不能将查看改为创建。CLI身份与动作均是比赛模拟入口，非生产登录；规则管理权限仍独立。
+普通自然语言也可提出任务/偏好新增、修改和删除候选，例如“请记住C001的reply_format为简洁”“删除C001的reply_format偏好”“把C001 2026-09缺失用途保存成下次待办”。候选没有管理权限；企业、对象或内容不明确时先补充。list_tasks、manage_task(show)、manage_preference(get/list)只读。模型不能自报user_id/confirmed/权限；所有写操作必须在可信CLI核对原始要求、具体对象与旧值/新值后输入完整confirm request_id。CLI身份是比赛模拟入口，非生产登录；规则管理权限仍独立。
 
-验收补丁：`/task`与`/preference`只开启本轮提案意图。模型提出的每个写操作必须先展示原始要求、企业/具体对象、新内容、当前值及request_id；在可信CLI输入完整`confirm request_id`后才保存。其他输入或EOF取消，不保存。没有可信确认回调的Agent只返回WAITING_CONFIRMATION。许可绑定全部参数和旧值，只用一次，下一轮/取消/身份变化失效。请核对模型是否把“简洁”替换成了其他内容；系统依赖这次具体确认，不用关键词或另一模型猜测语义。直接`tasks/preferences`命令仍使用用户明确参数，不经过模型。
+验收补丁：`/task`与`/preference`继续兼容、约束本轮领域/动作，也不代表内容授权。普通自然语言通过无权限ManagementCandidate预览，可信确认后才生成ManagementTurn/Approval。其他输入或EOF取消，不保存。没有可信确认回调的Agent只返回WAITING_CONFIRMATION。许可绑定全部参数和旧值，只用一次，下一轮/取消/身份变化失效。请核对模型是否把“简洁”替换成其他内容或选择了错误对象；系统依赖这次具体确认，不用关键词或另一模型猜测语义。直接`tasks/preferences`命令仍使用用户明确参数，不经过模型。
+
+模型追问若带未知missing_fields标签，程序生成通用补充问题，不显示任意模型成功声称，也不把该标签加入业务字段白名单；JSON/字段类型非法仍安全停止。4P-A仅经Mock/临时SQLite验证，真实模型自然理解、选择delete及多轮服务协议仍须另轮live复验。
 
 恢复只返回当前任务和最新缺失项，不恢复Draft/Confirm/Commit。补用途仍须新/edit及最终确认。偏好按用户×企业隔离，无全局偏好；仅明确create/get/list/update/delete，不自动保存闲聊。Stage 3B按当前明确企业选择偏好作为带来源的数据，不注入system。
 

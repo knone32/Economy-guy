@@ -1,7 +1,7 @@
 """企业范围内用户明确要求的偏好CRUD；偏好永远不是操作授权。"""
 import sqlite3
 from .permissions import check_permission
-from .persistence import can_manage, result, require_management_confirmation
+from .persistence import can_manage, can_propose, result, require_management_confirmation
 from .stage2_schema import open_existing
 
 
@@ -16,7 +16,7 @@ def manage_preference(path, user_id, company_id, action, key="", value="", inten
         connection.execute("BEGIN IMMEDIATE" if writing else "BEGIN")
         if not check_permission(connection,user_id,company_id,"read").allowed:
             return result("DENIED",error="没有企业读取权限")
-        if writing and not can_manage(intent,user_id,"preference",action):
+        if writing and not (can_manage(intent,user_id,"preference",action) or can_propose(intent,user_id,"preference",action)):
             return result("DENIED",error="本轮没有可信的明确偏好管理意图")
         if action == "list":
             rows = connection.execute("SELECT * FROM preferences WHERE user_id=? AND company_id=? ORDER BY preference_key",(user_id,company_id)).fetchall()

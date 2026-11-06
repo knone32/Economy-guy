@@ -16,7 +16,7 @@ def parse_final(content):
         return None
     if value["kind"] == "clarification":
         missing = value["missing_fields"]
-        if not isinstance(missing, list) or not missing or any(type(v) is not str or v not in {"company_id","invoice_no","field","new_value","year","month"} for v in missing):
+        if not isinstance(missing, list) or not missing or any(type(v) is not str or not v.strip() for v in missing):
             return None
     return value
 
@@ -86,6 +86,12 @@ def render_information(results):
 def render_clarification(value):
     """保留模型选择的缺失信息，自然提问；不展示任意状态性自由文本。"""
     labels = {"company_id":"企业", "invoice_no":"发票编号", "field":"要修改的字段（用途或备注）",
-              "new_value":"修改后的具体内容", "year":"年份", "month":"月份"}
+              "new_value":"修改后的具体内容", "year":"年份", "month":"月份",
+              "action":"具体管理动作", "task_id":"任务编号", "note":"待办的具体说明",
+              "key":"偏好名称", "value":"偏好的具体内容"}
     fields = list(dict.fromkeys(value["missing_fields"]))
-    return "请提供" + "和".join(labels[field] for field in fields)
+    # 追问信封不授予字段/写入权限；未知标签与任意模型text均不直接展示。
+    questions=[labels[field] for field in fields if field in labels]
+    if any(field not in labels for field in fields):
+        questions.append("本次请求的具体对象、操作和内容（无法确定所缺信息）")
+    return "请提供" + "和".join(questions)
