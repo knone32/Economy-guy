@@ -15,6 +15,7 @@ from .references import resolve_reference
 from .persistence import can_manage, can_propose, confirm_management, ManagementIntent, ManagementCandidate, ManagementProposals
 from contextlib import closing
 from copy import deepcopy
+from .provenance import validate_scope
 
 MONTH = {"company_id": "string", "year": "integer", "month": "integer"}
 REGISTRY = {
@@ -127,13 +128,15 @@ def _management_context(intent, proposals, user_id, domain, action):
     return intent
 
 
-def _set_schedule(args,user_id,db_path,execution,permitted,session,expected,intent,proposals=None):
+def _set_schedule(args,user_id,db_path,execution,permitted,session,expected,intent,proposals=None,provenance=None):
     """验证模型粗计划的结构、已有范围和真实授权；不执行任何业务步骤。"""
     if execution is None:
         return tool_result("DENIED",error="缺少可信单轮运行上下文")
     steps = args["steps"]
     if not 1<=len(steps)<=min(12,execution.policy.max_tools):
         raise ValueError("计划步骤数无效")
+    if any(isinstance(s,dict) and isinstance(s.get('action'),str) and s['action'] not in permitted for s in steps):
+        return tool_result('DENIED',error='计划包含未授权工具')
     ids = set()
     validated = []
     with closing(sqlite3.connect(Path(db_path).resolve().as_uri()+"?mode=ro",uri=True)) as connection:
@@ -158,6 +161,8 @@ def _set_schedule(args,user_id,db_path,execution,permitted,session,expected,inte
             operation = "modify" if action=="prepare_invoice_update" else "read"
             if not check_permission(connection,user_id,constraints["company_id"],operation).allowed:
                 return tool_result("DENIED",error="没有计划目标企业的所需权限")
+            missing=validate_scope(provenance,user_id,action,constraints,partial=True)
+            if missing:return tool_result(**missing)
             scope = dict(constraints)
             if action=="get_applicable_rules" and "business_date" in scope:
                 day = date.fromisoformat(scope["business_date"])
@@ -207,7 +212,7 @@ def remaining_work_allowed(path,user_id,steps,session,intent,permitted=None,prop
         return False
 
 
-def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allowed_tools=None, expected_scope=None, management_intent=None, reference_context=None, execution=None, management_confirmation=None, management_proposals=None):
+def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allowed_tools=None, expected_scope=None, management_intent=None, reference_context=None, execution=None, management_confirmation=None, management_proposals=None,provenance=None):
     """严格按 Schema 校验，身份仅取可信 Session，并复用业务函数。"""
     try:
         if not isinstance(name, str) or name not in REGISTRY:
@@ -219,12 +224,18 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
         args = validate_arguments(name,raw_arguments)
         function = REGISTRY[name][0]
         if name=="set_schedule":
-            return _set_schedule(args,user_id,db_path,execution,permitted,update_session,expected_scope,management_intent,management_proposals)
+            return _set_schedule(args,user_id,db_path,execution,permitted,update_session,expected_scope,management_intent,management_proposals,provenance)
         if name == "add":
             return tool_result("SUCCESS", args["a"] + args["b"])
         if name == "prepare_invoice_update":
             if update_session is None or update_session.user_id != user_id:
                 return tool_result("DENIED", error="缺少可信更新Session")
+            with closing(sqlite3.connect(Path(db_path).resolve().as_uri()+"?mode=ro",uri=True)) as c:
+                c.row_factory=sqlite3.Row
+                if not check_permission(c,user_id,args['company_id'],'modify').allowed:
+                    return tool_result('DENIED',error='没有修改权限')
+            missing=validate_scope(provenance,user_id,name,args)
+            if missing:return tool_result(**missing)
             if execution and execution.schedule:
                 with closing(sqlite3.connect(Path(db_path).resolve().as_uri()+"?mode=ro",uri=True)) as connection:
                     connection.row_factory=sqlite3.Row
@@ -256,6 +267,15 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
             if not permission.allowed:
                 return tool_result("DENIED", error="没有读取权限")
             actual_scope = args
+            if name in {'manage_task','manage_preference'} and management_intent is not None:
+                if management_intent.domain!=('task' if name=='manage_task' else 'preference') or (management_intent.action is not None and management_intent.action!=args['action']):
+                    return tool_result('DENIED',error='不能改变可信管理入口的动作')
+            if name=='manage_task' and args['action'] not in {'create','correct'} and args['task_id']:
+                row=connection.execute('SELECT year,month FROM tasks WHERE task_id=? AND user_id=? AND company_id=?',
+                    (args['task_id'],user_id,args['company_id'])).fetchone()
+                if row and ((args['year'],args['month'])!=(row['year'],row['month']) or
+                    (expected_scope and scope_mismatch(expected_scope,{'company_id':args['company_id'],'year':row['year'],'month':row['month']}))):
+                    return tool_result('SCOPE_MISMATCH',error='任务实际范围与本次参数/可信范围不一致')
             if name == "get_applicable_rules":
                 business_date = date.fromisoformat(args["business_date"])
                 if business_date.isoformat() != args["business_date"]:
@@ -264,6 +284,8 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
             if expected_scope and scope_mismatch(expected_scope, actual_scope):
                 return tool_result("SCOPE_MISMATCH", evidence={"scope":actual_scope,"requested_scope":expected_scope,"source":"request_validation"},
                                    error="范围不一致：工具企业或年月与用户明确字面范围不同，请确认实际查询范围")
+            missing=validate_scope(provenance,user_id,name,actual_scope)
+            if missing:return tool_result(**missing)
             if execution:
                 rejection=execution.guard(name,args)
                 if rejection:
@@ -308,6 +330,7 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
                     outcome['evidence']['management_confirmation']={'source':'trusted_cli','request_id':proposal['request_id'],
                         'fingerprint':proposal['fingerprint'],'turn_id':approved.turn.turn_id}
                 if outcome["ok"] or (name=='manage_preference' and args['action']=='get' and outcome['status']=='NOT_FOUND'):
+                    if name=='manage_preference':outcome['evidence']['operation']={'action':args['action'],'key':args['key']}
                     outcome["evidence"].setdefault("scope",{"company_id":args["company_id"]})
                     outcome["evidence"].setdefault("source","current_sqlite")
                     check = outcome["evidence"].get("check")

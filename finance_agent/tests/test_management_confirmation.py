@@ -104,7 +104,7 @@ class ManagementConfirmationTests(DatabaseTestCaseMixin,unittest.TestCase):
         for action in ('update','correct','cancel','pause','resume','wait'):
             args={'company_id':'C001','action':action,'task_id':created['task_id'],'year':2026,'month':9,'note':'模型替换的说明'}
             agent=Agent('U001',self.db_path,scripted_model([call('manage_task',args)]),mode='mock')
-            response=agent.ask('管理C001任务，保持真实说明',management='task',management_action=action)
+            response=agent.ask('管理C001 2026-09任务，保持真实说明',management='task',management_action=action)
             self.assertIn('WAITING_CONFIRMATION',response)
             row=self.connection.execute('SELECT status,context_json FROM tasks').fetchone()
             self.assertEqual(row['status'],'ACTIVE')

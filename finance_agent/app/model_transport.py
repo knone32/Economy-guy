@@ -28,13 +28,19 @@ class ModelTransport:
     def __call__(self,messages,tools):
         from openai import OpenAI
         messages=self.protocol.wire(messages,bool(tools))
+        json_mode=self.connection.profile.provider=='deepseek' and self.connection.profile.base_url.rstrip('/')=='https://api.deepseek.com'
+        timeout=60 if self.connection.profile.provider=='deepseek' else 30
         self.attempts+=1
         self.emit('api.request',{'attempt':self.attempts,'message_chars':len(json.dumps(messages,ensure_ascii=False)),
-            'tool_schema_chars':len(json.dumps(tools,ensure_ascii=False)),'usage_status':'UNKNOWN'})
+            'tool_schema_chars':len(json.dumps(tools,ensure_ascii=False)),'usage_status':'UNKNOWN',
+            'json_mode':json_mode,'timeout_seconds':timeout})
         started=time.perf_counter()
         try:
-            with OpenAI(api_key=self.connection.api_key,base_url=self.connection.profile.base_url,max_retries=0,timeout=30) as client:
+            with OpenAI(api_key=self.connection.api_key,base_url=self.connection.profile.base_url,max_retries=0,timeout=timeout) as client:
                 kwargs={}
+                if json_mode:
+                    # 官方JSON模式只约束语法，不构成业务事实、身份或确认。
+                    kwargs['response_format']={'type':'json_object'}
                 if self.connection.profile.provider=='deepseek' and self.connection.profile.protocol=='standard':
                     # 仅显式standard配置关闭DeepSeek Thinking；auto默认协议不改变。
                     kwargs['extra_body']={'thinking':{'type':'disabled'}}

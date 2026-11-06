@@ -6,6 +6,7 @@ from .references import reference_catalog, invalidate_references, resolve_refere
 from .responses import explicit_scope
 from .tasks import list_tasks
 from .preferences import manage_preference
+from .provenance import ScopeProof
 
 
 class ContextLimitError(ValueError):
@@ -48,6 +49,7 @@ class ContextBuilder:
             raise ValueError("上下文字符上限必须为正整数")
         self.user_id,self.db_path,self.max_chars = user_id,db_path,max_chars
         self.scope = {}
+        self.sources = {}
         self.history_start = 1
         self.diagnostics = []
         self.references_blocked = False
@@ -57,6 +59,8 @@ class ContextBuilder:
         """明确范围更正后弃用旧焦点；不更改长期任务，也不产生提交许可。"""
         explicit = explicit_scope(text,include_update_aliases=True)
         previous = self.scope
+        self.sources={key:('session_confirmed' if origin=='user_current' else origin)
+                      for key,origin in self.sources.items() if key in self.scope}
         self.diagnostics = []
         if not previous and not self.references_blocked:
             try:
@@ -68,7 +72,11 @@ class ContextBuilder:
                 self.diagnostics.append("references_unavailable")
         conflict = any(key in previous and not set(values).issubset(previous[key]) for key,values in explicit.items())
         if conflict or reset:
-            self.scope = {}
+            # 范围槽位独立更正；旧对象/引用失效，不丢失其他已明确槽位。
+            self.scope = {} if reset else {key:value for key,value in previous.items()
+                if key in self.sources and key not in {'invoice_no','task_id'} and key not in explicit
+                and not ('company_id' in explicit and key in {'year','month'} and self.sources[key] not in {'user_current','session_confirmed'})}
+            self.sources={key:self.sources[key] for key in self.scope}
             self.history_start = message_index
             try:
                 invalidate_references(self.db_path,self.user_id)
@@ -78,9 +86,40 @@ class ContextBuilder:
                 self.diagnostics.append("reference_invalidation_failed")
                 self.references_blocked = True
         self.scope.update(explicit)
+        self.sources.update({key:'user_current' for key in explicit})
+        task_ids=re.findall(r'(?<![a-fA-F0-9])[a-fA-F0-9]{32}(?![a-fA-F0-9])',text)
+        if task_ids:self.scope['task_id']=task_ids;self.sources['task_id']='user_current'
+        if re.search(r'本月|今年|去年|上个月|下个月|上月|下月|最近',text) and not ('year' in explicit and 'month' in explicit):
+            for key in ('year','month'):
+                self.scope.pop(key,None);self.sources.pop(key,None)
         if reference_hint(text) and "invoice_no" not in explicit:
             self.scope.pop("invoice_no",None)
         return dict(self.scope) if explicit else {}
+
+    def proof(self):
+        """不采信模型或旧SQL汇总的年月。"""
+        from copy import deepcopy
+        return ScopeProof(self.user_id,deepcopy(self.scope),dict(self.sources))
+
+    def accept_reference(self,evidence):
+        """仅在真实引用解析成功后绑定来源。"""
+        for key,value in evidence['scope'].items():
+            self.scope[key]=[value];self.sources[key]='trusted_reference'
+
+    def accept_task(self,outcome):
+        """重新验证归属的实际任务范围，不恢复写入确认。"""
+        data=outcome.get('data')
+        if isinstance(data,list):
+            active=[t for t in data if t.get('status') in {'ACTIVE','WAITING_USER','PAUSED'}]
+            task=active[0] if len(active)==1 else None
+        else:task=(data or {}).get('task')
+        if outcome['status']=='SUCCESS' and task and task.get('user_id')==self.user_id:
+            # 仅查询任务列表不能把模型挑选的任务年月洗成查询许可。
+            if not outcome.get('evidence',{}).get('management_confirmation') and task['task_id'] not in self.scope.get('task_id',[]):return
+            if any(key in self.sources and task[key] not in self.scope.get(key,[]) for key in ('company_id','year','month')):return
+            for key in ('company_id','year','month'):
+                if key not in self.sources:
+                    self.scope[key]=[task[key]];self.sources[key]='current_sqlite'
 
     def resolve(self,text):
         """引用先由Harness对照可信锚点解析，不让模型编造业务键。"""
@@ -131,6 +170,7 @@ class ContextBuilder:
             data['prior_query_tools']=list(self.prior_query_tools)
             data['origins']['prior_query_tools']='runtime.previous_read_results/tool_names_only'
         companies = self.scope.get("company_id",[])
+        data['scope_provenance']=self.proof().metadata()
         if len(companies)==1:
             company = companies[0]
             try:

@@ -1,11 +1,13 @@
 """轻量连续修改意图、草稿协调与权威回执，不是持久任务。"""
 import sqlite3
+import re
 from datetime import date
 from uuid import uuid4
 from .updates import UpdateSession, confirm_draft, commit_invoice_update, result as tool_result
 from .trace import warn_trace_degraded
 from .responses import explicit_scope
 from .tasks import task_progress
+from .updates import current_target_matches
 
 class WriteCoordinator:
     def __init__(self, user_id, db_path, trace):
@@ -52,6 +54,7 @@ class WriteCoordinator:
             "CANCELLED": "已取消，未提交。",
             "COMMITTED": "保存成功：提交审计和新连接回读已核实。",
             "NO_CHANGE": "无需修改：原值与新值相同，已核实当前值；没有执行字段更新。",
+            "CURRENT_VALUE_MATCHES": "无需再次修改：当前数据库值已符合本次明确目标；本轮没有Commit，也没有新增审计。",
             "DENIED": "操作被拒绝，不能报告保存成功。",
             "CONFLICT": "当前值或请求内容冲突，未执行本次更新；请重新核对。",
             "NOT_FOUND": "未找到目标记录，未保存。",
@@ -63,6 +66,28 @@ class WriteCoordinator:
         }
         return {"status": status, "message": messages.get(status, messages["ERROR"]),
                 "readback_verified": readback_verified, "data": data}
+
+    def assess_current_match(self,results):
+        """只对可信编辑原句的明确字面目标及本轮真实读取做无需变更回执。"""
+        if self.receipt['status']!='NOT_SUBMITTED' or not self.session.allow_prepare:return
+        text=self.session.source_request
+        scope=explicit_scope(text,include_update_aliases=True)
+        if any(len(scope.get(key,[]))!=1 for key in ('company_id','invoice_no')):return
+        matches=list(re.finditer(r'(用途|purpose|备注|remark)\s*(?:改为|改成|设置为|设为)\s*(.+?)(?:[。\n]|$)',text))
+        if len(matches)!=1:return
+        name,value=matches[0].groups();field='purpose' if name in {'用途','purpose'} else 'remark'
+        value=value.strip()
+        if value.startswith(('“','"')):
+            closing='”' if value[0]=='“' else '"'
+            if not value.endswith(closing):return
+            value=value[1:-1]
+        company,invoice=scope['company_id'][0],scope['invoice_no'][0]
+        if not any(name=='get_invoice' and result['status']=='SUCCESS' and
+            (result.get('data') or {}).get('company_id')==company and result['data'].get('invoice_no')==invoice
+            for name,result in results):return
+        try:current=current_target_matches(self.db_path,self.user_id,company,invoice,field,value)
+        except (sqlite3.Error,ValueError,PermissionError):return
+        if current:self.receipt=self._receipt('CURRENT_VALUE_MATCHES',current)
 
     def cancel_update(self):
         """可信CLI取消后撤销本轮全部草稿与确认。"""

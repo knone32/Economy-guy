@@ -79,7 +79,7 @@ class Stage4PATests(DatabaseTestCaseMixin, unittest.TestCase):
             for accepted in (False,None,'confirmed'):
                 seen=[]
                 agent=self.agent(name,args,lambda p:seen.append(p) or accepted)
-                agent.ask('请记住C001简洁回复，后续核对用途')
+                agent.ask('请记住C001 2026-09简洁回复，后续核对用途')
                 self.assertEqual(len(seen),1)
                 self.assertEqual(self.results(agent)[0]['status'],'CANCELLED')
                 self.assertEqual(self.connection.execute('SELECT COUNT(*) FROM '+table).fetchone()[0],0)

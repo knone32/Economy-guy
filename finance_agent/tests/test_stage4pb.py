@@ -95,7 +95,7 @@ class Stage4PBTests(DatabaseTestCaseMixin,unittest.TestCase):
             with self.subTest(status=status):
                 agent=self.agent([reply(call('get_finance_summary',PERIOD,'ok'),call(name,args,'bad'))])
                 agent.user_id='U002'
-                answer=agent.ask('查询资料')
+                answer=agent.ask('查询C001 2026-09资料')
                 self.assertIn('9622.06',answer)
                 self.assertIn(status,answer)
                 self.assertNotIn('12667.24',answer)
@@ -120,7 +120,7 @@ class Stage4PBTests(DatabaseTestCaseMixin,unittest.TestCase):
         agent=self.agent([reply(call('get_finance_summary',PERIOD,'ok'),
             call('get_finance_summary',{**PERIOD,'company_id':'C002'},'error'))])
         with patch('app.tool_registry.finance.get_finance_summary',side_effect=failure):
-            answer=agent.ask('查询资料')
+            answer=agent.ask('查询C001和C002 2026-09资料')
         self.assertEqual(agent.execution.stop_reason,'ERROR')
         self.assertIn('9622.06',answer)
         self.assertIn('ERROR',answer)

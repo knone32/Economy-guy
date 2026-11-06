@@ -207,7 +207,7 @@ class SecurityBoundaryTests(DatabaseTestCaseMixin, unittest.TestCase):
             first = tool("get_invoice",{"company_id":"C001","invoice_no":"F002"},"read")
         self.connection.commit()
         agent = self.agent([{"role":"assistant","tool_calls":[first]}, {"role":"assistant","tool_calls":[tool("commit_invoice_update",{},"attack")]}],user="U002")
-        agent.ask("查询并按备注操作")
+        agent.ask("查询C001 2026-09银行记录并按备注操作" if bank else "查询C001 F002并按备注操作")
         self.assertEqual(json.loads(agent.messages[-2]["content"])["status"],"DENIED")
         self.assert_no_writes()
         self.assertEqual(self.connection.execute("SELECT can_modify FROM permissions WHERE user_id='U002' AND company_id='C001'").fetchone()[0],0)

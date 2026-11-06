@@ -208,6 +208,8 @@ class Agent:
                 c.row_factory=sqlite3.Row
                 if all(check_permission(c,self.user_id,company,'read').allowed for company in scope['company_id']):
                     new.context.scope=scope
+                    new.context.sources={key:('session_confirmed' if self.context.sources[key]=='user_current' else self.context.sources[key])
+                                         for key in scope if key in self.context.sources}
                     new.continuity={'source':'trusted_cli_switch','historical':True,'user_request':self.last_user_request,
                         'usage':'仅历史用户目标/已验证范围，不恢复授权；任务/偏好及当前业务须重新查询SQLite。'}
         if self.management_turn: self.management_turn.active=False
@@ -242,6 +244,7 @@ class Agent:
         reference = self.context.resolve(text)
         reference_context = None
         if reference and reference["ok"]:
+            self.context.accept_reference(reference['evidence'])
             read_results.append(("resolve_invoice_reference",reference))
             for key in ("company_id","invoice_no","year","month"):
                 expected_scope[key] = [reference["evidence"]["scope"][key]]
@@ -268,6 +271,7 @@ class Agent:
             self.allowed_tools & {tool["function"]["name"] for tool in turn_tools},
             proposals=self.management_proposals if management is None else None)
         def finish(text, store=True, category="operation_result"):
+            self.coordinator.assess_current_match(read_results)
             if not execution.stop_reason:
                 execution.stop("WAITING_USER" if category=="clarification" else "MODEL_FINISHED_WITH_PENDING_WORK" if execution.schedule else "ANSWERED")
             if not self.teaching and category not in {'database_query','general_unverified'}:
@@ -284,6 +288,7 @@ class Agent:
                 except sqlite3.Error:
                     text += "\n引用锚点未能保存，请使用明确的企业和发票号。"
                     self.trace("context.error",{"source":"reference_display","status":"unavailable"})
+            if self.write_receipt['status']=='CURRENT_VALUE_MATCHES':text+='\n'+self.write_receipt['message']
             self.last_response = {"source":"runtime_output", "category":category, "text":text, "operation_receipt":self.write_receipt, "trace_degraded":self.trace_degraded,"execution":execution.snapshot()}
             api={key:self.transport.counts()[key]-api_before[key] for key in api_before} if api_before is not None else None
             self.last_response['api_counts']=api
@@ -376,7 +381,9 @@ class Agent:
                                              allowed_tools=permitted, expected_scope=expected_scope, management_intent=management_intent,
                                              reference_context=reference_context,execution=execution,
                                              management_confirmation=confirm_proposal if self.management_confirmation else None,
-                                             management_proposals=self.management_proposals if management is None else None)
+                                             management_proposals=self.management_proposals if management is None else None,
+                                             provenance=self.context.proof())
+                        if fn.get('name') in {'manage_task','list_tasks'}:self.context.accept_task(result)
                         if fn.get("name") == "prepare_invoice_update":
                             self.coordinator.record_preparation(result)
                         try:
@@ -395,6 +402,8 @@ class Agent:
                 self.messages.append(message)
                 self.trace("tool_result", {"request": call, "result": result})
             if stop:
+                if stop_result and stop_result.get('evidence',{}).get('missing_fields'):
+                    return finish(render_clarification({'missing_fields':stop_result['evidence']['missing_fields']}),category='clarification')
                 if self.update_session.drafts:
                     return finish(self.write_receipt["message"])
                 if execution.stop_reason in {"COMPLETED","WAITING_USER","TASK_FINISHED"}:

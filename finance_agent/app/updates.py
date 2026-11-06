@@ -10,6 +10,17 @@ from .stage2_schema import open_existing
 
 FIELDS = {"purpose", "remark"}
 
+def current_target_matches(path,user_id,company_id,invoice_no,field,new_value):
+    """仅核对当前值和修改权限，不执行Prepare/Commit或新增审计。"""
+    connection=open_existing(path,readonly=True)
+    try:
+        if field not in FIELDS or not check_permission(connection,user_id,company_id,'modify').allowed:return None
+        current=get_invoice(connection,user_id,company_id,invoice_no)
+        if current and current[field]==new_value:
+            return {'current_invoice':current,'field':field,'target_value':new_value,'source':'current_sqlite','committed_this_turn':False}
+        return None
+    finally:connection.close()
+
 
 def result(status, data=None, error=None):
     """业务结果不依赖 LLM 消息格式。"""

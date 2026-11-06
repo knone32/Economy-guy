@@ -66,7 +66,7 @@ class Stage4PCTests(DatabaseTestCaseMixin,unittest.TestCase):
         for limit,user in ((1,'U001'),(12,'U002')):
             agent=self.agent([calls(('get_finance_summary',SCOPE),('get_finance_summary',{**SCOPE,'company_id':'C002'}))],max_tools=limit)
             agent.user_id=user
-            agent.ask('查询资料')
+            agent.ask('查询C001 2026-09资料')
             messages=agent.model_messages()
             self.assertEqual([c['id'] for m in messages for c in m.get('tool_calls',[])],
                              [m['tool_call_id'] for m in messages if m['role']=='tool'])

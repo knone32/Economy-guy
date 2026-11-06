@@ -37,6 +37,12 @@ def explicit_scope(text, include_update_aliases=False):
     if periods:
         result["year"] = sorted({int(year) for year, month in periods})
         result["month"] = sorted({int(month) for year, month in periods})
+    # 独立年月可同句或跨轮补齐，不以系统日期补年份。
+    years=re.findall(r'(?<!\d)(\d{4})\s*年',text)
+    names={'一':1,'二':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9,'十':10,'十一':11,'十二':12}
+    months=re.findall(r'(?<![\d一二三四五六七八九十])(1[0-2]|0?[1-9]|十一|十二|[一二三四五六七八九十])\s*月',text)
+    if years:result['year']=sorted({int(y) for y in years})
+    if months:result['month']=sorted({int(m) if m.isdigit() else names[m] for m in months})
     return result
 
 
@@ -91,7 +97,31 @@ def render_information(results):
             parts.append("没有匹配记录；这不是权限拒绝。")
         if outcome["status"] == "NO_CHANGE":
             parts.append("未发生更改：" + (outcome.get("error") or "当前状态无需改变"))
+    receipt=preference_receipt(results)
+    if receipt:parts.append(receipt)
     return "\n".join(parts) if parts else "该模型信息尚未核实；没有本轮可核验查询证据，也没有提交成功依据。"
+
+
+def preference_receipt(results):
+    """本轮具体确认写入与后续真实get/list核对分开，不采信模型完成声明。"""
+    writes={}
+    for name,outcome in results:
+        if name!='manage_preference':continue
+        evidence=outcome.get('evidence',{});operation=evidence.get('operation',{})
+        data=outcome.get('data');action=operation.get('action')
+        if outcome['status']=='SUCCESS' and evidence.get('management_confirmation') and action in {'create','update'} and isinstance(data,dict):
+            key=(data.get('user_id'),data.get('company_id'),data.get('preference_key'))
+            writes[key]={'value':data.get('value'),'verified':False}
+        elif outcome['status']=='SUCCESS' and action in {'get','list'}:
+            rows=data if isinstance(data,list) else [data]
+            for row in rows:
+                if not isinstance(row,dict):continue
+                key=(row.get('user_id'),row.get('company_id'),row.get('preference_key'))
+                if key in writes:writes[key]['verified']=row.get('value')==writes[key]['value']
+    if not writes:return ''
+    if all(value['verified'] for value in writes.values()):
+        return '可信管理回执：具体确认后的偏好保存及后续读取核对完成；仅复用本轮真实执行证据，不代表新增查询或发票Commit。'
+    return '可信管理回执：偏好已按具体确认保存；尚未取得所有保存目标的后续独立读取核对证据，不能声称核对完成。'
 
 
 def render_stopped(results, stop_reason):
@@ -100,12 +130,20 @@ def render_stopped(results, stop_reason):
               if outcome['status'] in {'SUCCESS','NO_DATA','NO_CHANGE'} and name!='prepare_invoice_update']
     if not verified:
         return None
-    failures=[{'tool':name,'status':outcome['status']} for name,outcome in results
-              if outcome['status'] not in {'SUCCESS','NO_DATA','NO_CHANGE'}]
+    failures=[]
+    for index,(name,outcome) in enumerate(results):
+        if outcome['status'] in {'SUCCESS','NO_DATA','NO_CHANGE'}:continue
+        key=outcome.get('evidence',{}).get('operation',{}).get('key')
+        company=outcome.get('evidence',{}).get('scope',{}).get('company_id')
+        resolved=(name=='manage_preference' and outcome['status']=='NOT_FOUND' and key and any(
+            n=='manage_preference' and r['status']=='SUCCESS' and r.get('evidence',{}).get('management_confirmation')
+            and r.get('evidence',{}).get('scope',{}).get('company_id')==company
+            and r.get('evidence',{}).get('operation',{}).get('key')==key for n,r in results[index+1:]))
+        if not resolved:failures.append({'tool':name,'status':outcome['status']})
     reason={'MODEL_LIMIT':'模型请求上限','TOOL_LIMIT':'实际工具调用上限','CONTEXT_LIMIT':'上下文上限',
             'WAITING_CONFIRMATION':'等待可信确认，尚未保存'}.get(stop_reason,'按真实执行状态停止')
     return ('本轮已核实结果（仅代表各项实际执行时的事实）：\n'+render_information(verified)
-            +'\n本轮停止原因：'+stop_reason+'（'+reason+'）。后续调用或最终答复仍未完成/未核实；这不撤销以上已完成结果。'
+            +'\n本轮停止原因：'+stop_reason+'（'+reason+'）。后续调用或模型答复已停止；这不撤销以上已完成结果，目标核对情况以可信回执为准。'
             +'\n未完成/拒绝项：'+json.dumps(failures,ensure_ascii=False))
 
 

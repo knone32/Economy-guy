@@ -60,7 +60,7 @@ class Stage252Tests(DatabaseTestCaseMixin, unittest.TestCase):
     def test_actual_scope_shown_when_natural_alias_cannot_be_verified(self):
         agent = self.agent([{"role":"assistant","tool_calls":[query("C002")]},final("information","甲企业合计12667.24元")])
         # Stage 3B已识别官方“甲企业”；保留未识别自然语言别称的原验收目标。
-        answer = agent.ask("查询甲方公司九月总额")
+        answer = agent.ask("查询甲方公司九月总额（企业编号C002，2026年）")
         self.assertIn("C002",answer)
         self.assertIn("2026-09",answer)
         self.assertIn("current_sqlite",answer)

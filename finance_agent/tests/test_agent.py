@@ -28,7 +28,7 @@ class AgentTests(DatabaseTestCaseMixin, unittest.TestCase):
     def test_errors_pair_all_results_and_stop(self):
         for arguments in ('{}', '{', '{"company_id":"C001","year":true,"month":9}'):
             agent = self.agent([call(arguments=arguments), call(identifier="b")])
-            self.assertIn("停止", agent.ask("查询"))
+            self.assertIn("停止", agent.ask("查询C001和C002 2026-09"))
             self.assertEqual(len([m for m in agent.messages if m["role"] == "tool"]), 2)
 
     def test_denied_no_identity_override(self):
@@ -57,10 +57,10 @@ class AgentTests(DatabaseTestCaseMixin, unittest.TestCase):
         unique_calls = [call("get_invoice",json.dumps({"company_id":"C001","invoice_no":f"F{i:03d}"}),str(i)) for i in range(1,6)]
         replies = iter({"role":"assistant", "tool_calls":[item]} for item in unique_calls)
         agent = Agent("U001", self.db_path, lambda m,t: next(replies), max_requests=2)
-        self.assertIn("上限", agent.ask("查询"))
+        self.assertIn("上限", agent.ask("查询C001的F001、F002、F003、F004、F005"))
         self.assertEqual(agent.last_response["execution"]["model_requests"],2)
         agent = self.agent(unique_calls, max_tools=2)
-        agent.ask("查询")
+        agent.ask("查询C001的F001、F002、F003、F004、F005")
         results = [json.loads(m["content"]) for m in agent.messages if m["role"] == "tool"]
         self.assertEqual(len(results), 5)
         self.assertEqual(sum(r["status"] == "SUCCESS" for r in results), 2)
