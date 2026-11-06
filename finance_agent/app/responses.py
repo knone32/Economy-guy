@@ -61,6 +61,10 @@ def render_information(results):
     """只从本轮实际只读工具结果生成信息答复，不转述模型自由成功声明。"""
     parts = []
     for name, outcome in results:
+        if name=='manage_preference' and outcome['status']=='NOT_FOUND':
+            parts.append(render_scope(outcome.get('evidence',{})))
+            parts.append('当前用户企业范围内没有该偏好（NOT_FOUND）；此查询未保存或修改任何内容。')
+            continue
         if outcome["status"] not in {"SUCCESS", "NO_DATA", "NO_CHANGE"}:
             continue
         data = outcome["data"]

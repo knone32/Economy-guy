@@ -20,6 +20,7 @@ import sqlite3
 SYSTEM = """你是财税助手。甲企业=C001，乙企业=C002。需要业务事实时调用工具，不能凭历史结果猜金额。
 企业、年份、月份缺失且对话没有明确依据时先追问，不默认当前月份。不能改变身份。
 用户只补充企业或年月时，应继续最近未完成的查询目标，不能把原目标缩减成明细。
+context_data的prior_query_tools只是历史查询类型线索：当前轮仅更正范围时可延续查询目标，不能继承旧金额、范围或修改许可。
 发票与银行收支的综合概览使用get_finance_summary，一次取得价税合计/数量、收入/支出/条数及R001；
 list_invoices/list_bank_transactions用于需要逐条明细时，不用明细代替用户要求的完整汇总。
 仅用户明确本次修改目标、purpose/remark与新内容时可调用prepare_invoice_update。模糊目标先追问，不猜用途。
@@ -229,6 +230,9 @@ class Agent:
         self.management_proposals=ManagementProposals(self.user_id,text)
         self.messages.append({"role": "user", "content": text})
         allow_prepare = self.coordinator.begin(text, allow_prepare, continue_edit)
+        # 只读轮不向模型提供写草稿能力；执行白名单仍会拒绝伪造调用。
+        turn_tools=[tool for tool in self.tools
+                    if allow_prepare or tool['function']['name']!='prepare_invoice_update']
         self.write_receipt = self._receipt("NOT_SUBMITTED")
         self.trace_id = uuid4().hex
         self.trace("turn.started", {"user": self.user_id})
@@ -261,7 +265,7 @@ class Agent:
             # 身份变更的消息清理留到下一入口；本响应仍须先配齐原tool_call_id。
             return accepted
         execution.can_continue = lambda steps:remaining_work_allowed(self.db_path,self.user_id,steps,self.update_session,management_intent,
-            self.allowed_tools & {tool["function"]["name"] for tool in self.tools},
+            self.allowed_tools & {tool["function"]["name"] for tool in turn_tools},
             proposals=self.management_proposals if management is None else None)
         def finish(text, store=True, category="operation_result"):
             if not execution.stop_reason:
@@ -309,12 +313,12 @@ class Agent:
                 return finish('协议安全停止：'+str(error)+'；未执行新的业务操作。')
             if not execution.start_request():
                 break
-            self.trace("model_input", redact({"messages": context, "tools": self.tools}))
+            self.trace("model_input", redact({"messages": context, "tools": turn_tools}))
             try:
-                reply = self.transport(context,self.tools) if self.transport and self.model is _BUILTIN_LIVE_MODEL else self.model(context, self.tools)
+                reply = self.transport(context,turn_tools) if self.transport and self.model is _BUILTIN_LIVE_MODEL else self.model(context, turn_tools)
                 if not isinstance(reply, dict) or reply.get("role") != "assistant":
                     raise ValueError("模型不能伪造消息角色")
-                reply = self.protocol.normalize(reply,bool(self.tools))
+                reply = self.protocol.normalize(reply,bool(turn_tools))
                 calls = reply.get("tool_calls") or []
                 if not isinstance(calls, list) or any(not isinstance(c, dict) or not isinstance(c.get("id"), str) or not c["id"] or c.get("type") != "function" or not isinstance(c.get("function"), dict) for c in calls):
                     raise ValueError("工具请求结构错误")
@@ -327,7 +331,7 @@ class Agent:
                 self.trace("error", "API请求失败或模型响应结构无效")
                 execution.stop("API_OR_RESPONSE_ERROR")
                 return finish("请求失败：API请求失败或模型响应结构无效，未确认业务成功。")
-            self.trace("model_reply", redact(self.protocol.wire([reply],bool(self.tools))[0]))
+            self.trace("model_reply", redact(self.protocol.wire([reply],bool(turn_tools))[0]))
             self.messages.append(reply)
             if not calls:
                 natural = parse_final(reply.get("content"))
@@ -356,7 +360,7 @@ class Agent:
                 execution.requested_tools += 1
                 self.trace("tool.requested", call)
                 fn = call["function"]
-                permitted = self.allowed_tools & {t["function"]["name"] for t in self.tools}
+                permitted = self.allowed_tools & {t["function"]["name"] for t in turn_tools}
                 if isinstance(fn.get("name"), str) and fn["name"] not in permitted:
                     result = tool_result("DENIED", error="工具未授权给当前Agent")
                     stop = True

@@ -139,6 +139,8 @@ class TurnExecution:
     def observe(self,name,args,outcome):
         """只接受执行层结果；计划完成仅指所列工具步骤，绝不代表发票已提交。"""
         status = outcome["status"]
+        # 已鉴权的偏好不存在是负向读取证据，不是保存成功或管理授权。
+        negative_read = name=='manage_preference' and args.get('action')=='get' and status=='NOT_FOUND'
         if status=="WAITING_CONFIRMATION":
             for step in self.ready():
                 if matches(step,name,args):
@@ -147,7 +149,7 @@ class TurnExecution:
                     break
             self.stop("WAITING_CONFIRMATION")
             return
-        if not outcome["ok"]:
+        if not outcome["ok"] and not negative_read:
             self.stop(status)
             return
         if name=="set_schedule":
@@ -157,9 +159,21 @@ class TurnExecution:
         if status=="NO_CHANGE":
             self.stop("NO_PROGRESS")
             return
-        if status not in {"SUCCESS","NO_DATA"}:
+        if status not in {"SUCCESS","NO_DATA"} and not negative_read:
             self.stop("UNVERIFIED_RESULT")
             return
+        if (name=='manage_preference' and args.get('action') in {'create','update','delete'}
+            and status=='SUCCESS' and outcome.get('evidence',{}).get('management_confirmation')):
+            # 具体确认后的真实写入使同一对象的旧读取过期；不清除写调用去重或计数。
+            for signature in list(self.seen):
+                try:
+                    previous,values=json.loads(signature)
+                except (ValueError,TypeError):
+                    continue
+                if (previous=='manage_preference' and values.get('company_id')==args['company_id']
+                    and (values.get('action')=='list' or
+                         (values.get('action')=='get' and values.get('key')==args['key']))):
+                    self.seen.remove(signature)
         self.progress += 1
         self.observed.append({"action":name,"arguments":deepcopy(args),"status":status,
                               "source":outcome.get("evidence",{}).get("source")})

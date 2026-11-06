@@ -65,7 +65,7 @@ PARAMETERS = {"company_id":"企业编号，例如C001；不能凭空猜测。", 
               "field":"只允许purpose或remark。", "new_value":"用户明确的新内容，空字符串表示清空。",
               "rule_type":"amount、purpose或bank。", "business_date":"YYYY-MM-DD业务日期。",
               "action":"该管理工具支持的操作名称。", "task_id":"已有任务ID；create使用空字符串。",
-              "note":"用户明确的后续待办或补充说明；不接受模型声称完成作为证据。",
+              "note":"用户明确的简短后续待办说明，优先保留原话；不扩写发票清单、规则解释或步骤计划；具体内容仍需可信确认，不接受模型声称完成作为证据。",
               "key":"偏好名称；list时为空。", "value":"用户明确的偏好内容；查询/删除时为空。",
               "ordinal":"用户明确的展示序号，从1开始。", "anchor_id":"已展示anchor编号；唯一列表时可为空，不能自行编造。",
               "goal":"本轮用户目标描述，不是执行证据。","steps":"必要工具步骤及依赖，不拆分SQL/事务等内部操作。",
@@ -307,7 +307,7 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
                     outcome=service(db_path,user_id,**args,intent=approved)
                     outcome['evidence']['management_confirmation']={'source':'trusted_cli','request_id':proposal['request_id'],
                         'fingerprint':proposal['fingerprint'],'turn_id':approved.turn.turn_id}
-                if outcome["ok"]:
+                if outcome["ok"] or (name=='manage_preference' and args['action']=='get' and outcome['status']=='NOT_FOUND'):
                     outcome["evidence"].setdefault("scope",{"company_id":args["company_id"]})
                     outcome["evidence"].setdefault("source","current_sqlite")
                     check = outcome["evidence"].get("check")
