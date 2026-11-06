@@ -3,7 +3,7 @@
 **版本**：v1.1（继承 v1.0 全部官方要求和核心工程约定；更新 Stage 4 已有证据与真实 API 验收政策）  
 **编制日期**：2026-11-06  
 **仓库**：[`knone32/Economy-guy`](https://github.com/knone32/Economy-guy)（Private）  
-**审查基线**：`main@7a9f32713e2a98054b9ee7f9aeda6d01452b2747`（4P-A 报告提交）；**最新被测源码**：`0c043151d24ab63394ca674516d711c86435f3ac`（两者相差的报告提交不修改源码）  
+**审查基线 / 最新被测源码**：`main@ccd184ff9c877a685127cc8922d15ae10aec7aec`（4P-B代码；Base为`b70545a6da6be436a0e988f80255afaec8871544`）；报告提交见[S4-P-B](verification/stage4/S4-P-B.md)的Git历史，与源码SHA区分。  
 **适用范围**：云帐房 2026 AI 技术创新大赛赛题二「财税 Agent Harness」，**不含** Sky Core 研究及其他 AI 比赛。  
 **文档性质**：项目目标和验收台账；它不是新开发指令，也不是未经运行证明的「已完成认证」。
 
@@ -18,7 +18,8 @@
 | S4-A | `3c45103` 的 219/219 回归，Codex 本机报告通过；报告 `08b3ed5` | **本地实测报告**，不是 GitHub CI 复跑 |
 | S4-B | DeepSeek Flash 对旧业务代码执行 41 轮、64 次 Chat Completions 尝试；A/B/C **整体 FAIL**，但 Prepare/Commit/审计、任务跨进程等子链路已证实 | **真实 API 运行记录**，对 `08b3ed5` 基线有效 |
 | S4-P-A / 4P1 | 新增无权限自然语言管理候选、具体内容确认、偏好 CRUD 和追问修复；代码 `0c043151`、报告 `7a9f3271` | **238/238 本地回归报告**（219 旧 + 19 新）；**0 次 live API** |
-| S4-P-B / C / D / E | B：结果/汇总/任务推进；C：Thinking 多轮协议；D：Profiles 与日志；E：全链路回归 | **尚未完成**；B 开始逐步加入真实模型针对性复验 |
+| S4-P-B | P02/P04/P05及自然候选计划兼容；代码`ccd184ff`，本地256/256；13次真实API尝试 | **DETERMINISTIC PASS / LIVE PARTIAL / PROVIDER_BLOCKED**；L1自然汇总、L3提交/剩余4项/重启读取通过，原L2 NOT_FOUND失败，真实重复未观察到 |
+| S4-P-C / D / E | C：Thinking 多轮协议；D：Profiles 与日志；E：全链路回归 | **尚未执行**；B的同会话HTTP400留待C/E复验 |
 | S4-BR / S4-C / S4-D | 独立真实复核、证据链封板、比赛打包 | 尚未完成，前置依赖见第 8、9 节 |
 
 **事实划线**：GitHub 有测试代码与 Codex 本地 PASS 报告，**不等于这里独立执行了 238 项**；原始日志仍在本地忽略目录。S4-B 的 217,990 个 Token 仅是 60 条成功响应返回的 usage，另外 4 次失败消耗未知，**不等于精确费用或总账单**。
@@ -390,9 +391,9 @@ finance_agent/app/agent.py::Agent.ask  ← 单一模型调用循环
 | **P01 / G01** | 普通自然语言管理 `DENIED`；S4-P-A 引入候选预览/具体可信确认 | P0 | **离线修复，238/238 报告；live 未验证** | 4P-B/E 用真实模型测试自然语言创建/更正/删除 |
 | **P03** | 旧版 live 偏好 delete 失败；S4-P-A 更新提示、增加候选和删除用例 | P0 | **离线已处理，live 未验证** | 真实偏好 CRUD + 重启复核 |
 | **P06** | 旧版模型生成 `missing_fields` 非白名单字段导致 INVALID_RESPONSE | P0 | **离线安全降级已处理，live 未验证** | 真实模型不规则追问，再用 Mock 测非法结构 |
-| **P02** | 已持久保存后模型重复工具调用，`NO_PROGRESS` 遮盖已完成事实 | P0 | **尚未修复** | 4P-B：保留可信完成证据，分别呈现停止原因/未完成项 |
-| **P04** | 用户补月份后原 A2 只给明细，无完整发票/银行汇总及 R001 | P0 | **尚未修复** | 4P-B：通用目标证据完整性、权威结果渲染，不能靠关键词路由 |
-| **P05 / G02** | C4 SQLite 确认缺失 5→4，进程重启恢复；同会话续问因 API400 阻断 | P0 | **任务持久事实有效；完整用户体验待验证** | 4P-B 数据库剩余事实展示，4P-C 协议解除阻塞，再 live 复验；不建 DAG |
+| **P02** | 成功证据在异常/重复/预算收尾丢失；4P-B复用当轮结果分开展示事实、停止原因及未完成项 | P0 | **离线修复；真实重复未观察到** | 4P-E补实际重复/异常目标；原L2先get不存在偏好而NOT_FOUND是另一个UX缺口，保留FAIL |
+| **P04** | 原A2仅明细；4P-B通用工具说明与同快照金额/计数证据，非关键词路由 | P0 | **离线及L1真实自然追问→补年月完整汇总PASS** | ccd184ff：C001 2026-09金额/计数/R001与独立SQL一致 |
+| **P05 / G02** | 4P-B真实Commit后CLI显示当前4项，新进程读取相同任务与4项；未自动完成 | P0 | **提交后只读进度及重启PASS；同会话PROVIDER_BLOCKED** | 4P-C解除Thinking HTTP400后在E复验；Task Manager不重建 |
 | **P07** | DeepSeek Thinking `reasoning_content` 在 `agent.py` 被过滤，次轮 HTTP400 | P0/阻断 | **确定的协议缺陷，尚未修复** | 4P-C 按服务商要求私有回传，不进普通 Trace/跨服务商 |
 | **P08** | S4-B 有 32 条无计划时的 `schedule.progress` | P1 | **日志语义偏差** | 4P-D 令“工具观察进度”和“已创建的 Schedule 进度”分离 |
 | **P09** | 目前只有 `OPENAI_*` 或 `KEY/BASE_URL/MODEL` 单套配置 | P1 | **尚未实现 Profile** | 4P-D TOML 命名 Profile、独立密钥环境变量、旧入口兼容 |
@@ -419,7 +420,7 @@ finance_agent/app/agent.py::Agent.ask  ← 单一模型调用循环
 | S4-A | 当时 Stage3 补丁的独立执行报告 | **已完成阶段**：219/219 Codex 本地报告，报告 `08b3ed5` | 旧报告不改写 |
 | S4-B | 真实 LLM 三场景故障取证 | **已完成取证**：41 轮、64 次 Chat 请求；A/B/C 整体 FAIL，记录 F01～F05 | 作为 4P 的复现依据，不再次无目的全量回放 |
 | **4P-A** | 无权限自然语言管理候选、可信内容确认、偏好 CRUD、未知追问 | **已完成离线修复**：代码 `0c043151`，19 新用例，总 238/238；0 live | 4P-B/E 针对性 live 验证 |
-| **4P-B** | 已完成业务结果正确显示、发票/流水全量汇总、补用途后剩余任务显示 | **待执行**；主问题 P02/P04/P05 | **离线反例 → 最小补丁 → 少量真实 API 目标测试 → 回归与提交** |
+| **4P-B** | 已完成业务事实/停止原因分开、财务完整汇总、当前任务剩余展示 | **离线256/256；live部分通过**，代码ccd184ff；见S4-P-B | 原L2 FAIL与真实重复未观察到保留；同会话HTTP400待C/E，不宣布完整live通过 |
 | **4P-C** | DeepSeek Thinking 多轮协议兼容、思考隐私、工具 ID 配对 | **待执行**；P07 真实 HTTP400 已复现 | 离线协议测试后立即 live 同会话工具→再工具，保留 usage |
 | **4P-D** | Provider Profile/独立 Key/安全切换、Trace 语义与最小调用元数据 | **待执行**；P08～P10 | 配置/隔离先确定性；合法凭据下 live 对照；不做自动路由 |
 | **4P-E** | 当前提交全量测试与完整官方三场景 live 回归 | **待执行** | 有证据的 A/B/C 与偏好 CRUD，按同一 SHA 统一报告 |
@@ -463,7 +464,8 @@ finance_agent/app/agent.py::Agent.ask  ← 单一模型调用循环
 - **219/219**：S4-A 的 `3c45103` 被测源码，Codex 在本地 Windows + Python 环境执行并提交 `08b3ed5` 报告；GitHub 只见报告与测试代码，无独立 CI。
 - **S4-B live**：`08b3ed5` checkout，DeepSeek Flash；41 个轮次，64 次 Chat Completions 尝试，60 HTTP200 / 3 HTTP400 / 1 ConnectError，成功响应的 usage 203,781 prompt + 14,209 completion = **217,990 total_tokens**；原 A/B/C 三场景整体未通过。M/R/T 上限现场观察为 3/7/4，54 个 ToolCall 请求/结果均配对。真实费用未知。
 - **238/238**：S4-P-A 代码 `0c043151`，Codex 报告 219 旧 + 19 新，通过，0 错误/跳过；报告提交 `7a9f327`。源码和新增测试存在、旧 219 项测试未被修改；原始 stdout 本地忽略，**没有 GitHub CI**。
-- **当前 live 缺口**：S4-P-A 对应最新代码**没有任何真实 API 调用**；P01/P03/P06 的 live 表现一律标 `NOT_TESTED`，其他原 S4-B 故障的实际修复仍未实现。
+- **256/256**：4P-B代码`ccd184ff`，原238项断言不改、新增18项，本地全量PASS；没有GitHub CI。13次真实API尝试（12 HTTP200、1 HTTP400），成功usage 43987 prompt + 2067 completion = 46054 total；失败usage和费用未知。8组Tool Call逐ID配对，L1自然汇总及L3当前进度/跨进程核验通过。
+- **当前 live 缺口**：4P-A原`0c043151`仍无自身live报告；4P-B真实自然任务创建及偏好新增对照成功不代表完整CRUD通过。原L2因先get不存在对象而NOT_FOUND失败，真实重复未观察到；同会话Thinking HTTP400仍阻断，待C/E。历史报告不改写。
 
 上述通过数是**各自 SHA 上的总数**，不要累加、替代或直接推算下一版本通过数。
 
@@ -574,6 +576,8 @@ Trace: trace_id、model_requests、requested_tool_calls、actual_tool_calls、ex
 每次阶段结算只更新：**当前 HEAD、被测代码 SHA、该阶段的历史报告链接、对应的 P 编号状态、D/L/B 证据、实际模型用量和下一阶段门禁**。V0～V3 的设计沿革和已冻结安全契约不反复重写；不复制总纲到 `AGENTS.md`。
 
 ## 11. 最终判定（截至 `main@7a9f3271` / 源码 `0c043151`）
+
+> 本节以下保留4P-A历史阶段判定。4P-B最新增量以本文顶部、P02/P04/P05台账及[S4-P-B报告](verification/stage4/S4-P-B.md)为准：确定性256/256，LIVE PARTIAL/PROVIDER_BLOCKED，尚不宣称官方P0整体完成；下一步仅建议另行授权4P-C，未执行。
 
 **已经得到代码和运行证据的部分**：安全 SQLite/财税汇总与规则、Tool Calling 和工具结果配对、受控发票写入同事务审计/回读、可跨进程恢复的长期任务与偏好、Context/引用/短计划/预算。S4-B 使用真实 DeepSeek Flash 成功完成部分关键操作，证明不是只有 Mock 的 Demo。
 
