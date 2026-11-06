@@ -23,3 +23,5 @@ ContextBuilder.resolve → references.resolve_reference：限定可信用户 →
 成功引用提供reference_data和本轮expected_scope；查询/Prepare继续走原Handler。所有写入还需可信/edit、绑定草稿确认、事务审计和回读。引用不是确认。旧锚点可跨独立进程重查，但新Agent不会加载Draft/Confirm/Commit。任意自然语言理解、昨天/上个月等历史时间筛选、复杂排序/多对象指代及“它”的语义消歧未实现；不宣称可验证所有隐含目标。底层元数据写入故障时展示告警/本会话阻断引用；故障导致未持久化的失效动作不能保证跨重启恢复。
 
 tests/test_stage3b.py使用临时SQLite，覆盖序数、真实顺序、同号隔离、多列表、错误引用、更正/取消、权限撤销、独立子进程恢复、旧值更新/日期变更重查、范围锁定、无确认零审计、来源注入、限长和消息配对。test_architecture把references纳入业务层、context纳入运行层；无反向依赖或第二Loop。Context不承担Scheduler；Stage 3C独立单轮计划见[schedule-budget.md](schedule-budget.md)。
+
+4P-E：ContextBuilder.record_displayed从已经展示的成功只读结果保留prior_query_tools（工具名列表，不含参数、金额或操作授权）；_data在assistant/context_data内附来源。begin更正范围仍清除旧范围及旧引用，新范围下模型可用该历史查询类型延续概览目标，不能继承旧企业金额或写入许可。Agent身份切换仍新建ContextBuilder；没有新增持久对话或自动摘要。test_stage4pe验证月份更正后的数据线索不带旧金额；任意语义理解的剩余失败仍按Live报告保留。

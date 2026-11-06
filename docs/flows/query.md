@@ -23,3 +23,5 @@ test_stage252.py验证一般问候/概念、实际范围/冲突/多企业来源�
 Stage 3B引用与上下文实际调用链、迁移和边界见[context-reference.md](context-reference.md)。test_stage252的未知别称用“甲方公司”，保留无法验证别称时必须展示实际范围的原断言；官方“甲企业”现可识别，另测模型错企业时SCOPE_MISMATCH。
 
 Stage 3C普通查询仍走Fast Path，无额外规划模型调用。模型调用和工具分发前接入TurnExecution计数/重复/依赖守卫；可选计划仅使用set_schedule工具，业务Handler鉴权仍实际执行，详见[schedule-budget.md](schedule-budget.md)。
+
+4P-E：Agent._ask在当前调用方工具子集内生成turn_tools；仅当WriteCoordinator.begin认可本轮准备流程时暴露prepare_invoice_update。只读轮不暴露该工具，伪造调用仍由白名单拒绝，不恢复调用方已隐藏的工具。test_stage4pe及原test_security_boundaries验证只读/合法编辑/子集边界。缺失日期的任意自然语言语义仍不是Handler已完整验证的事实：S4-P-E的A1有模型猜月份后查询的反例，不能以本轮过滤写工具声称已解决该问题。

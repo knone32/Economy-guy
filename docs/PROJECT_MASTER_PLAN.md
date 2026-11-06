@@ -3,7 +3,7 @@
 **版本**：v1.1（继承 v1.0 全部官方要求和核心工程约定；更新 Stage 4 已有证据与真实 API 验收政策）  
 **编制日期**：2026-11-06  
 **仓库**：[`knone32/Economy-guy`](https://github.com/knone32/Economy-guy)（Private）  
-**审查基线 / 最新被测源码**：`main@bd59b2e380f51a5839e2cb94fe050f49b26aa823`（4P-D代码；Base为`dda0ca8db5c609cea3d6688b731f0bd7fde3cc5d`）；报告提交见[S4-P-D](verification/stage4/S4-P-D.md)的Git历史，与源码SHA区分。4P-C及更早证据保持各自历史SHA。
+**审查基线 / 最新被测源码**：`main@3a83a2c87afe7cf555704f2ebc0284fcc4c68308`（4P-E代码；Base为`70939e0792f60f3defa0fea19d50440f1b46317d`）；报告提交见[S4-P-E](verification/stage4/S4-P-E.md)的Git历史，与源码SHA区分。4P-D及更早证据保持各自历史SHA。
 **适用范围**：云帐房 2026 AI 技术创新大赛赛题二「财税 Agent Harness」，**不含** Sky Core 研究及其他 AI 比赛。  
 **文档性质**：项目目标和验收台账；它不是新开发指令，也不是未经运行证明的「已完成认证」。
 
@@ -20,7 +20,8 @@
 | S4-P-A / 4P1 | 新增无权限自然语言管理候选、具体内容确认、偏好 CRUD 和追问修复；代码 `0c043151`、报告 `7a9f3271` | **238/238 本地回归报告**（219 旧 + 19 新）；**0 次 live API** |
 | S4-P-B | P02/P04/P05及自然候选计划兼容；代码`ccd184ff`，本地256/256；13次真实API尝试 | **DETERMINISTIC PASS / LIVE PARTIAL / PROVIDER_BLOCKED**；L1自然汇总、L3提交/剩余4项/重启读取通过，原L2 NOT_FOUND失败，真实重复未观察到 |
 | S4-P-C | Thinking多轮协议已验收，最终代码d27ca91，274/274及9次HTTP200（阶段合计24次） | P07跨轮/提交后续问PASS；原说明扩写MODEL_BEHAVIOR_FAIL保留，P11 OPEN |
-| S4-P-D / E | D：代码bd59b2e，304/304；Global/User Profile、冻结连接、安全轮次切换、原生usage/Trace及提交后进度隔离；15次HTTP200，两模型 | D门禁满足；原Pro续问误提修改被DENIED，PARTIAL保留，只读对照PASS；真实第二账户NOT_TESTED；E未执行，不代表官方完整三场景通过 |
+| S4-P-D | 代码bd59b2e，304/304；Profile、冻结连接/切换、Trace及提交后进度隔离；15次HTTP200 | D历史门禁满足；原Pro续问PARTIAL、真实第二账户NOT_TESTED仍保留 |
+| S4-P-E | 代码3a83a2c，309/309；59条冻结PUBLIC_REGRESSION含24变体；298次真实API尝试，294 HTTP200，4失败usage未知 | **整体BLOCKED**：Flash同题49/59→51/59；A1猜月份、原C2确认未完成、Pro非JSON/超时等保留；H2只读及P11部分修复；EXTERNAL_HOLDOUT_PENDING不是功能失败；未启动后续审计 |
 | S4-BR / S4-C / S4-D | 独立真实复核、证据链封板、比赛打包 | 尚未完成，前置依赖见第 8、9 节 |
 
 **事实划线**：GitHub 有测试代码与 Codex 本地 PASS 报告，**不等于这里独立执行了 238 项**；原始日志仍在本地忽略目录。S4-B 的 217,990 个 Token 仅是 60 条成功响应返回的 usage，另外 4 次失败消耗未知，**不等于精确费用或总账单**。
@@ -396,7 +397,8 @@ finance_agent/app/agent.py::Agent.ask  ← 单一模型调用循环
 | **P04** | 原A2仅明细；4P-B通用工具说明与同快照金额/计数证据，非关键词路由 | P0 | **离线及L1真实自然追问→补年月完整汇总PASS** | ccd184ff：C001 2026-09金额/计数/R001与独立SQL一致 |
 | **P05 / G02** | 4P-B真实Commit后CLI显示当前4项，新进程读取相同任务与4项；未自动完成 | P0 | **提交后只读进度及重启PASS；同会话PROVIDER_BLOCKED** | 4P-C解除Thinking HTTP400后在E复验；Task Manager不重建 |
 | **P07** | 4P-C私有字段随原assistant消息保留/完整传输，Trace遮蔽、Context含字段计字符、Mock隔离 | P0 | **PASS**：最终d27ca91本地274/274；真实9/9 HTTP200，跨轮最终回复及同进程Commit后4项续问核实 | [S4-P-C](verification/stage4/S4-P-C.md)；阶段共24次HTTP200/124534实际Token（两源码快照分别记录），无遗漏字段400；其他Provider/OFF live未测 |
-| **P11** | 4P-B复合偏好意图先get后NOT_FOUND而停止，无候选/写入 | P0/UX | **OPEN，仅登记，未修复** | [GitHub Issue #1](https://github.com/knone32/Economy-guy/issues/1)；独立修复与live验收留待4P-E前审查，不能以明确新增对照关闭 |
+| **P11** | 4P-B复合偏好意图先get后NOT_FOUND而停止，无候选/写入 | P0/UX | **4P-E部分修复，Issue仍OPEN** | 仅偏好负向get继续、确认写后定向读取失效；Flash原句真实get不存在→确认create→get成功；Pro超时/软限收尾UX未消除，[Issue #1](https://github.com/knone32/Economy-guy/issues/1)已追加证据但未关闭 |
+| **P12** | 4P-E A1缺日期，Flash先自行查2026-09再追问；实际SQL金额正确不能证明范围获用户选择 | P0 | **OPEN，未修复** | Handler只约束已知范围，不证明缺失年月出处；[S4-P-E](verification/stage4/S4-P-E.md)保留原题、Trace及未通过门禁，不以提示或大量单测声称修好 |
 | **P08** | S4-B 有 32 条无计划时的 `schedule.progress` | P1 | **4P-D修复，D/L通过** | 无计划改tool.progress；真实原生usage/latency和错误分类，计数保持；见[S4-P-D](verification/stage4/S4-P-D.md) |
 | **P09** | 原为单套环境变量配置 | P1 | **4P-D Global/User配置及旧入口通过** | 静态TOML+忽略JSON、可信添加/作用域、Key引用/冻结；同一真实Key演示两个范围，不冒称不同账户 |
 | **P10** | 跨提供商协议历史/临时确认不应被复用 | P1/安全 | **4P-D确定性隔离及同账户两模型live通过** | 可信轮次切换始终重建协议，范围/任务重读；真实跨账户NOT_TESTED，service_account_ref非账户身份证明 |
@@ -425,7 +427,7 @@ finance_agent/app/agent.py::Agent.ask  ← 单一模型调用循环
 | **4P-B** | 已完成业务事实/停止原因分开、财务完整汇总、当前任务剩余展示 | **离线256/256；live部分通过**，代码ccd184ff；见S4-P-B | 原L2 FAIL与真实重复未观察到保留；同会话HTTP400待C/E，不宣布完整live通过 |
 | **4P-C** | DeepSeek Thinking 多轮协议兼容、思考隐私、工具 ID 配对 | **待执行**；P07 真实 HTTP400 已复现 | 离线协议测试后立即 live 同会话工具→再工具，保留 usage |
 | **4P-D** | Provider Profile/独立 Key/安全切换、Trace 语义与最小调用元数据 | **304/304及15次HTTP200**；P08～P10；[报告](verification/stage4/S4-P-D.md) | D/L/B：Key冻结/权限与两模型协议通过，F002单次审计+缺项5→4，原续问PARTIAL/只读对照PASS；无自动路由；E未执行 |
-| **4P-E** | 当前提交全量测试与完整官方三场景 live 回归 | **待执行** | 有证据的 A/B/C 与偏好 CRUD，按同一 SHA 统一报告 |
+| **4P-E** | 当前提交全量测试与完整官方三场景 live 回归 | **309/309；业务整体BLOCKED** | [报告](verification/stage4/S4-P-E.md)及[冻结题集](verification/stage4/S4-P-E-CASES.md)；D通过、L/B/E逐项记录。已知响应usage合计1167596 Token，4失败未知费用UNKNOWN；不允许据此进入安全审计/封板 |
 | **S4-BR** | 外部独立复核 4P-E 真实结果与失败复现 | 待执行 | GitHub 源码/报告、现场保留的 Trace/SQLite 只读证据核对 |
 | **S4-C** | 模型输入/工具/规则/记忆/计数/审计日志证据封板 | 待执行 | 4P-D 元数据基础上整理精简演示证据，不建日志平台 |
 | **S4-D** | README 可独立运行、设计说明、≤5 分钟真实演示及安全交付 ZIP | 待执行 | 只有 P0 live 过关后封板 |
