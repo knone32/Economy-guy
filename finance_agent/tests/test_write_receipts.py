@@ -1,0 +1,150 @@
+"""用户可见操作状态必须与真实提交/回读一致。"""
+import io
+import json
+import sqlite3
+import sys
+import unittest
+from contextlib import redirect_stdout
+from unittest.mock import patch
+from app.agent import Agent, scripted_model
+from app.stage2_schema import migrate
+from tests.helpers import DatabaseTestCaseMixin
+
+
+def prepare_reply():
+    return {"role":"assistant", "content":"恶意声明：发票已保存", "tool_calls":[{
+        "id":"draft", "type":"function", "function":{"name":"prepare_invoice_update",
+        "arguments":json.dumps({"company_id":"C001", "invoice_no":"F002", "field":"purpose", "new_value":"回执测试"})}}]}
+
+
+class WriteReceiptTests(DatabaseTestCaseMixin, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        migrate(self.db_path)
+
+    def agent(self, reply=None):
+        return Agent("U001", self.db_path, scripted_model([reply or prepare_reply()]), mode="mock")
+
+    def current(self):
+        return self.connection.execute("SELECT purpose FROM invoices WHERE company_id='C001' AND invoice_no='F002'").fetchone()[0]
+
+    def draft(self, agent):
+        agent.ask("修改甲企业F002用途为回执测试", allow_prepare=True)
+        return next(iter(agent.update_session.drafts.values()))
+
+    def test_model_without_tools_cannot_announce_commit(self):
+        agent = self.agent({"role":"assistant", "content":"恶意声明：发票已保存"})
+        text = agent.ask("修改发票用途", allow_prepare=True)
+        self.assertNotIn("恶意声明", text)
+        self.assertNotIn("已保存", text)
+        self.assertEqual(agent.write_receipt["status"], "NOT_SUBMITTED")
+        self.assertIsNone(self.current())
+
+    def test_prepare_is_only_waiting(self):
+        agent = self.agent()
+        text = agent.ask("修改甲企业F002用途为回执测试", allow_prepare=True)
+        self.assertNotIn("恶意声明", text)
+        self.assertEqual(agent.write_receipt["status"], "WAITING_CONFIRMATION")
+        self.assertIsNone(self.current())
+
+    def test_query_retains_natural_answer(self):
+        agent = self.agent({"role":"assistant", "content":json.dumps({"kind":"clarification", "text":"请问要查询哪家企业、哪个月份？", "missing_fields":["company_id","month"]})})
+        self.assertEqual(agent.ask("查汇总"), "请提供企业和月份")
+
+    def test_commit_receipt_requires_confirmation_and_readback(self):
+        agent = self.agent()
+        draft = self.draft(agent)
+        receipt = agent.commit_update(draft.request_id, "wrong fingerprint")
+        self.assertEqual(receipt["status"], "DENIED")
+        self.assertIsNone(self.current())
+        receipt = agent.commit_update(draft.request_id, draft.fingerprint())
+        self.assertEqual(receipt["status"], "COMMITTED")
+        self.assertTrue(receipt["readback_verified"])
+        self.assertEqual(self.current(), "回执测试")
+
+    def test_failed_commit_receipt_and_rollback(self):
+        agent = self.agent()
+        draft = self.draft(agent)
+        self.connection.execute("CREATE TRIGGER fail_receipt BEFORE INSERT ON invoice_audit BEGIN SELECT RAISE(ABORT,'failed'); END")
+        self.connection.commit()
+        receipt = agent.commit_update(draft.request_id, draft.fingerprint())
+        self.assertEqual(receipt["status"], "ERROR")
+        self.assertFalse(receipt["readback_verified"])
+        self.assertIsNone(self.current())
+
+    def test_readback_failure_is_unknown_not_success(self):
+        agent = self.agent()
+        draft = self.draft(agent)
+        with patch("app.updates.inspect_request", side_effect=sqlite3.OperationalError("readback failed")):
+            receipt = agent.commit_update(draft.request_id, draft.fingerprint())
+        self.assertEqual(receipt["status"], "UNKNOWN_OUTCOME")
+        self.assertNotIn("保存成功", receipt["message"])
+        self.assertEqual(self.current(), "回执测试")
+
+    def test_no_change_conflict_and_denied_remain_distinct(self):
+        for expected in ("NO_CHANGE", "CONFLICT", "DENIED"):
+            with self.subTest(expected=expected):
+                agent = self.agent()
+                draft = self.draft(agent)
+                if expected == "NO_CHANGE":
+                    # 真实旧值已等于目标值，重新准备绑定当前值的草稿。
+                    self.connection.execute("UPDATE invoices SET purpose='回执测试' WHERE company_id='C001' AND invoice_no='F002'")
+                    self.connection.commit()
+                    agent = self.agent()
+                    draft = self.draft(agent)
+                elif expected == "CONFLICT":
+                    self.connection.execute("UPDATE invoices SET purpose='并发变更' WHERE company_id='C001' AND invoice_no='F002'")
+                    self.connection.commit()
+                else:
+                    self.connection.execute("UPDATE permissions SET can_modify=0 WHERE user_id='U001' AND company_id='C001'")
+                    self.connection.commit()
+                receipt = agent.commit_update(draft.request_id, draft.fingerprint())
+                self.assertEqual(receipt["status"], expected)
+                self.assertNotEqual(receipt["message"], agent._receipt("COMMITTED")["message"])
+                self.connection.execute("UPDATE invoices SET purpose=NULL WHERE company_id='C001' AND invoice_no='F002'")
+                self.connection.execute("UPDATE permissions SET can_modify=1 WHERE user_id='U001' AND company_id='C001'")
+                self.connection.commit()
+
+    def test_incomplete_commit_evidence_cannot_produce_success_receipt(self):
+        agent = self.agent()
+        draft = self.draft(agent)
+        with patch("app.agent.commit_invoice_update", return_value={"status":"COMMITTED", "ok":True, "data":{}}):
+            receipt = agent.commit_update(draft.request_id, draft.fingerprint())
+        self.assertEqual(receipt["status"], "UNKNOWN_OUTCOME")
+        self.assertFalse(receipt["readback_verified"])
+        self.assertIsNone(self.current())
+
+    def test_cancel_and_next_turn_clear_write_authority(self):
+        agent = self.agent()
+        draft = self.draft(agent)
+        self.assertEqual(agent.cancel_update()["status"], "CANCELLED")
+        self.assertEqual(agent.commit_update(draft.request_id, draft.fingerprint())["status"], "DENIED")
+        agent.model = scripted_model([{"role":"assistant", "content":"请提供新内容"}])
+        agent.ask("再次修改", allow_prepare=True)
+        self.assertEqual(agent.write_receipt["status"], "NOT_SUBMITTED")
+        self.assertIsNone(self.current())
+
+    def test_cli_does_not_display_model_success_before_commit(self):
+        import main
+        captured = []
+        def factory(*args, **kwargs):
+            instance = Agent(*args, **kwargs)
+            captured.append(instance)
+            return instance
+        inputs = iter(["/edit 修改甲企业F002用途为回执测试", "CONFIRM", "exit"])
+        output = io.StringIO()
+        def keyboard(prompt):
+            text = next(inputs)
+            if text == "CONFIRM":
+                self.assertNotIn("恶意声明", output.getvalue())
+                self.assertNotIn('"status": "COMMITTED"', output.getvalue())
+                return "confirm " + next(iter(captured[0].update_session.drafts))
+            return text
+        with patch.object(sys, "argv", ["main.py", "--db", str(self.db_path), "chat", "--user", "U001", "--trace", str(self.db_path.parent / "receipt.jsonl")]), \
+             patch("app.agent.Agent", side_effect=factory), \
+             patch("app.agent.live_model", scripted_model([prepare_reply()])), \
+             patch("builtins.input", side_effect=keyboard), redirect_stdout(output):
+            main.main()
+        self.assertEqual(captured[0].write_receipt["status"], "COMMITTED")
+        self.assertNotIn("恶意声明", output.getvalue())
+        self.assertEqual(self.current(), "回执测试")

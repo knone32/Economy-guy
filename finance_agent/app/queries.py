@@ -1,0 +1,59 @@
+"""带权限的只读业务查询。"""
+import sqlite3
+from .permissions import check_permission
+
+
+class QueryError(ValueError):
+    """调用参数、权限或查询对象不正确。"""
+
+
+def _check_month(year: int, month: int) -> str:
+    if not isinstance(year, int) or not 1 <= year <= 9999 or not isinstance(month, int) or not 1 <= month <= 12:
+        raise QueryError("年份必须为 1 到 9999 的整数，月份必须是 1 到 12")
+    return f"{year:04d}-{month:02d}"
+
+
+def _authorize(connection: sqlite3.Connection, user_id: str, company_id: str) -> None:
+    if not user_id or not company_id:
+        raise QueryError("用户编号和企业编号不能为空")
+    result = check_permission(connection, user_id, company_id, "read")
+    if not result.allowed:
+        raise QueryError(f"查询被拒绝：{result.reason}")
+
+
+def _invoice_dict(row: sqlite3.Row) -> dict:
+    return {"company_id": row["company_id"], "invoice_no": row["invoice_no"], "invoice_date": row["invoice_date"], "seller_name": row["seller_name"], "item_name": row["item_name"], "amount": _money(row["amount_cents"]), "purpose": row["purpose"], "remark": row["remark"]}
+
+
+def _money(cents: int) -> str:
+    return f"{cents // 100}.{cents % 100:02d}"
+
+
+def list_invoices(connection, user_id: str, company_id: str, year: int, month: int) -> list[dict]:
+    """查询指定企业、年月的发票，结果为空是正常成功结果。"""
+    prefix = _check_month(year, month); _authorize(connection, user_id, company_id)
+    rows = connection.execute("SELECT * FROM invoices WHERE company_id = ? AND invoice_date LIKE ? ORDER BY invoice_date, invoice_no", (company_id, prefix + "%")).fetchall()
+    return [_invoice_dict(row) for row in rows]
+
+
+def get_invoice(connection, user_id: str, company_id: str, invoice_no: str) -> dict | None:
+    """以企业编号和发票编号共同定位发票，防止跨企业读取。"""
+    _authorize(connection, user_id, company_id)
+    if not invoice_no:
+        raise QueryError("发票编号不能为空")
+    row = connection.execute("SELECT * FROM invoices WHERE company_id = ? AND invoice_no = ?", (company_id, invoice_no)).fetchone()
+    return _invoice_dict(row) if row else None
+
+
+def list_missing_purpose_invoices(connection, user_id: str, company_id: str, year: int, month: int) -> list[dict]:
+    """列出用途为空或只含空白字符的发票，不做修改。"""
+    prefix = _check_month(year, month); _authorize(connection, user_id, company_id)
+    rows = connection.execute("SELECT * FROM invoices WHERE company_id = ? AND invoice_date LIKE ? AND (purpose IS NULL OR trim(purpose) = '') ORDER BY invoice_date, invoice_no", (company_id, prefix + "%")).fetchall()
+    return [_invoice_dict(row) for row in rows]
+
+
+def list_bank_transactions(connection, user_id: str, company_id: str, year: int, month: int) -> list[dict]:
+    """查询指定企业、年月的银行流水，所有字段只读。"""
+    prefix = _check_month(year, month); _authorize(connection, user_id, company_id)
+    rows = connection.execute("SELECT * FROM bank_transactions WHERE company_id = ? AND transaction_date LIKE ? ORDER BY transaction_date, transaction_no", (company_id, prefix + "%")).fetchall()
+    return [{"company_id": r["company_id"], "transaction_no": r["transaction_no"], "transaction_date": r["transaction_date"], "direction": r["direction"], "amount": _money(r["amount_cents"]), "counterparty_name": r["counterparty_name"], "remark": r["remark"]} for r in rows]

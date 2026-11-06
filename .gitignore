@@ -1,0 +1,62 @@
+# 根目录只纳入工程必需内容，原始比赛材料/验收包/其他生成文件留在本地。
+/*
+!/.gitignore
+!/AGENTS.md
+!/README.md
+!/docs/
+!/finance_agent/
+
+# 凭据与本地配置（不要把真实值写入源码或历史）。
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*credentials*
+*credential*.json
+*secrets*
+*token*.json
+.aws/
+.ssh/
+
+# Python环境、缓存及工具运行目录。
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage*
+htmlcov/
+.idea/
+.vscode/
+
+# 正式/临时业务数据库与运行证据不进入Git。
+data/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.jsonl
+*.log
+logs/
+tmp/
+temp/
+artifacts/
+*.zip
+*.7z
+*.bak
+*.tmp
+*.lock
+
+# 原始表格不上传；唯一例外是已核实为官方虚构数据的测试夹具。
+*.xlsx
+*.xls
+*.csv
+!/finance_agent/tests/fixtures/example.xlsx

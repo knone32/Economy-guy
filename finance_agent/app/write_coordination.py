@@ -1,0 +1,119 @@
+"""轻量连续修改意图、草稿协调与权威回执，不是持久任务。"""
+import sqlite3
+from uuid import uuid4
+from .updates import UpdateSession, confirm_draft, commit_invoice_update, result as tool_result
+from .trace import warn_trace_degraded
+from .responses import explicit_scope
+
+class WriteCoordinator:
+    def __init__(self, user_id, db_path, trace):
+        self.user_id, self.db_path, self.trace = user_id, db_path, trace
+        self.session = UpdateSession(user_id)
+        self.receipt = self._receipt("NOT_SUBMITTED")
+        self.pending = None
+        self.events = []
+
+    def begin(self, text, allow_prepare=False, continue_edit=False):
+        original = self.pending if continue_edit and self.pending and self.pending["user_id"] == self.user_id else None
+        enabled = bool(allow_prepare or original)
+        if allow_prepare:
+            original = {"intent_id":uuid4().hex, "user_id":self.user_id, "inputs":[], "scope":{}}
+        self.pending = original if enabled else None
+        if self.pending:
+            self.pending["inputs"].append(text)
+            incoming = explicit_scope(text, include_update_aliases=True)
+            scope = self.pending["scope"]
+            for key in ("company_id","invoice_no"):
+                if key not in incoming:
+                    continue
+                if key in scope and scope[key] != incoming[key]:
+                    # 不能把C001/C002或F002/F003并为多个允许的写目标。
+                    scope["_conflict"] = True
+                else:
+                    scope[key] = incoming[key]
+        source = "\n".join(self.pending["inputs"]) if self.pending else text
+        self.session.begin_turn(source, enabled, expected_scope=self.pending["scope"] if self.pending else None)
+        self.receipt = self._receipt("NOT_SUBMITTED")
+        return enabled
+
+    def record_preparation(self, outcome):
+        """只接收Handler的实际结果；草稿与待补充意图不同时存活。"""
+        self.receipt = self._receipt(outcome["status"], outcome.get("data"))
+        self.pending = None
+
+    @staticmethod
+    def _receipt(status, data=None, readback_verified=False):
+        """操作提示由程序生成，不接收模型提供的成功文本。"""
+        messages = {
+            "NOT_SUBMITTED": "尚未保存：本轮没有提交操作；请明确目标、字段和新值后准备草稿。",
+            "WAITING_CONFIRMATION": "草稿已准备，尚未保存；请在可信CLI核对并确认。",
+            "CANCELLED": "已取消，未提交。",
+            "COMMITTED": "保存成功：提交审计和新连接回读已核实。",
+            "NO_CHANGE": "无需修改：原值与新值相同，已核实当前值；没有执行字段更新。",
+            "DENIED": "操作被拒绝，不能报告保存成功。",
+            "CONFLICT": "当前值或请求内容冲突，未执行本次更新；请重新核对。",
+            "NOT_FOUND": "未找到目标记录，未保存。",
+            "ERROR": "操作失败，未核实保存成功；请查看业务错误。",
+            "UNKNOWN_OUTCOME": "提交或回读结果未知，尚未核实最终状态；请先按request_id核查审计。",
+            "INVALID_ARGUMENTS": "参数无效，未保存。",
+            "SCOPE_MISMATCH": "范围不一致，未创建草稿或保存；请重新/edit明确更正目标。",
+            "AMBIGUOUS": "请明确唯一企业和发票编号，未创建草稿或保存。",
+        }
+        return {"status": status, "message": messages.get(status, messages["ERROR"]),
+                "readback_verified": readback_verified, "data": data}
+
+    def cancel_update(self):
+        """可信CLI取消后撤销本轮全部草稿与确认。"""
+        data = {"request_ids":list(self.session.drafts), "intent_id":self.pending["intent_id"] if self.pending else None}
+        self.session.confirmations.clear()
+        self.session.drafts.clear()
+        self.pending = None
+        self.receipt = self._receipt("CANCELLED", data)
+        self.events.append({"event_id":uuid4().hex, "turn_id":self.session.turn_id, "request_id":None,
+                            "source":"trusted_cli", "receipt":self.receipt})
+        self._trace_receipt()
+        return self.receipt
+
+    def commit_update(self, request_id, fingerprint, commit_function=commit_invoice_update):
+        """仅可信CLI调用；根据实际Commit及绑定回读证据生成回执。"""
+        draft = self.session.drafts.get(request_id)
+        if not confirm_draft(self.session, request_id, fingerprint):
+            outcome = tool_result("DENIED", error="没有本会话绑定草稿的最终确认")
+        else:
+            try:
+                outcome = commit_function(self.db_path, self.session, request_id)
+            except sqlite3.Error:
+                outcome = tool_result("UNKNOWN_OUTCOME", {"request_id":request_id}, error="提交或回读异常，先查审计")
+        status = outcome["status"]
+        verified = False
+        if status in {"COMMITTED", "NO_CHANGE"}:
+            data = outcome.get("data") or {}
+            audit = data.get("historical_commit") or {}
+            current = data.get("current_invoice") or {}
+            verified = bool(draft and audit.get("request_id") == request_id
+                            and audit.get("fingerprint") == draft.fingerprint()
+                            and audit.get("status") == status and audit.get("actor") == self.user_id
+                            and audit.get("company_id") == draft.company_id
+                            and audit.get("invoice_no") == draft.invoice_no
+                            and audit.get("field") == draft.field
+                            and audit.get("old_value") == draft.old_value
+                            and audit.get("new_value") == draft.new_value
+                            and current.get("company_id") == draft.company_id
+                            and current.get("invoice_no") == draft.invoice_no
+                            and current.get(draft.field) == draft.new_value
+                            and data.get("current_matches") is True)
+            if not verified:
+                status = "UNKNOWN_OUTCOME"
+        self.receipt = self._receipt(status, outcome, verified)
+        self.events.append({"event_id":uuid4().hex, "turn_id":self.session.turn_id, "request_id":request_id, "source":"trusted_cli", "receipt":self.receipt})
+        self.pending = None
+        self._trace_receipt()
+        return self.receipt
+
+    def _trace_receipt(self):
+        """日志是可观测性副作用，不能遮蔽已经完成的业务结果。"""
+        try:
+            self.trace("update.result", self.receipt)
+        except OSError:
+            self.receipt["trace_degraded"] = True
+            warn_trace_degraded()
