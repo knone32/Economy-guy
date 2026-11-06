@@ -80,7 +80,7 @@ class Agent:
         self.management_confirmation=management_confirmation
         self.management_turn=None
         self.management_proposals=None
-        self.protocol=ThinkingProtocol()
+        self.protocol=ThinkingProtocol(thinking=mode=='live')
 
     @property
     def update_session(self):

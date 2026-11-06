@@ -34,7 +34,10 @@ class Stage4PCTests(DatabaseTestCaseMixin,unittest.TestCase):
         self.env.start();self.addCleanup(self.env.stop)
 
     def agent(self,replies,**kwargs):
-        return Agent('U001',self.db_path,scripted_model(replies),mode='mock',**kwargs)
+        from app.thinking_protocol import ThinkingProtocol
+        agent=Agent('U001',self.db_path,scripted_model(replies),mode='mock',**kwargs)
+        agent.protocol=ThinkingProtocol()  # 显式开启协议模拟；普通Mock不受live配置影响。
+        return agent
 
     def test_thinking_tool_reply_is_replayed_exactly(self):
         seen=[]
@@ -42,6 +45,8 @@ class Stage4PCTests(DatabaseTestCaseMixin,unittest.TestCase):
         def model(messages,tools):
             seen.append(deepcopy(messages));return next(replies)
         agent=Agent('U001',self.db_path,model,mode='mock')
+        from app.thinking_protocol import ThinkingProtocol
+        agent.protocol=ThinkingProtocol()
         answer=agent.ask('C001 2026-09')
         actual=next(m for m in seen[1] if m.get('tool_calls'))
         self.assertEqual(actual.get('reasoning_content'),PRIVATE)
@@ -198,6 +203,14 @@ class Stage4PCTests(DatabaseTestCaseMixin,unittest.TestCase):
         self.assertEqual(self.connection.execute('SELECT COUNT(*) FROM invoice_audit').fetchone()[0],1)
         self.assertEqual(self.connection.execute("SELECT purpose FROM invoices WHERE company_id='C001' AND invoice_no='F002'").fetchone()[0],'资料整理')
         self.assertNotIn(PRIVATE,answer+path.read_text(encoding='utf-8'))
+
+    def test_plain_mock_stays_independent_of_live_provider_environment(self):
+        tool_reply=calls(('get_finance_summary',SCOPE));tool_reply.pop('reasoning_content')
+        text_reply=final();text_reply.pop('reasoning_content')
+        agent=Agent('U001',self.db_path,scripted_model([tool_reply,text_reply]),mode='mock')
+        answer=agent.ask('C001 2026-09')
+        self.assertIn('9622.06',answer)
+        self.assertEqual(agent.execution.stop_reason,'ANSWERED')
 
 
 if __name__=='__main__':

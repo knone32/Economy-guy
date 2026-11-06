@@ -33,11 +33,11 @@ class ThinkingProtocol:
                   and parsed.port in (None,443) and not parsed.username and not parsed.password
                   and parsed.path.rstrip('/') in ('','/v1') and not parsed.query and not parsed.fragment)
         known=name in {'deepseek-flash','deepseek-v4-pro'}
-        self.ambiguous=known and not official
+        self.ambiguous=bool(thinking and known and not official)
         self.enabled=bool(official and known and thinking)
 
     def check_binding(self):
-        if settings()!=self.binding:
+        if self.enabled and settings()!=self.binding:
             raise ProtocolError('服务配置已变化，请退出并新建会话；不跨服务传递旧协议历史')
         if self.ambiguous:
             raise ProtocolError('自定义DeepSeek代理协议未明确配置，停止猜测；请使用已验证官方端点')
