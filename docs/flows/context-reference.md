@@ -1,5 +1,11 @@
 # Stage 3B 实际上下文与引用链路
 
+4P-C协议边界：Agent持有ThinkingProtocol，实际模型消息归一为PrivateAssistant（dict业务字段+仅进程内reasoning属性）。ContextBuilder.build通过可选measure按完整传输副本计字符，当前必要消息超限即CONTEXT_LIMIT，旧轮仍整体取舍；私有字段只随被选中的原assistant消息进入wire，不进入任务/偏好/回执。身份切换清空原消息；新Agent/进程不恢复。会话服务配置改变则PROTOCOL_ERROR，要求新会话，不跨服务导出旧私有历史。
+
+仅官方https://api.deepseek.com（根路径或/v1）及已核实模型deepseek-flash/deepseek-v4-pro启用默认Thinking工具协议；自定义DeepSeek代理不猜测，普通兼容服务不发送私有字段。实际模型回复缺字段/None/错误类型不补造，实际空字符串原样保留。带name的本地context_data/harness_history/harness_schedule/reference_data/harness_output不是模型推理，传输时显式使用空协议槽，不冒充实际模型返回内容；模型不能借此创建权限。真实模型的无tool_calls最终回复也保留其实际协议字段。
+
+Agent发送前还原完整reasoning_content；Trace在model_input/model_reply及嵌套出口标记[PRIVATE_PROTOCOL_HIDDEN]，不把遮蔽文本回传。protocol.selected仅记录字段数量/字符数等诊断；不记录原始思考。测试test_stage4pc.py覆盖完整回传、跨轮最终回复、配对、整轮裁剪/超限、字段类型、普通/OFF/无tools、身份/进程/服务隔离及日志/数据库不泄露。OFF仅适配器离线显式测试，不暗改live默认参数，不实现Profile或CLI切换。
+
 CLI main(chat) → Agent.ask → ContextBuilder.begin：从当前明确编号/数字年月/官方企业简称更新焦点；冲突清空旧焦点并失效旧锚点，可信/task切换及/cancel亦失效。不会暂停/取消持久任务。连续/edit仍由WriteCoordinator拥有，不由Context恢复授权。
 
 模型请求前 Agent.model_messages → ContextBuilder.build：保留唯一system与当前轮完整消息，按唯一企业读取tasks.list_tasks、preferences.manage_preference(list)，筛选同月未完成任务；references.reference_catalog返回自己可访问的最近展示元数据。context_data、reference_data、harness_history均使用assistant命名数据消息，不变成user/system，不伪造tool_call_id。历史模型/业务数据都不是当前金额、权限或提交证明。Scope不唯一时不自动读所有企业的任务/偏好。

@@ -7,7 +7,8 @@ from pathlib import Path
 def redact(value):
     """脱敏 Trace；不保存凭据字段或常见令牌。"""
     if isinstance(value, dict):
-        return {k: "[REDACTED]" if any(s in k.lower() for s in ("key", "password", "token", "secret")) else redact(v) for k, v in value.items()}
+        return {k: "[PRIVATE_PROTOCOL_HIDDEN]" if k.lower() in {'reasoning_content','reasoning','thinking'}
+                else "[REDACTED]" if any(s in k.lower() for s in ("key", "password", "token", "secret")) else redact(v) for k, v in value.items()}
     if isinstance(value, list):
         return [redact(v) for v in value]
     if isinstance(value, str):

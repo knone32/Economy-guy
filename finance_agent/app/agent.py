@@ -10,6 +10,7 @@ from .responses import parse_final, render_information, render_clarification, ex
 from .persistence import ManagementIntent, ManagementTurn, ManagementProposals
 from .context import ContextBuilder, ContextLimitError, reference_hint
 from .scheduler import BudgetPolicy, TurnExecution
+from .thinking_protocol import ThinkingProtocol, ProtocolError
 import sqlite3
 
 SYSTEM = """你是财税助手。甲企业=C001，乙企业=C002。需要业务事实时调用工具，不能凭历史结果猜金额。
@@ -51,6 +52,9 @@ def live_model(messages, tools):
     config[0] = config[0] or os.getenv("KEY")
     if not all(config):
         raise RuntimeError("需要配置 KEY/BASE_URL/MODEL 或 OPENAI_API_KEY/OPENAI_BASE_URL/OPENAI_MODEL")
+    protocol=ThinkingProtocol()
+    protocol.check_binding()
+    messages=protocol.wire(messages,bool(tools))
     with OpenAI(api_key=config[0], base_url=config[1], max_retries=0, timeout=30) as client:
         reply = client.chat.completions.create(model=config[2], messages=messages, tools=tools, tool_choice="auto")
         return reply.choices[0].message.model_dump(exclude_none=True)
@@ -76,6 +80,7 @@ class Agent:
         self.management_confirmation=management_confirmation
         self.management_turn=None
         self.management_proposals=None
+        self.protocol=ThinkingProtocol()
 
     @property
     def update_session(self):
@@ -131,6 +136,7 @@ class Agent:
     def model_messages(self,reference=None):
         """历史事件明确标记程序来源；不编造模型Tool Call或执行记录。"""
         self._check_identity()
+        self.protocol.check_binding()
         history = None
         if self.trusted_events:
             event = self.trusted_events[-1]
@@ -138,8 +144,11 @@ class Agent:
                 "source":"trusted_cli", "historical":True, "event":event,
                 "usage":"仅历史操作数据，当前字段仍须重查SQLite。"}
         messages,selection = self.context.build(self.messages,history,reference,
-            self.execution.snapshot() if self.execution and self.execution.schedule else None)
+            self.execution.snapshot() if self.execution and self.execution.schedule else None,
+            measure=self.protocol.size if self.protocol.enabled else None)
         self.trace("context.selected",selection)
+        messages=self.protocol.wire(messages,bool(self.tools))
+        self.trace('protocol.selected',self.protocol.metadata(messages))
         return messages
 
     def trace(self, event, data):
@@ -232,14 +241,21 @@ class Agent:
                 self.trace("context.limit",{"error":str(error),"max_chars":self.context.max_chars})
                 execution.stop("CONTEXT_LIMIT")
                 return finish("请求安全停止："+str(error)+"；未确认业务成功。")
+            except ProtocolError as error:
+                self.coordinator.pending=None
+                self.update_session.drafts.clear()
+                self.update_session.confirmations.clear()
+                execution.stop('PROTOCOL_ERROR')
+                self.trace('error',{'category':'protocol','message':str(error)})
+                return finish('协议安全停止：'+str(error)+'；未执行新的业务操作。')
             if not execution.start_request():
                 break
-            self.trace("model_input", {"messages": context, "tools": self.tools})
+            self.trace("model_input", redact({"messages": context, "tools": self.tools}))
             try:
                 reply = self.model(context, self.tools)
                 if not isinstance(reply, dict) or reply.get("role") != "assistant":
                     raise ValueError("模型不能伪造消息角色")
-                reply = {key:reply[key] for key in ("role","content","tool_calls") if key in reply}
+                reply = self.protocol.normalize(reply,bool(self.tools))
                 calls = reply.get("tool_calls") or []
                 if not isinstance(calls, list) or any(not isinstance(c, dict) or not isinstance(c.get("id"), str) or not c["id"] or c.get("type") != "function" or not isinstance(c.get("function"), dict) for c in calls):
                     raise ValueError("工具请求结构错误")
@@ -252,7 +268,7 @@ class Agent:
                 self.trace("error", "API请求失败或模型响应结构无效")
                 execution.stop("API_OR_RESPONSE_ERROR")
                 return finish("请求失败：API请求失败或模型响应结构无效，未确认业务成功。")
-            self.trace("model_reply", reply)
+            self.trace("model_reply", redact(self.protocol.wire([reply],bool(self.tools))[0]))
             self.messages.append(reply)
             if not calls:
                 natural = parse_final(reply.get("content"))

@@ -144,9 +144,9 @@ class ContextBuilder:
             data["reference_status"] = "unavailable"
         return data
 
-    def build(self,messages,history_event=None,reference=None,execution=None):
+    def build(self,messages,history_event=None,reference=None,execution=None,measure=None):
         """以序列化消息字符数限长；保留本轮整段及tool_call_id配对，旧轮整段取舍。"""
-        size = lambda value: len(json.dumps(value,ensure_ascii=False))
+        size = measure or (lambda value: len(json.dumps(value,ensure_ascii=False)))
         last_user = max((i for i,m in enumerate(messages) if m["role"]=="user"),default=len(messages))
         current = messages[last_user:]
         if reference:
