@@ -1,5 +1,7 @@
 # 实际修改链路
 
+4P-B新增提交后只读进度：WriteCoordinator.commit_update仍先核对Commit/审计/request_id/指纹/新连接回读，仅readback_verified的COMMITTED/NO_CHANGE才调用tasks.task_progress。该服务以回读发票的真实企业/年月重新鉴权，查匹配missing_purpose未完成任务，复用_check/RuleDecision重查当前缺失；不写任务表、不自动COMPLETED。失败/取消/未知提交不生成进度。规则/权限/数据库异常只影响task_progress结果，不能否定已核实Commit。main.main仅调用responses.render_task_progress展示当前数量、对象及下一步，不含业务算法。remark/NO_CHANGE也只展示当前事实，不计作新增用途完成。test_stage4pb.py核对5→4、子进程重查、任务仍ACTIVE及异常分离。
+
 1. main.main读取 `/edit 原始修改要求`；Agent.ask(...allow_prepare=True) → WriteCoordinator.begin创建pending和scope约束；UpdateSession.begin_turn记录本轮expected_scope并清空旧草稿/确认。
 2. 同一模型返回clarification信封时自然追问保留。下一次补充由CLI要求continue关联；WriteCoordinator.begin保留原企业/发票约束，明确值变化标记冲突，不能合并成多目标。新/edit表示可信重建意图、清空旧草稿/确认；新主题和/cancel失效。没有关键词业务路由。
 3. 模型prepare_invoice_update → Registry严格校验和可信范围派生 → updates.prepare_invoice_update先modify鉴权，再核对Session和Handler目标。错企业/错发票/跨轮冲突=SCOPE_MISMATCH；目标不唯一=AMBIGUOUS，均无草稿。正确目标才读取当前值并创建本轮Draft/request_id；WAITING_CONFIRMATION不写业务库。

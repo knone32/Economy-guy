@@ -4,6 +4,7 @@ from uuid import uuid4
 from .updates import UpdateSession, confirm_draft, commit_invoice_update, result as tool_result
 from .trace import warn_trace_degraded
 from .responses import explicit_scope
+from .tasks import task_progress
 
 class WriteCoordinator:
     def __init__(self, user_id, db_path, trace):
@@ -105,6 +106,10 @@ class WriteCoordinator:
             if not verified:
                 status = "UNKNOWN_OUTCOME"
         self.receipt = self._receipt(status, outcome, verified)
+        if verified:
+            # Commit/审计/回读已核实后再独立读取任务，不把进度查询失败改成提交失败。
+            self.receipt['task_progress']=task_progress(self.db_path,self.user_id,current['company_id'],
+                int(current['invoice_date'][:4]),int(current['invoice_date'][5:7]))
         self.events.append({"event_id":uuid4().hex, "turn_id":self.session.turn_id, "request_id":request_id, "source":"trusted_cli", "receipt":self.receipt})
         self.pending = None
         self._trace_receipt()

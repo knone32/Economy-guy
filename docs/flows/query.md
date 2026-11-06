@@ -1,5 +1,9 @@
 # 实际查询链路
 
+4P-B：综合查询优先由模型选择get_finance_summary；用户补充年月时继续原目标，无关键词路由。list_invoices/list_bank_transactions也在已鉴权的同一快照经finance.get_finance_summary提供金额/计数证据，响应层只展示对应明细工具范围的部分，并注明R001。无可用金额规则时保留原只读明细与summary_status，不展示缺依据的附加汇总。
+
+Agent.ask的read_results保留所有逐ID结果（含跳过）。异常/重复/预算停止时responses.render_stopped仅展示本轮真实SUCCESS/NO_DATA/NO_CHANGE及实际stop_reason、未完成项，不展示DENIED项data，不采模型成功声称。此异常收尾不新增可复用引用锚点；Scheduler判定及计数不变。tests/test_stage4pb.py覆盖重复读取、管理成功后重复、混合拒绝、API/格式失败及预算停止。
+
 入口finance_agent/main.py的main(chat) → app.agent.Agent.ask → ContextBuilder.begin/resolve → model_messages → ContextBuilder.build（按来源/预算装配）→ live_model或注入Mock → app.tool_registry.handle_tool → permissions.check_permission → finance.get_finance_summary或queries.list_invoices/get_invoice/list_bank_transactions → 只读业务事务。
 
 Registry生产工具为统一汇总、发票列表/详情、银行列表、规则查询、用途检查与Prepare。add/summary及旧金额函数保留Python实现，但生产Schema和实际执行许可均不包含它们；教学Agent显式teaching=True，可信内部调用显式传allowed_tools。Agent每次执行按初始许可与当前Schema交集授权，再由Handler校验字段类型及企业权限。拒绝也按真实tool_call_id回传，不提供SQL或Commit。

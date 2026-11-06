@@ -6,7 +6,7 @@ from .tool_registry import TOOLS, TEACHING_TOOLS, REGISTRY, handle_tool, tool_re
 from .trace import redact, write_trace, warn_trace_degraded
 from .write_coordination import WriteCoordinator
 from .updates import commit_invoice_update
-from .responses import parse_final, render_information, render_clarification, explicit_scope
+from .responses import parse_final, render_information, render_clarification, explicit_scope, render_stopped
 from .persistence import ManagementIntent, ManagementTurn, ManagementProposals
 from .context import ContextBuilder, ContextLimitError, reference_hint
 from .scheduler import BudgetPolicy, TurnExecution
@@ -14,6 +14,9 @@ import sqlite3
 
 SYSTEM = """你是财税助手。甲企业=C001，乙企业=C002。需要业务事实时调用工具，不能凭历史结果猜金额。
 企业、年份、月份缺失且对话没有明确依据时先追问，不默认当前月份。不能改变身份。
+用户只补充企业或年月时，应继续最近未完成的查询目标，不能把原目标缩减成明细。
+发票与银行收支的综合概览使用get_finance_summary，一次取得价税合计/数量、收入/支出/条数及R001；
+list_invoices/list_bank_transactions用于需要逐条明细时，不用明细代替用户要求的完整汇总。
 仅用户明确本次修改目标、purpose/remark与新内容时可调用prepare_invoice_update。模糊目标先追问，不猜用途。
 Prepare只是草稿；等待可信CLI确认，不能声称已保存。禁止调用Commit或自行确认。
 工具 status=NO_DATA 表示无记录，金额为0.00；DENIED/INVALID_ARGUMENTS/ERROR不能当作零或成功。金额单位元。
@@ -192,10 +195,16 @@ class Agent:
             # 身份变更的消息清理留到下一入口；本响应仍须先配齐原tool_call_id。
             return accepted
         execution.can_continue = lambda steps:remaining_work_allowed(self.db_path,self.user_id,steps,self.update_session,management_intent,
-            self.allowed_tools & {tool["function"]["name"] for tool in self.tools})
+            self.allowed_tools & {tool["function"]["name"] for tool in self.tools},
+            proposals=self.management_proposals if management is None else None)
         def finish(text, store=True, category="operation_result"):
             if not execution.stop_reason:
                 execution.stop("WAITING_USER" if category=="clarification" else "MODEL_FINISHED_WITH_PENDING_WORK" if execution.schedule else "ANSWERED")
+            if not self.teaching and category not in {'database_query','general_unverified'}:
+                evidence=render_stopped(read_results,execution.stop_reason)
+                if evidence:
+                    text=evidence+('\n'+text if category=='clarification' else '')
+                    # 异常收尾不建立可复用引用锚点；实际证据仍展示，但不扩展旧焦点。
             if category=="database_query" and not self.teaching:
                 try:
                     anchors = self.context.record_displayed(read_results,self.trace_id)
@@ -289,8 +298,6 @@ class Agent:
                                              reference_context=reference_context,execution=execution,
                                              management_confirmation=confirm_proposal if self.management_confirmation else None,
                                              management_proposals=self.management_proposals if management is None else None)
-                        if fn.get("name")!="set_schedule":
-                            read_results.append((fn.get("name"), result))
                         if fn.get("name") == "prepare_invoice_update":
                             self.coordinator.record_preparation(result)
                         try:
@@ -304,6 +311,8 @@ class Agent:
                     if not execution.stop_reason:
                         execution.stop(result["status"])
                 message = {"role": "tool", "tool_call_id": call["id"], "content": json.dumps(result, ensure_ascii=False)}
+                if fn.get('name')!='set_schedule':
+                    read_results.append((fn.get('name'),result))
                 self.messages.append(message)
                 self.trace("tool_result", {"request": call, "result": result})
             if stop:

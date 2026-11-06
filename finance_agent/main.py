@@ -175,6 +175,9 @@ def main() -> None:
                         continue
                     outcome = agent.commit_update(request_id, draft.fingerprint())
                     print(json.dumps(outcome, ensure_ascii=False, indent=2))
+                    if 'task_progress' in outcome:
+                        from app.responses import render_task_progress
+                        print(render_task_progress(outcome['task_progress']))
         return
     if args.command == "init": print(json.dumps(initialize_database(args.excel, args.db), ensure_ascii=False)); return
     if args.command == "test":

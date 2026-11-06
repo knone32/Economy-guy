@@ -1,5 +1,7 @@
 # Stage 3A 实际持久化链路
 
+4P-B组合目标：Registry._set_schedule及remaining_work_allowed可验证当前有效ManagementProposals派生的无权限候选预览步骤；有显式领域/动作时仍不回退。Schedule只约束依赖与路线，实际manage_task/manage_preference继续返回具体提案，经可信CLI确认后才建立一次性许可，不改变Scheduler硬限/停止逻辑。task_progress仅只读计算现有任务当前剩余用途，不建立第二持久进度状态。对应test_stage4pb.py组合场景分别验证确认、取消及无确认回调零写入。
+
 迁移：main.main(migrate-stage3) → app.stage3_schema.migrate → SQLite新增tasks/preferences和部分唯一索引。无业务重导，Stage 2规则与审计不覆盖。
 
 CLI：main.main(tasks/preferences)用可信模拟--user和显式action创建ManagementIntent → tasks.list_tasks/manage_task或preferences.manage_preference。user×company隔离；U002可管理自己在C001的任务/偏好，但不能访问C002或修改发票。

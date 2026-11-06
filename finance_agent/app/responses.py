@@ -53,7 +53,7 @@ def render_scope(evidence):
     else:
         period = scope.get("business_date","未按年月限定")
     rule = evidence.get("rule")
-    rule_text = f"{rule['name']} v{rule['version']}" if rule else evidence.get("rule_status","不适用（无财税规则判定）")
+    rule_text = f"{rule.get('rule_id',rule.get('id',''))} {rule['name']} v{rule['version']}" if rule else evidence.get("rule_status","不适用（无财税规则判定）")
     return f"实际查询范围：企业 {company}；年月 {period}；来源 {evidence.get('source','未知')}；规则 {rule_text}。"
 
 
@@ -73,14 +73,46 @@ def render_information(results):
             parts.append(f"本轮检查：{data['count']}张必填用途缺失。依据{data['rule']['name']} {data['rule']['version']}版。")
             parts.append("缺失明细（业务数据）：" + json.dumps(data["missing_invoices"], ensure_ascii=False))
         elif name in {"manage_task","manage_preference"}:
-            parts.append("持久化管理结果（不授予发票修改许可）：" + json.dumps(data,ensure_ascii=False))
+            parts.append("持久化管理结果 "+outcome['status']+"（不授予发票修改许可）：" + json.dumps(data,ensure_ascii=False))
         elif name != "prepare_invoice_update":
             parts.append("本轮查询结果（业务数据，不是操作回执）：" + json.dumps(data, ensure_ascii=False))
+            totals=outcome.get('evidence',{}).get('finance_summary')
+            if totals and name=='list_invoices':
+                parts.append(f"本轮发票价税合计 {totals['invoice_total']} 元（{totals['invoice_count']}张）。")
+            if totals and name=='list_bank_transactions' and 'amount_rule' in outcome['evidence']:
+                parts.append(f"本轮银行收入 {totals['bank_income_total']} 元（{totals['bank_income_count']}条）；"
+                             f"银行支出 {totals['bank_expense_total']} 元（{totals['bank_expense_count']}条）。")
+                parts.append(render_scope({**outcome['evidence'],'rule':outcome['evidence']['amount_rule']}))
         if outcome["status"] == "NO_DATA":
             parts.append("没有匹配记录；这不是权限拒绝。")
         if outcome["status"] == "NO_CHANGE":
             parts.append("未发生更改：" + (outcome.get("error") or "当前状态无需改变"))
     return "\n".join(parts) if parts else "该模型信息尚未核实；没有本轮可核验查询证据，也没有提交成功依据。"
+
+
+def render_stopped(results, stop_reason):
+    """失败不能回滚此前真实结果；也不展示拒绝项的业务data。"""
+    verified=[(name,outcome) for name,outcome in results
+              if outcome['status'] in {'SUCCESS','NO_DATA','NO_CHANGE'} and name!='prepare_invoice_update']
+    if not verified:
+        return None
+    failures=[{'tool':name,'status':outcome['status']} for name,outcome in results
+              if outcome['status'] not in {'SUCCESS','NO_DATA','NO_CHANGE'}]
+    reason={'MODEL_LIMIT':'模型请求上限','TOOL_LIMIT':'实际工具调用上限','CONTEXT_LIMIT':'上下文上限',
+            'WAITING_CONFIRMATION':'等待可信确认，尚未保存'}.get(stop_reason,'按真实执行状态停止')
+    return ('本轮已核实结果（仅代表各项实际执行时的事实）：\n'+render_information(verified)
+            +'\n本轮停止原因：'+stop_reason+'（'+reason+'）。后续调用或最终答复仍未完成/未核实；这不撤销以上已完成结果。'
+            +'\n未完成/拒绝项：'+json.dumps(failures,ensure_ascii=False))
+
+
+def render_task_progress(outcome):
+    """从当前任务检查证据展示剩余事项，不宣告任务完成或写入新值。"""
+    if outcome['status']!='SUCCESS':
+        return '当前任务进度：'+outcome['status']+'；'+(outcome.get('error') or '无法核实剩余事项')
+    task,check=outcome['data']['task'],outcome['data']['check']
+    return (render_scope(outcome['evidence'])+f"\n任务 {task['task_id']} 状态仍为 {task['status']}；当前剩余 {check['count']} 张必填用途缺失。"
+            +'\n当前剩余对象：'+json.dumps(check['missing_invoices'],ensure_ascii=False)
+            +'\n下一步：核对剩余对象并明确提供用途，经Prepare和可信确认后逐张保存；若已无缺项，任务完成仍须单独确认。')
 
 
 def render_clarification(value):

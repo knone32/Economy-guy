@@ -47,7 +47,7 @@ TOOLS = [tool for tool in TOOLS if tool["function"]["name"] in {
     "check_missing_purpose", "get_applicable_rules", "prepare_invoice_update",
     "list_tasks", "manage_task", "manage_preference", "resolve_invoice_reference", "set_schedule"}]
 DESCRIPTIONS = {
-    "get_finance_summary":"指定企业年月的发票价税合计、银行收入/支出和分别计数；无记录明确返回零。",
+    "get_finance_summary":"发票和银行收支综合查询首选：一次返回指定企业年月的价税合计/张数、收入/支出总额/分别条数和R001版本；补充月份后沿用原综合目标。无记录明确返回零，无需额外计划。",
     "list_invoices":"列出指定企业年月的当前发票；返回顺序按日期及发票号。",
     "get_invoice":"企业编号和发票号联合定位当前发票，不猜测模糊指代。",
     "list_bank_transactions":"查询指定企业年月的银行流水，只读，不推断发票已付款。",
@@ -120,7 +120,14 @@ def validate_arguments(name, raw_arguments, partial=False):
     return args
 
 
-def _set_schedule(args,user_id,db_path,execution,permitted,session,expected,intent):
+def _management_context(intent, proposals, user_id, domain, action):
+    """有显式动作约束时不回退；普通路径只形成无写权限候选。"""
+    if intent is None and isinstance(proposals,ManagementProposals):
+        return ManagementCandidate(user_id,domain,proposals.source_request,action,proposals)
+    return intent
+
+
+def _set_schedule(args,user_id,db_path,execution,permitted,session,expected,intent,proposals=None):
     """验证模型粗计划的结构、已有范围和真实授权；不执行任何业务步骤。"""
     if execution is None:
         return tool_result("DENIED",error="缺少可信单轮运行上下文")
@@ -163,7 +170,8 @@ def _set_schedule(args,user_id,db_path,execution,permitted,session,expected,inte
                 return tool_result("DENIED",error="计划不授予Prepare或最终确认权限")
             domain = {"manage_task":"task","manage_preference":"preference"}.get(action)
             if domain and constraints.get("action") not in ({"show"} if domain=="task" else {"get","list"}):
-                if not can_manage(intent,user_id,domain,constraints.get("action")):
+                context=_management_context(intent,proposals,user_id,domain,constraints.get('action'))
+                if not (can_manage(context,user_id,domain,constraints.get("action")) or can_propose(context,user_id,domain,constraints.get('action'))):
                     return tool_result("DENIED",error="计划不能创造任务/偏好管理意图")
             if "year" in constraints and "month" in constraints:
                 queries._check_month(constraints["year"],constraints["month"])
@@ -174,7 +182,7 @@ def _set_schedule(args,user_id,db_path,execution,permitted,session,expected,inte
     return execution.install(args["goal"],validated,args["stop_condition"])
 
 
-def remaining_work_allowed(path,user_id,steps,session,intent,permitted=None):
+def remaining_work_allowed(path,user_id,steps,session,intent,permitted=None,proposals=None):
     """软限处重查剩余目标权限；续期绝不成为授权缓存。"""
     try:
         with closing(sqlite3.connect(Path(path).resolve().as_uri()+"?mode=ro",uri=True)) as connection:
@@ -190,8 +198,10 @@ def remaining_work_allowed(path,user_id,steps,session,intent,permitted=None):
                 if name=="prepare_invoice_update" and (session is None or session.user_id!=user_id or not session.allow_prepare):
                     return False
                 domain={"manage_task":"task","manage_preference":"preference"}.get(name)
-                if domain and args.get("action") not in ({"show"} if domain=="task" else {"get","list"}) and not can_manage(intent,user_id,domain,args.get("action")):
-                    return False
+                if domain and args.get("action") not in ({"show"} if domain=="task" else {"get","list"}):
+                    context=_management_context(intent,proposals,user_id,domain,args.get('action'))
+                    if not (can_manage(context,user_id,domain,args.get('action')) or can_propose(context,user_id,domain,args.get('action'))):
+                        return False
             return True
     except sqlite3.Error:
         return False
@@ -209,7 +219,7 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
         args = validate_arguments(name,raw_arguments)
         function = REGISTRY[name][0]
         if name=="set_schedule":
-            return _set_schedule(args,user_id,db_path,execution,permitted,update_session,expected_scope,management_intent)
+            return _set_schedule(args,user_id,db_path,execution,permitted,update_session,expected_scope,management_intent,management_proposals)
         if name == "add":
             return tool_result("SUCCESS", args["a"] + args["b"])
         if name == "prepare_invoice_update":
@@ -267,11 +277,7 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
             if name in {"list_tasks","manage_task","manage_preference"}:
                 writing=(name=='manage_task' and args['action']!='show') or (name=='manage_preference' and args['action'] not in {'get','list'})
                 domain='task' if name=='manage_task' else 'preference'
-                intent=management_intent
-                if writing and intent is None and isinstance(management_proposals,ManagementProposals):
-                    # 只选择候选预览，未创建ManagementTurn/Approval，也没有执行许可。
-                    intent=ManagementCandidate(user_id,'task' if name=='manage_task' else 'preference',
-                        management_proposals.source_request,args['action'],management_proposals)
+                intent=_management_context(management_intent,management_proposals,user_id,domain,args.get('action')) if writing else management_intent
                 if writing and not (can_propose(intent,user_id,domain,args['action']) or
                         (isinstance(intent,ManagementIntent) and intent.turn is not None)):
                     return tool_result('DENIED',error='模型管理写入缺少本轮内容确认上下文；直接CLI请使用可信业务入口')
@@ -327,6 +333,9 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
                         rows = [r for r in rows if r["direction"] == direction]
                     empty = not rows
             evidence = {"source": "current_sqlite", "scope": args}
+            if name in {'list_invoices','list_bank_transactions'}:
+                # 与明细同一已鉴权快照，复用现有金额服务；渲染按工具范围选取，不跨企业拼加。
+                evidence['finance_summary']=finance.get_finance_summary(connection,user_id,**args)
             if name == "get_invoice" and data:
                 evidence["scope"] = {**args,"year":int(data["invoice_date"][:4]),"month":int(data["invoice_date"][5:7])}
                 if expected_scope and scope_mismatch(expected_scope,evidence["scope"]):
@@ -341,13 +350,25 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
                         evidence["rule_status"] = str(error)
                 else:
                     evidence["rule"] = {"id":"R004","name":"银行资料说明","version":"1.0"}
-            if name in {"summary", "get_finance_summary"} or name.endswith("_total"):
+            if name in {"summary", "get_finance_summary","list_invoices","list_bank_transactions"} or name.endswith("_total"):
                 # 未迁移的Stage 1库继续提供原金额统计；Stage 2库一律解析当前规则。
                 has_rules = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='rules'").fetchone()
                 if has_rules:
-                    evidence["rule"] = asdict(resolve_rule(connection, user_id, args["company_id"], "amount", f"{args['year']:04d}-{args['month']:02d}-01"))
+                    try:
+                        amount_rule = asdict(resolve_rule(connection, user_id, args["company_id"], "amount", f"{args['year']:04d}-{args['month']:02d}-01"))
+                    except RuleError as error:
+                        if name not in {'list_invoices','list_bank_transactions'}:
+                            raise
+                        # 补充汇总无规则依据时不渲染金额；保留既有明细只读能力和错误证据。
+                        evidence.pop('finance_summary',None)
+                        evidence['summary_status']=str(error)
+                        return tool_result('NO_DATA' if empty else 'SUCCESS',data,evidence)
                 else:
-                    evidence["rule"] = {"id": "R001", "name": "金额统计说明", "version": "1.0"}
+                    amount_rule = {"id": "R001", "name": "金额统计说明", "version": "1.0"}
+                if name=='list_bank_transactions':
+                    evidence['amount_rule']=amount_rule
+                else:
+                    evidence['rule']=amount_rule
             return tool_result("NO_DATA" if empty else "SUCCESS", data, evidence)
         finally:
             connection.close()

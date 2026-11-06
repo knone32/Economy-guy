@@ -48,6 +48,35 @@ def list_tasks(path, user_id, company_id):
         connection.close()
 
 
+def task_progress(path, user_id, company_id, year, month):
+    """只读重查匹配未完成任务及当前缺项；不保存进度、不自动完成任务。"""
+    connection=None
+    try:
+        connection=open_existing(path,readonly=True)
+        connection.execute('BEGIN')
+        if not check_permission(connection,user_id,company_id,'read').allowed:
+            return result('DENIED',error='无法确认进度：没有企业读取权限')
+        if not connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks'").fetchone():
+            return result('NO_DATA',error='当前库未启用持久任务')
+        row=connection.execute("""SELECT * FROM tasks WHERE user_id=? AND company_id=? AND year=? AND month=?
+            AND task_type='missing_purpose' AND status IN ('ACTIVE','WAITING_USER','PAUSED')""",
+            (user_id,company_id,year,month)).fetchone()
+        if not row:
+            return result('NO_DATA',error='本次范围没有未完成用途任务')
+        check=_check(connection,user_id,company_id,year,month)
+        return result('SUCCESS',{'task':_task(row),'check':check},
+            {'source':'current_sqlite','scope':{'company_id':company_id,'year':year,'month':month},'rule':check['rule']})
+    except PermissionError:
+        return result('DENIED',error='无法确认进度：没有企业读取权限')
+    except RuleError as error:
+        return result(str(error) if str(error) in {'NO_APPLICABLE_RULE','RULE_CONFLICT'} else 'INVALID_ARGUMENTS',error='无法确认进度：'+str(error))
+    except (sqlite3.Error,ValueError):
+        return result('ERROR',error='无法确认当前任务进度，请重新查询；不影响已核实的提交')
+    finally:
+        if connection is not None:
+            connection.close()
+
+
 def manage_task(path, user_id, company_id, action, task_id="", year=2026, month=9, note="", intent=None):
     """明确创建/补充/更正/转换状态；业务证据不足不能标完成。"""
     if type(action) is not str or action not in ACTIONS or any(type(v) is not str for v in (task_id,note)):
