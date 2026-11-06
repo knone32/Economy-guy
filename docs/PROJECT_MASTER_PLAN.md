@@ -3,7 +3,7 @@
 **版本**：v1.2（继承 v1.1 的官方要求、架构和安全契约；补齐 S4-P-E 真实验收后的 P0 阻碍、结构化意图候选方案及后续安全审计阶段）  
 **编制日期**：2026-11-06  
 **仓库**：[`knone32/Economy-guy`](https://github.com/knone32/Economy-guy)（Private）  
-**最新被测业务源码**：`3a83a2c87afe7cf555704f2ebc0284fcc4c68308`（4P-E；Base `70939e0792f60f3defa0fea19d50440f1b46317d`）；**报告/更新前的 main**：`09d851d1e3645a4773d4dc9de42c4d245a96ddc6`；本次总纲文档提交 SHA 以 Git 历史为准，**不是新的被测业务源码**。
+**最新被测业务源码**：`f6d99267358e5202752afbbdd062600781cdab29`（4P0C）；**2026-11-07收尾被测仓库SHA**：`fc3f9d70a4ef66a46a8ffb666dd9d01db7b3a94a`（仅新增测试/冻结准则/CLI驱动，生产源码未改）；Base `1f75f03ab4e5ace4fc5922d55a5a596ac9614684`；报告提交SHA取包含[S4-P0C-CLOSURE](verification/stage4/S4-P0C-CLOSURE.md)的Git提交，不与生产源码混称。
 **适用范围**：云帐房 2026 AI 技术创新大赛赛题二「财税 Agent Harness」，**不含** Sky Core 研究及其他 AI 比赛。  
 **文档性质**：项目目标和验收台账；它不是新开发指令，也不是未经运行证明的「已完成认证」。
 
@@ -11,7 +11,7 @@
 >
 > **2026-11-06 最新决策**：Stage 4P 的工程缺口修复优先级不变，但**从「严格压缩 API 调用次数」转向「真实运行数据优先，调用效率可观测」**。Mock 仍为确定性回归和边界注入的必需工具，不删除、不伪装成模型理解；业务场景完成必须以**真实 LLM + 可信 CLI + SQLite/Trace**的复核证据为准。用户表示 DeepSeek 账户目前约有 **50 元余额**（用户陈述，未查询服务商账单），不再沿用旧计划的 18 次 API 全期硬限制。
 
-### 现行状态速览（按代码版本，不按聊天轮次）
+### 现行状态速览（2026-11-07更新；按代码版本，不按聊天轮次）
 
 | 对象 | 当前事实 | 验收属性 |
 |---|---|---|
@@ -22,7 +22,8 @@
 | S4-P-C | Thinking多轮协议已验收，最终代码d27ca91，274/274及9次HTTP200（阶段合计24次） | P07跨轮/提交后续问PASS；原说明扩写MODEL_BEHAVIOR_FAIL保留，P11 OPEN |
 | S4-P-D | 代码bd59b2e，304/304；Profile、冻结连接/切换、Trace及提交后进度隔离；15次HTTP200 | D历史门禁满足；原Pro续问PARTIAL、真实第二账户NOT_TESTED仍保留 |
 | S4-P-E | 代码3a83a2c，309/309；59条冻结PUBLIC_REGRESSION含24变体；298次真实API尝试，294 HTTP200，4失败usage未知 | **整体BLOCKED**：Flash同题49/59→51/59；A1猜月份、原C2确认未完成、Pro非JSON/超时等保留；H2只读及P11部分修复；EXTERNAL_HOLDOUT_PENDING不是功能失败；未启动后续审计 |
-| S4-P0-Closure（拟新增） | P12 范围来源、C2 语义确认争议、B6 正确回执、P11 收口、Pro 异常分类；Intent Frame 仅作最小候选实验 | **尚未执行；为 4P-E BLOCKED 后建议的下一阶段**，不自动改代码或宣称已解决 |
+| S4-P0-Closure（历史结算） | f6d9926；335/335，62次真实API；P12来源/A1→A2、P11保存核对、B6无重复写回执有证据；Intent B无收益不采用 | 上轮C2真人具体确认USER_DEFERRED、原链BLOCKED的历史结果不改，见S4-P0C报告 |
+| S4-P0C-CLOSURE（2026-11-07） | 生产源码未变；5新测试、340/340；11次Flash API，三个真实进程完成C1→C6，真实task/Commit/audit/readback/缺5→4 | **PASS_WITH_SIMULATED_CONFIRMATION / P0 ENGINEERING GATE=PROVISIONAL_PASS**；仅本轮冻结策略，新C2模拟确认不批准上轮旧候选；真人C2未测/仍暂缓，外部Holdout待提供、安全审计未执行 |
 | S4-SEC-A / SEC-B（拟新增） | P1/P2 遗留项、资源耗尽/溢出、权限绕过、提示注入的独立测试及经证实问题的最小修复 | **尚未执行；仅在隔离、限时、可控环境测试**，不等于已经发现可利用漏洞 |
 | S4-BR / S4-C / S4-D | 独立真实复核、证据链封板、比赛打包 | 尚未完成，前置依赖见第 8、9 节 |
 
