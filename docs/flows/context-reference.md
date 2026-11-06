@@ -25,3 +25,7 @@ ContextBuilder.resolve → references.resolve_reference：限定可信用户 →
 tests/test_stage3b.py使用临时SQLite，覆盖序数、真实顺序、同号隔离、多列表、错误引用、更正/取消、权限撤销、独立子进程恢复、旧值更新/日期变更重查、范围锁定、无确认零审计、来源注入、限长和消息配对。test_architecture把references纳入业务层、context纳入运行层；无反向依赖或第二Loop。Context不承担Scheduler；Stage 3C独立单轮计划见[schedule-budget.md](schedule-budget.md)。
 
 4P-E：ContextBuilder.record_displayed从已经展示的成功只读结果保留prior_query_tools（工具名列表，不含参数、金额或操作授权）；_data在assistant/context_data内附来源。begin更正范围仍清除旧范围及旧引用，新范围下模型可用该历史查询类型延续概览目标，不能继承旧企业金额或写入许可。Agent身份切换仍新建ContextBuilder；没有新增持久对话或自动摘要。test_stage4pe验证月份更正后的数据线索不带旧金额；任意语义理解的剩余失败仍按Live报告保留。
+
+
+## S4-P0C：来源不是模型标签
+ContextBuilder维护轻量ScopeProof来源：当前明确输入、仍有效用户会话、实际重解析引用、实际选定/确认任务的SQLite范围。begin更正使冲突焦点失效，单改企业可保留用户此前明确年月，但不能保留旧SQL/引用派生日期。accept_task不因list_tasks就选中年月；需本轮明确task_id或真实具体确认。scope_provenance用于解释，不给模型声明来源的权力；正式分发再检证明身份。有限中文/数字年月支持，不解释无可靠依据的相对时间，不是完整Reference/Intent系统。

@@ -29,3 +29,7 @@ SQLite是唯一持久状态。提交结果未知返回UNKNOWN_OUTCOME并要求�
 4P-A测试test_stage4pa.py补充普通自然语言候选/确认、任务更正取消、偏好CRUD与真实子进程读取删除结果、候选无管理权限、错误对象展示拒绝、确认时取消/身份切换、旧ID不可复用和追问异常处理。responses.parse_final对合法字符串型未知missing_fields仅保留为追问，render_clarification生成通用补充问题，不展示模型任意text/未知标签，不映射成业务字段或写入权限；错误JSON/字段类型仍安全停止。
 
 4P-E：只有已鉴权manage_preference(action=get)的NOT_FOUND可作为负向读取证据让TurnExecution.observe有限继续，仍保持ok=false/status=NOT_FOUND及真实范围；其他NOT_FOUND/拒绝不改成成功。具体确认后的偏好SUCCESS写入仅使同企业/对象旧get（及该企业list）的去重记录过期，写调用去重和9/12/2/1计数不重置。因而可get不存在→候选→可信具体确认→create→重新get；无确认不写。responses.render_information单独展示偏好不存在，不能冒充0.00或已保存。test_stage4pe验证该链路；P11保留OPEN，真实模型及停止提示限制见S4-P-E报告。
+
+
+## S4-P0C：偏好复合回执与C2确认
+responses.preference_receipt只从本轮真实结果关联具体确认后的保存和随后同用户/企业/key/value的读取；已保存但尚未读取必须分别说明。render_stopped保留NO_LEGAL_WORK/NO_PROGRESS等真实原因，已解决的先前NOT_FOUND不再误报未保存；不将其他NOT_FOUND/拒绝转换成功，不新增管理许可。C2新版语义候选仍须操作者具体确认，本轮实际用户暂缓决定、零任务；历史旧白名单FAIL不改。Task/Preference状态所有者和发票许可不变。

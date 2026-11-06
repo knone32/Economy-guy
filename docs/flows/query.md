@@ -25,3 +25,7 @@ Stage 3B引用与上下文实际调用链、迁移和边界见[context-reference
 Stage 3C普通查询仍走Fast Path，无额外规划模型调用。模型调用和工具分发前接入TurnExecution计数/重复/依赖守卫；可选计划仅使用set_schedule工具，业务Handler鉴权仍实际执行，详见[schedule-budget.md](schedule-budget.md)。
 
 4P-E：Agent._ask在当前调用方工具子集内生成turn_tools；仅当WriteCoordinator.begin认可本轮准备流程时暴露prepare_invoice_update。只读轮不暴露该工具，伪造调用仍由白名单拒绝，不恢复调用方已隐藏的工具。test_stage4pe及原test_security_boundaries验证只读/合法编辑/子集边界。缺失日期的任意自然语言语义仍不是Handler已完整验证的事实：S4-P-E的A1有模型猜月份后查询的反例，不能以本轮过滤写工具声称已解决该问题。
+
+
+## S4-P0C：可信范围来源
+Agent分发显式传入ContextBuilder.proof() → ScopeProof → handle_tool → 企业权限优先 → expected_scope/validate_scope → 原业务查询。月度工具要求明确company/year/month；缺来源=AMBIGUOUS+missing_fields，冲突=SCOPE_MISMATCH，权限仍DENIED。get_invoice保留联合键契约、不强制年月；set_schedule同守卫。模型自报source和猜测SQL成功均不能洗成用户来源。见tests/test_stage4p0c.py及[S4-P0C](../verification/stage4/S4-P0C.md)。

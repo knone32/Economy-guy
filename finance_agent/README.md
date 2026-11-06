@@ -1,5 +1,7 @@
 # 云帐房财税 Agent Harness Stage 0–3A
 
+S4-P0C：正式Agent在Handler查询前核对可信企业/年月来源；没有明确年份不能只凭月份猜当前年，补充后再查询。具体发票仍按联合键查询，不额外强制年月。内部直接Python调用的兼容入口不是可公开的不可信API。偏好保存及再读核对分别举证；发票目标当前已满足显示CURRENT_VALUE_MATCHES，明确无本轮Commit/新审计，不冒充COMMITTED。官方DeepSeek使用JSON输出模式与60秒SDK超时，其他Provider协议不强加变化；格式不代表业务可信。实际测试、操作员暂缓的C2候选及剩余门禁见[本轮报告](../docs/verification/stage4/S4-P0C.md)。
+
 这是Stage 0数据底座、Stage 1单模型Agent、Stage 2受控保存/规则管理与Stage 3A持久任务/偏好。支持兼容Chat Completions工具调用。
 
 ## Windows PowerShell

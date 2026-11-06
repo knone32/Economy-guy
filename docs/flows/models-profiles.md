@@ -1,5 +1,7 @@
 # 4P-D 实际模型配置、会话及指标链路
 
+S4-P0C补充：ModelTransport仅对官方DeepSeek端点启用JSON object输出模式，语法约束不等于可信业务状态。DeepSeek SDK超时60秒、其他Provider仍30秒，max_retries=0；api.request记录json_mode/timeout_seconds。ThinkingProtocol及私有字段逐条历史绑定不变；没有自动Provider切换或第二模型审核。当前Pro小样本没有超时，不能声称60秒已根治历史ReadTimeout；真实对照见[S4-P0C](../verification/stage4/S4-P0C.md)。
+
 - `main.main(profiles add/list/check)` → `model_config.add_profile/visible_profiles/resolve_connection`。Global需显式模拟profile.manage，User owner来自CLI上下文；无模型工具入口。模板TOML+本地JSON，编辑锁与原子替换，不写SQLite/Key。
 - `resolve_connection(user,profile)`按CLI→环境Profile→文件默认→完整旧环境组选择，先校验可见性再读取选定环境变量。`ModelConnection`冻结私有Key、公开Profile元数据；service_account_ref不是已验证服务账户身份。
 - `main.main(chat)`解析完整连接 → `Agent(connection)` → `ModelTransport`（唯一SDK调用点）。旧`agent.live_model`只为兼容的无会话Facade，也复用相同配置/传输模块；Agent绑定会话不逐轮重读全局环境或重复解析另一套Key。

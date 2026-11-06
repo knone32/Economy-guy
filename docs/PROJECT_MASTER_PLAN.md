@@ -648,3 +648,13 @@ Trace: trace_id、model_requests、requested_tool_calls、actual_tool_calls、ex
 **版本追加入口**：[S4-A 验收报告](https://github.com/knone32/Economy-guy/blob/7a9f32713e2a98054b9ee7f9aeda6d01452b2747/docs/verification/stage4/S4-A.md) · [S4-B 真实 API 报告](https://github.com/knone32/Economy-guy/blob/7a9f32713e2a98054b9ee7f9aeda6d01452b2747/docs/verification/stage4/S4-B.md) · [S4-P-A 验收报告](https://github.com/knone32/Economy-guy/blob/7a9f32713e2a98054b9ee7f9aeda6d01452b2747/docs/verification/stage4/S4-P-A.md)。
 
 **维护说明**：文件是人和 Codex 共用的**主控对照文档**，不是取代 `AGENTS.md` 的长篇 system prompt。之后每次更新只改“审查基线、目标台账、缺口 ID、验收证据”，不必重写历史章节；本次文件为本地修订稿，**未自动提交到 GitHub**。
+
+
+## 12. S4-P0-Closure结算（2026-11-06）
+
+- Base `2b2191d22c85`；被测业务源码 `f6d99267358e5202752afbbdd062600781cdab29`；实际报告及逐轮索引：[S4-P0C](verification/stage4/S4-P0C.md)、[RESULTS](verification/stage4/S4-P0C-RESULTS.md)。报告SHA取包含报告的docs(s4p0c)提交，不与被测源码混称。
+- D：原309+新26，共335/335；旧测试只适配明确范围输入，不删用例、不改安全断言。L/B：Flash/Pro原A1先追问、A2查正确SQL/R001；P11具体确认后保存再读核对；B6一次Commit及重复请求只读匹配、无第二审计。P12 Issue #2、P11 #1、B6 #3均OPEN待独立审查。
+- C2旧冻结四句策略仍FAIL；新语义提案已经生成，但真实用户明确暂缓具体内容决定，零任务。不得将H2独立预置任务夹具或过去H1成功替代C1→C6完整语义链，本阶段门禁仍BLOCKED。
+- 小样本Intent A/B均2/2、各6模型请求；B未提升目标完成且增加Token/延迟，生产不实施强制Intent抽取。两次初始B实验脚本协议封装错误保留，不冒充Provider故障。
+- 本轮实际62模型API请求、240827 Token、SDK延迟合计135766.971ms，全部返回200不等于全部业务PASS。官方余额已只读核对，实际费用归因UNKNOWN。单轮观察不超过3模型/3Handler、0续期/0重规划；硬限9/12/2/1不变。
+- 后续：等待操作者另行决定C2具体确认和完整链复验，满足P0闭环后再独立决定S4-SEC-A；不自动开始。EXTERNAL_HOLDOUT_PENDING。旧4P-E历史与FAIL不回填覆盖。

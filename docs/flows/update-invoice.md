@@ -19,3 +19,7 @@ Stage 2.5.1安全故障注入见tests/test_security_boundaries.py：合法JSON�
 tests/test_stage253.py补充错目标、跨轮冲突、明确更正、缺失目标以及日期范围反例；核对草稿、两企业字段和审计数量。原Prepare/Confirm/Commit事务与回读未重写。
 
 Stage 3B：若本轮包含可识别的发票序数线索，Agent.ask先经ContextBuilder.resolve → references.resolve_reference，以展示顺序联合键重新鉴权读当前库。成功后将真实company_id/invoice_no/year/month作为本轮expected_scope送入原Handler；模型换号/换企业无法Prepare。无唯一锚点则直接追问。Context不授予allow_prepare，Prepare仍需要本轮/edit或可信关联补充；每轮清空草稿/确认。引用恢复只恢复对象线索，重启不能恢复旧确认。tests/test_stage3b.py核对正确引用未确认不写库、错引用无草稿及零成功审计。
+
+
+## S4-P0C：已满足目标的只读核对
+原Prepare→精确确认→Commit/审计→新连接Readback不变。WriteCoordinator.assess_current_match仅对当前可信明确编辑意图、联合键、允许字段及字面新值，调用updates.current_target_matches重新鉴权、只读重查当前SQLite。值相同生成CURRENT_VALUE_MATCHES，明确没有本轮Commit/新增审计；不同/拒绝/异常不能假成功。即便模型只引用历史，也不能跳过此新读取。该Harness读取不是Model Tool Call；update.target_checked日志故障不抹去核对事实。readback_verified=false不冒充事务回读。tests/test_stage4p0c.py核对真实字段和审计数；两Profile原句对照见S4-P0C报告。

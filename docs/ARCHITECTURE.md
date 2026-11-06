@@ -9,6 +9,7 @@
 | app/model_config.py | Global/User Profile可信本地管理、可见性与完整连接选择；ModelConnection冻结私有凭据，不写业务SQLite |
 | app/model_transport.py | 单连接SDK传输、4P-C协议及真实usage/延迟；不拥有任务/权限/业务事实 |
 | app/context.py | ContextBuilder选择、限长及焦点更正；reference_hint仅解析有限序数线索；无任务/偏好权威副本 |
+| app/provenance.py | S4-P0C轻量ScopeProof及必要槽位来源核验；不持久化模型意图、不授予权限；Context提供来源，Registry执行处检查 |
 | app/scheduler.py | BudgetPolicy固定块长/硬限；TurnExecution独占本轮计划、依赖进度、重复检测、请求/执行计数与停止原因；不持久化任务 |
 | app/references.py | 唯一SQLite展示锚点存储、加法迁移和resolve_reference；只存有序联合键，不存金额、用途或确认 |
 | app/tool_registry.py | 生产/教学Schema、严格JSON字段类型校验、分发及执行时鉴权 |
