@@ -82,12 +82,18 @@ class WriteCoordinator:
             if not value.endswith(closing):return
             value=value[1:-1]
         company,invoice=scope['company_id'][0],scope['invoice_no'][0]
-        if not any(name=='get_invoice' and result['status']=='SUCCESS' and
-            (result.get('data') or {}).get('company_id')==company and result['data'].get('invoice_no')==invoice
-            for name,result in results):return
+        # 模型可能只引用历史值；可信编辑入口的明确目标仍须独立新连接核对。
+        # 此次核对不是模型Tool Call，亦不产生Prepare/Commit/成功审计。
         try:current=current_target_matches(self.db_path,self.user_id,company,invoice,field,value)
         except (sqlite3.Error,ValueError,PermissionError):return
-        if current:self.receipt=self._receipt('CURRENT_VALUE_MATCHES',current)
+        if current:
+            current['checked_by']='harness_readonly_reconciliation'
+            self.receipt=self._receipt('CURRENT_VALUE_MATCHES',current)
+        try:
+            self.trace('update.target_checked',{'company_id':company,'invoice_no':invoice,'field':field,
+                'source':'current_sqlite','matched':bool(current),'committed_this_turn':False})
+        except OSError:
+            self.receipt['trace_degraded']=True;warn_trace_degraded()
 
     def cancel_update(self):
         """可信CLI取消后撤销本轮全部草稿与确认。"""

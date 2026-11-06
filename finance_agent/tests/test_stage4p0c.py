@@ -84,6 +84,16 @@ class ReceiptTests(HarnessCase):
     def test_different_value_or_denied_is_not_a_match(self):
         a=self.agent([call('get_invoice',dict(company_id='C001',invoice_no='F002')),FINAL]);a.ask('C001 F002用途改为新用途',allow_prepare=True)
         self.assertNotEqual(a.write_receipt['status'],'CURRENT_VALUE_MATCHES')
+    def test_model_history_claim_requires_a_real_new_readonly_check(self):
+        self.connection.execute("UPDATE invoices SET purpose='项目资料核对' WHERE company_id='C001' AND invoice_no='F002'");self.connection.commit()
+        a=self.agent([FINAL])
+        with patch.object(a.coordinator,'trace',side_effect=OSError('disk')),patch('app.write_coordination.warn_trace_degraded'):
+            text=a.ask('把甲企业F002的用途改为项目资料核对。',allow_prepare=True)
+        self.assertEqual(a.write_receipt['status'],'CURRENT_VALUE_MATCHES')
+        self.assertEqual(a.write_receipt['data']['checked_by'],'harness_readonly_reconciliation')
+        self.assertTrue(a.write_receipt['trace_degraded'])
+        self.assertEqual(outcomes(a),[]);self.assertIn('没有Commit',text)
+        self.assertEqual(self.connection.execute('SELECT COUNT(*) FROM invoice_audit').fetchone()[0],0)
         self.connection.execute("UPDATE invoices SET purpose='新用途' WHERE company_id='C001' AND invoice_no='F002'");self.connection.commit()
         a=self.agent([call('get_invoice',dict(company_id='C001',invoice_no='F002')),FINAL],user='U002');a.ask('C001 F002用途改为新用途',allow_prepare=True)
         self.assertNotEqual(a.write_receipt['status'],'CURRENT_VALUE_MATCHES')
