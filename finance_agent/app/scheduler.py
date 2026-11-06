@@ -168,7 +168,7 @@ class TurnExecution:
                 step["status"] = "DONE"
                 step["evidence"] = {"status":status,"source":outcome.get("evidence",{}).get("source")}
                 break
-        self.emit("schedule.progress",self.snapshot())
+        self.emit("schedule.progress" if self.schedule else "tool.progress",self.snapshot())
         task = (outcome.get("data") or {}).get("task") if name=="manage_task" else None
         if task and task["status"] in {"WAITING_USER","PAUSED"}:
             self.stop("WAITING_USER")

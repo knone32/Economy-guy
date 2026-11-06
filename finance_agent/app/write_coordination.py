@@ -1,5 +1,6 @@
 """轻量连续修改意图、草稿协调与权威回执，不是持久任务。"""
 import sqlite3
+from datetime import date
 from uuid import uuid4
 from .updates import UpdateSession, confirm_draft, commit_invoice_update, result as tool_result
 from .trace import warn_trace_degraded
@@ -108,12 +109,26 @@ class WriteCoordinator:
         self.receipt = self._receipt(status, outcome, verified)
         if verified:
             # Commit/审计/回读已核实后再独立读取任务，不把进度查询失败改成提交失败。
-            self.receipt['task_progress']=task_progress(self.db_path,self.user_id,current['company_id'],
-                int(current['invoice_date'][:4]),int(current['invoice_date'][5:7]))
+            self.receipt['task_progress']=self._post_commit_progress(current)
         self.events.append({"event_id":uuid4().hex, "turn_id":self.session.turn_id, "request_id":request_id, "source":"trusted_cli", "receipt":self.receipt})
         self.pending = None
         self._trace_receipt()
         return self.receipt
+
+    def _post_commit_progress(self,current):
+        """仅隔离已经核实提交后的可选进度；绝不捕获Commit/审计/回读事务异常。"""
+        try:
+            raw=current['invoice_date']
+            if type(raw) is not str: raise ValueError('invalid date')
+            day=date.fromisoformat(raw)
+            if day.isoformat()!=raw: raise ValueError('invalid format')
+            progress=task_progress(self.db_path,self.user_id,current['company_id'],day.year,day.month)
+            if type(progress) is not dict or type(progress.get('status')) is not str:
+                raise ValueError('invalid progress response')
+            return progress
+        except Exception:
+            # 此作用域只有附加只读操作；显式返回ERROR，不影响已生成的权威成功回执。
+            return tool_result('ERROR',error='已核实的提交状态不变；附加任务进度不可用，请重新查询')
 
     def _trace_receipt(self):
         """日志是可观测性副作用，不能遮蔽已经完成的业务结果。"""

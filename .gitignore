@@ -18,6 +18,8 @@
 *credential*.json
 *secrets*
 *token*.json
+model_profiles.local.json
+model_profiles.local.json.*
 .aws/
 .ssh/
 

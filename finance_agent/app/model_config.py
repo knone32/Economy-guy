@@ -1,0 +1,197 @@
+"""可信本地模型Profile与凭据引用；不读写业务SQLite，不提供LLM工具。"""
+from dataclasses import dataclass,field,asdict
+import ipaddress
+import json
+import os
+from pathlib import Path
+import re
+import tempfile
+import tomllib
+from urllib.parse import urlsplit
+
+CONFIG=Path(__file__).resolve().parents[1]/'config'
+DEFAULT_TEMPLATE=CONFIG/'model_profiles.toml'
+DEFAULT_LOCAL=CONFIG/'model_profiles.local.json'
+
+
+class ProfileError(ValueError):
+    """不在错误信息中复述密钥或不安全配置值。"""
+
+
+def safe_url(value):
+    """只接受显式HTTPS服务地址，拒绝凭据/查询串/本机及私网字面量。"""
+    try:
+        p=urlsplit(value)
+        if (p.scheme!='https' or not p.hostname or p.username or p.password or p.query or p.fragment
+            or '\\' in value or any(c.isspace() or ord(c)<32 for c in value) or p.hostname.lower().rstrip('.')=='localhost'
+            or p.hostname.lower().rstrip('.').endswith('.localhost') or p.port not in (None,443)):
+            raise ValueError()
+        try:
+            address=ipaddress.ip_address(p.hostname)
+        except ValueError:
+            address=None
+        if address is not None and not address.is_global:
+            raise ValueError()
+        return value.rstrip('/')
+    except (ValueError,TypeError):
+        raise ProfileError('模型URL不安全或格式无效，未连接') from None
+
+
+@dataclass(frozen=True)
+class Profile:
+    profile_name: str
+    scope: str
+    owner_user_id: str | None
+    provider: str
+    service_account_ref: str
+    model: str
+    base_url: str
+    api_key_env: str
+    protocol: str='auto'
+
+
+def validate_profile(data):
+    """所有存储来源使用同一白名单；只保存环境变量名称。"""
+    fields=set(Profile.__dataclass_fields__)
+    if type(data) is not dict or set(data)-fields or fields-{'protocol','owner_user_id'}-set(data):
+        raise ProfileError('Profile字段缺失或含不支持字段；不接受明文凭据')
+    values={**data,'owner_user_id':data.get('owner_user_id'),'protocol':data.get('protocol','auto')}
+    for key in ('profile_name','provider','service_account_ref','model','api_key_env','base_url','protocol','scope'):
+        if type(values[key]) is not str or not values[key].strip():
+            raise ProfileError('Profile必要字段必须明确')
+    if any(not re.fullmatch(r'[A-Za-z0-9_.-]{1,64}',values[k]) for k in ('profile_name','service_account_ref')):
+        raise ProfileError('Profile名称或服务账户逻辑引用格式无效')
+    if not re.fullmatch(r'[A-Z][A-Z0-9_]{0,95}',values['api_key_env']):
+        raise ProfileError('api_key_env必须是环境变量名称，不是实际Key')
+    if values['provider'] not in {'deepseek','openai','openai-compatible'} or values['protocol'] not in {'auto','standard','deepseek-thinking'}:
+        raise ProfileError('不支持该Provider或协议配置')
+    if values['scope'] not in {'global','user'} or (values['scope']=='global' and values['owner_user_id'] is not None):
+        raise ProfileError('Profile范围或归属不合法')
+    if values['scope']=='user' and (type(values['owner_user_id']) is not str or not re.fullmatch(r'U\d{3,}',values['owner_user_id'])):
+        raise ProfileError('User Profile必须绑定可信模拟用户')
+    values['base_url']=safe_url(values['base_url'])
+    p=Profile(**values)
+    # 协议配置不会给自定义代理猜测DeepSeek兼容性。
+    from .thinking_protocol import ThinkingProtocol
+    protocol=ThinkingProtocol(p.base_url,p.model,thinking=p.protocol!='standard',bind_environment=False)
+    if protocol.ambiguous or (p.protocol=='deepseek-thinking' and not protocol.enabled):
+        raise ProfileError('该端点/模型尚无已验证Thinking协议配置')
+    return p
+
+
+def load_profiles(template=DEFAULT_TEMPLATE,local=DEFAULT_LOCAL):
+    """合并静态模板与本地新增，不静默覆盖同名或冲突默认项。"""
+    profiles={};defaults=[]
+    for path,kind in ((Path(template),'toml'),(Path(local),'json')):
+        if not path.exists():
+            if kind=='toml': raise ProfileError('缺少模型配置模板')
+            continue
+        try:
+            raw=tomllib.loads(path.read_text(encoding='utf-8')) if kind=='toml' else json.loads(path.read_text(encoding='utf-8'))
+            if type(raw) is not dict or set(raw)-{'profiles','settings','version'} or type(raw.get('profiles',[])) is not list:
+                raise ValueError()
+            if type(raw.get('version',1)) is not int or raw.get('version',1)!=1:
+                raise ValueError()
+            setting=raw.get('settings',{})
+            if type(setting) is not dict or set(setting)-{'default_profile'}:
+                raise ValueError()
+            default=setting.get('default_profile','')
+            if type(default) is not str: raise ValueError()
+            if default: defaults.append(default)
+            for item in raw.get('profiles',[]):
+                p=validate_profile(item)
+                if p.profile_name in profiles: raise ProfileError('Profile同名或来源冲突，未覆盖')
+                profiles[p.profile_name]=p
+        except ProfileError:
+            raise
+        except (OSError,ValueError,TypeError):
+            raise ProfileError('模型配置文件异常，未修改原文件') from None
+    if len(set(defaults))>1: raise ProfileError('默认Profile来源冲突')
+    return profiles,defaults[0] if defaults else None
+
+
+def visible_profiles(user_id,template=DEFAULT_TEMPLATE,local=DEFAULT_LOCAL):
+    profiles,_=load_profiles(template,local)
+    return [asdict(p) for p in profiles.values() if p.scope=='global' or p.owner_user_id==user_id]
+
+
+def add_profile(data,user_id=None,simulate_manager=False,template=DEFAULT_TEMPLATE,local=DEFAULT_LOCAL):
+    """仅可信CLI添加；锁内校验、fsync后原子替换，不覆盖同名配置。"""
+    p=validate_profile(data)
+    if p.scope=='global' and not simulate_manager:
+        raise ProfileError('Global新增需要显式模拟profile.manage管理入口；不是U001默认权限')
+    if p.scope=='user' and p.owner_user_id!=user_id:
+        raise ProfileError('User新增只能绑定可信CLI当前模拟用户')
+    path=Path(local);path.parent.mkdir(parents=True,exist_ok=True)
+    lock=path.with_name(path.name+'.lock');temp=None
+    try:
+        fd=os.open(lock,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
+    except OSError:
+        raise ProfileError('模型配置正在编辑或不可写，未修改') from None
+    try:
+        os.close(fd)
+        profiles,_=load_profiles(template,path)
+        if p.profile_name in profiles: raise ProfileError('Profile同名或归属冲突，未覆盖')
+        raw=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {'version':1,'profiles':[]}
+        raw['profiles'].append(asdict(p))
+        with tempfile.NamedTemporaryFile('w',encoding='utf-8',dir=path.parent,suffix='.tmp',delete=False) as stream:
+            temp=Path(stream.name)
+            json.dump(raw,stream,ensure_ascii=False,indent=2);stream.flush();os.fsync(stream.fileno())
+        os.replace(temp,path);temp=None
+    except ProfileError:
+        raise
+    except (OSError,ValueError):
+        raise ProfileError('模型配置保存失败，未确认更新；请检查原配置') from None
+    finally:
+        if temp is not None: temp.unlink(missing_ok=True)
+        lock.unlink(missing_ok=True)
+    return asdict(p)
+
+
+@dataclass(frozen=True)
+class ModelConnection:
+    """创建时冻结私有凭据；不对Key做可追踪指纹，不逐轮读取环境变量。"""
+    profile: Profile
+    _api_key: str=field(repr=False,compare=False)
+
+    @property
+    def api_key(self): return self._api_key
+
+    def authorize(self,user_id):
+        if self.profile.scope=='user' and self.profile.owner_user_id!=user_id:
+            raise ProfileError('当前用户无权选择此Profile，未回退')
+
+    def metadata(self):
+        p=self.profile
+        return {**{k:getattr(p,k) for k in ('profile_name','provider','model','service_account_ref','protocol')},'profile_scope':p.scope}
+
+
+def resolve_connection(user_id,profile=None,*,template=DEFAULT_TEMPLATE,local=DEFAULT_LOCAL,require_key=True):
+    """CLI→环境Profile→文件默认→完整旧环境组；不拼接不完整组或自动回退。"""
+    profiles,default=load_profiles(template,local)
+    name=profile or os.getenv('FINANCE_MODEL_PROFILE') or default
+    if name:
+        if name not in profiles: raise ProfileError('指定Profile不存在，未回退')
+        p=profiles[name]
+        if p.scope=='user' and p.owner_user_id!=user_id: raise ProfileError('当前用户无权选择此Profile，未回退')
+        key=os.getenv(p.api_key_env,'') if require_key else ''
+    else:
+        modern=[os.getenv('OPENAI_'+suffix) for suffix in ('API_KEY','BASE_URL','MODEL')]
+        if any(modern):
+            if not all(modern): raise ProfileError('OPENAI配置组不完整，禁止混入旧组')
+            key,url,model=modern
+            key_env='OPENAI_API_KEY'
+        else:
+            key=os.getenv('KEY') or os.getenv('API_KEY');url=os.getenv('BASE_URL');model=os.getenv('MODEL')
+            if not all((key,url,model)): raise ProfileError('需要完整KEY/BASE_URL/MODEL或OPENAI配置组')
+            key_env='KEY' if os.getenv('KEY') else 'API_KEY'
+        p=validate_profile(profile_data_legacy(url,model,key_env))
+        if not require_key: key=''
+    if require_key and not key.strip(): raise ProfileError('当前Profile缺少其引用的API凭据，未回退')
+    return ModelConnection(p,key)
+
+
+def profile_data_legacy(url,model,key_env='OPENAI_API_KEY'):
+    return {'profile_name':'legacy-env','scope':'global','owner_user_id':None,
+        'provider':'deepseek' if urlsplit(url).hostname=='api.deepseek.com' else 'openai-compatible',
+        'service_account_ref':'legacy-unverified','model':model,'base_url':url,'api_key_env':key_env,'protocol':'auto'}

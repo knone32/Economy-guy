@@ -6,6 +6,8 @@
 | --- | --- |
 | main.py | argparse、模拟用户、关联连续修改、最终确认交互；不计算业务金额 |
 | app/agent.py | 模型调用/有界循环/消息配对；保留Agent与handle_tool兼容Facade；持有当前会话消息 |
+| app/model_config.py | Global/User Profile可信本地管理、可见性与完整连接选择；ModelConnection冻结私有凭据，不写业务SQLite |
+| app/model_transport.py | 单连接SDK传输、4P-C协议及真实usage/延迟；不拥有任务/权限/业务事实 |
 | app/context.py | ContextBuilder选择、限长及焦点更正；reference_hint仅解析有限序数线索；无任务/偏好权威副本 |
 | app/scheduler.py | BudgetPolicy固定块长/硬限；TurnExecution独占本轮计划、依赖进度、重复检测、请求/执行计数与停止原因；不持久化任务 |
 | app/references.py | 唯一SQLite展示锚点存储、加法迁移和resolve_reference；只存有序联合键，不存金额、用途或确认 |
@@ -23,6 +25,8 @@
 | app/database.py、stage2_schema.py、importer.py | SQLite与加法迁移、安全首次种子导入 |
 
 依赖方向：CLI → Agent → ContextBuilder / Registry / WriteCoordinator / TurnExecution → 业务服务 → SQLite。Registry校验计划工具/范围/权限，TurnExecution只接收执行结果与授权回调，不执行业务。ContextBuilder只调用任务、偏好和引用服务读取/维护相应来源，不接管它们的状态。Trace和回复解析无业务权力。业务层不得反向导入context/scheduler等运行层；标准库AST测试检查显式导入，无完整动态依赖平台。
+
+4P-D：Agent.ask为唯一入口，活动guard后进入原有_ask单循环。CLI通过model_config解析完整连接，Agent/Transport共用冻结ModelConnection和协议；可信switch_model只在安全轮次边界替换新Agent，保留可重查业务范围与SQLite长期状态，不搬原始模型历史/许可。实际链路见flows/models-profiles.md；没有多Agent、自动路由或模型配置SQLite表。
 
 业务字段、规则版本、成功审计的权威存储均为SQLite。pending是当前Session待补充意图；draft是本轮精确目标草稿；confirmation是绑定指纹的本轮可信确认。三者不同，均不跨进程继承。WriteCoordinator.events只记录历史操作事实，不能替代SQLite当前值。
 

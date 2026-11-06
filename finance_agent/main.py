@@ -1,6 +1,7 @@
 """Stage 0–3C 命令行入口与可信模拟管理交互。"""
 import argparse
 import json
+import os
 from pathlib import Path
 import sys
 from dataclasses import asdict
@@ -17,7 +18,20 @@ DEFAULT_DB = ROOT / "data" / "finance.db"
 def main() -> None:
     parser = argparse.ArgumentParser(description="财税 Agent Harness Stage 0–3C")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB, help="SQLite 数据库路径")
+    from app.model_config import DEFAULT_TEMPLATE,DEFAULT_LOCAL
+    parser.add_argument('--profiles-file',type=Path,default=DEFAULT_TEMPLATE,help='无密钥TOML模板')
+    parser.add_argument('--profiles-local',type=Path,default=DEFAULT_LOCAL,help='本地新增Profile JSON；不提交Git')
     sub = parser.add_subparsers(dest="command", required=True)
+    profiles=sub.add_parser('profiles',help='可信本地模型配置；不调用模型API')
+    profiles.add_argument('action',choices=('list','check','add'))
+    profiles.add_argument('--user',help='可信模拟业务身份，不是生产认证')
+    profiles.add_argument('--profile')
+    profiles.add_argument('--name')
+    profiles.add_argument('--scope',choices=('global','user'))
+    profiles.add_argument('--simulate-profile-manager',action='store_true',help='显式模拟独立profile.manage，不自动授予U001')
+    for key in ('provider','service-account-ref','model','base-url','api-key-env'):
+        profiles.add_argument('--'+key)
+    profiles.add_argument('--protocol',choices=('auto','standard','deepseek-thinking'),default='auto')
     init = sub.add_parser("init", help="安全首次导入，拒绝覆盖已有数据库"); init.add_argument("--excel", type=Path, default=DEFAULT_EXCEL)
     for name in ("invoices", "bank", "summary"):
         command = sub.add_parser(name); command.add_argument("--user", required=True); command.add_argument("--company", required=True); command.add_argument("--year", type=int, required=True); command.add_argument("--month", type=int, required=True)
@@ -50,6 +64,7 @@ def main() -> None:
     audit_cli.add_argument("--request-id", required=True)
     chat = sub.add_parser("chat", help="单Agent连续会话与受控管理")
     chat.add_argument("--user", required=True, help="模拟身份，不是生产认证")
+    chat.add_argument('--profile',help='只选择当前模拟用户可见的完整Profile')
     chat.add_argument("--mode", choices=("live", "mock"), default="live")
     chat.add_argument("--trace", type=Path, default=ROOT / "agent_trace.jsonl")
     chat.add_argument("--max-context-chars",type=int,default=48000,help="序列化消息字符上限；不含工具Schema，不是token估算")
@@ -59,6 +74,23 @@ def main() -> None:
     chat.add_argument("--max-extensions",type=int,default=2,help="至多两次证据驱动续期")
     chat.add_argument("--max-replans",type=int,default=1,help="至多一次显式重规划")
     args = parser.parse_args()
+    if args.command=='profiles':
+        from app.model_config import add_profile,visible_profiles,resolve_connection,ProfileError
+        options={'template':args.profiles_file,'local':args.profiles_local}
+        if args.action=='add':
+            data={'profile_name':args.name,'scope':args.scope,'owner_user_id':args.user if args.scope=='user' else None,
+                'provider':args.provider,'service_account_ref':args.service_account_ref,'model':args.model,
+                'base_url':args.base_url,'api_key_env':args.api_key_env,'protocol':args.protocol}
+            output=add_profile(data,args.user,args.simulate_profile_manager,**options)
+        elif not args.user:
+            raise ProfileError('list/check需要可信模拟--user')
+        elif args.action=='list':
+            output=visible_profiles(args.user,**options)
+        else:
+            if not args.profile: raise ProfileError('check需要--profile，默认不发API请求')
+            output={'status':'VALID_LOCAL_ONLY','connection':resolve_connection(args.user,args.profile,**options).metadata(),'api_requests':0}
+        print(json.dumps(output,ensure_ascii=False,indent=2))
+        return
     if args.command == "migrate-stage3b":
         from app.references import migrate
         migrate(args.db)
@@ -108,7 +140,9 @@ def main() -> None:
         print(json.dumps(inspect_request(args.db, args.user, args.request_id), ensure_ascii=False, indent=2))
         return
     if args.command == "chat":
-        from app.agent import Agent, live_model
+        from app.agent import Agent, live_model, _BUILTIN_LIVE_MODEL
+        from app.model_config import resolve_connection,visible_profiles,load_profiles,ProfileError
+        profile_options={'template':args.profiles_file,'local':args.profiles_local}
         model = live_model
         if args.mode == "mock":
             print("MOCK / 固定模拟响应：每轮查询 C001 2026-09，不代表自然语言理解")
@@ -116,6 +150,9 @@ def main() -> None:
                 if messages[-1]["role"] == "tool":
                     return {"role": "assistant", "content": json.dumps({"kind":"information", "text":"MOCK 结果：" + messages[-1]["content"]}, ensure_ascii=False)}
                 return {"role": "assistant", "tool_calls": [{"id": "mock_query", "type": "function", "function": {"name": "get_finance_summary", "arguments": '{"company_id":"C001","year":2026,"month":9}'}}]}
+        _,default_profile=load_profiles(**profile_options)
+        selected=args.profile or os.getenv('FINANCE_MODEL_PROFILE') or default_profile
+        connection=resolve_connection(args.user,args.profile,require_key=args.mode=='live',**profile_options) if selected or (args.mode=='live' and model is _BUILTIN_LIVE_MODEL) else None
         def confirm_long_term(proposal):
             """可信交互只确认本次展示的对象与内容，不让模型提供确认。"""
             print('长期状态待确认（尚未保存）：')
@@ -126,7 +163,7 @@ def main() -> None:
                 return False
         agent = Agent(args.user, args.db, model, args.mode, args.trace,max_context_chars=args.max_context_chars,
                       block_requests=args.block_requests,max_requests=args.max_requests,max_tools=args.max_tools,
-                      max_extensions=args.max_extensions,max_replans=args.max_replans,management_confirmation=confirm_long_term)
+                      max_extensions=args.max_extensions,max_replans=args.max_replans,management_confirmation=confirm_long_term,connection=connection)
         print("财税Agent（模拟身份）：普通自然语言可提出待办/偏好候选，核对具体内容并确认才保存；/task、/preference兼容。/edit准备发票草稿，仍须最终确认。exit退出。")
         while True:
             try:
@@ -136,6 +173,21 @@ def main() -> None:
             if text.strip().lower() == "exit":
                 break
             if text.strip():
+                if text.strip()=='/provider list':
+                    print(json.dumps(visible_profiles(args.user,**profile_options),ensure_ascii=False,indent=2))
+                    continue
+                if text.strip()=='/provider status':
+                    print(json.dumps(agent.connection.metadata() if agent.connection else {'mode':'mock','profile_name':None},ensure_ascii=False))
+                    continue
+                if text.startswith('/provider use '):
+                    try:
+                        new_connection=resolve_connection(args.user,text[len('/provider use '):].strip(),require_key=args.mode=='live',**profile_options)
+                        agent=agent.switch_model(new_connection)
+                        print('模型协议会话已重建：保留可重新鉴权的业务范围，任务/偏好重读SQLite；旧消息、草稿和确认不继承。')
+                        print(json.dumps(agent.connection.metadata(),ensure_ascii=False))
+                    except ProfileError as error:
+                        print('未切换：'+str(error))
+                    continue
                 if text.strip() == "/cancel":
                     print(json.dumps(agent.cancel_update(), ensure_ascii=False, indent=2))
                     continue

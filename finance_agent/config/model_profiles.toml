@@ -1,0 +1,6 @@
+# 非敏感模板：不写实际Key；动态新增保存在已忽略的model_profiles.local.json。
+# 用 profiles add 添加完整Global/User配置；默认留空，保留旧环境变量入口。
+profiles = []
+
+[settings]
+default_profile = ""

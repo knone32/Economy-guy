@@ -257,4 +257,33 @@ python -m unittest tests.test_stage3c tests.test_architecture tests.test_securit
 python -m unittest discover -s tests -q
 ```
 
-Agent.last_response.execution提供计划和实际计数；JSONL的budget.extended包含续期原因，execution.stopped/turn.finished包含停止原因、当前计划状态及mock/live。计划COMPLETED只表示所列工具步骤取得证据，不等于持久任务完成或发票已保存。Mock CLI仍是原固定示例，不声称理解自然语言；多步/续期使用scripted_model自动化验收。详细实际链路见上级docs/flows/schedule-budget.md；没有动态token估算、Planner Agent或Stage 4能力。
+Agent.last_response.execution提供计划和实际计数；JSONL的budget.extended包含续期原因，execution.stopped/turn.finished包含停止原因、当前计划状态及mock/live。计划COMPLETED只表示所列工具步骤取得证据，不等于持久任务完成或发票已保存。Mock CLI仍是原固定示例，不声称理解自然语言；多步/续期使用scripted_model自动化验收。详细实际链路见上级docs/flows/schedule-budget.md；没有动态token估算或Planner Agent。4P-D配置与运行层增量见下。
+
+## 4P-D：可信模型配置与安全切换
+
+财税用户U001/U002与模型服务计费账户是两回事。`config/model_profiles.toml`是无密钥模板，默认未选Profile；动态新增存入默认已忽略的`config/model_profiles.local.json`，加编辑锁、fsync后原子替换。同名（含不同用户/来源）明确拒绝，不覆盖旧配置。仅存`api_key_env`名称，实际Key由已授权环境提供；不在配置、SQLite或Trace保存实际值。`service_account_ref`仅是逻辑标签，不证明服务商真实账户或两把Key同属一账户。
+
+Global新增需独立`--simulate-profile-manager`；U001不默认是管理员。User新增owner取可信CLI `--user`，只列出Global和自己的User配置，不能借模型参数选择他人的配置。此为本机受控模拟隔离，不是生产登录或主机文件/环境变量的多租户保密系统；不要暴露为公网服务。
+
+在finance_agent目录，先由可信本地环境提供示例名称对应的凭据，然后运行（命令不包含Key值）：
+
+```powershell
+python main.py profiles add --scope global --simulate-profile-manager --name ds-shared --provider deepseek --service-account-ref company-demo --model deepseek-flash --base-url https://api.deepseek.com --api-key-env DS_SHARED_KEY
+python main.py profiles add --scope user --user U001 --name ds-personal --provider deepseek --service-account-ref personal-demo --model deepseek-flash --base-url https://api.deepseek.com --api-key-env DS_U001_KEY
+python main.py profiles list --user U001
+python main.py profiles check --profile ds-personal --user U001
+python main.py --db path\to\temporary.db chat --mode live --user U001 --profile ds-shared
+python main.py --db path\to\temporary.db chat --mode mock --user U001 --profile ds-personal
+```
+
+check只做本地校验/检查当前引用凭据是否存在，API请求0次；Mock不读取实际Key。根参数`--profiles-file <toml>`、`--profiles-local <json>`可用于隔离实验；自选本地文件也应放入忽略目录，不提交用户私有配置。
+
+选择优先级：CLI `--profile` → `FINANCE_MODEL_PROFILE` → 文件default_profile → 完整旧环境组。Profile选中后只使用该Profile完整参数和它引用的Key，不混入旧模型地址。不存在/无权/缺Key/不支持协议都报错，不fallback。旧入口优先完整OPENAI_API_KEY/OPENAI_BASE_URL/OPENAI_MODEL，否则使用KEY/BASE_URL/MODEL（保留API_KEY别名）；OPENAI组只配置一部分时明确拒绝混组。URL只接受HTTPS、无认证用户信息/查询串/片段，拒绝本机/私网IP字面量；此本地校验不声称能彻底阻止DNS重绑定。
+
+`protocol=auto`沿用4P-C已验证端点/模型；`deepseek-thinking`只用于已验证官方DeepSeek；`standard`不发专用字段，DeepSeek显式standard会发送thinking disabled配置，不暗改auto默认。自定义DeepSeek代理协议不明确时保守拒绝。旧的直接Python live_model接口是无会话Facade，持久会话应使用Agent绑定连接。
+
+可信CLI支持`/provider list`、`/provider status`、`/provider use <profile>`。仅轮次间可切换；待补充修改意图、未确认草稿/管理提案、活动请求/提交、未知提交结果会拒绝，先完成/核查或/cancel。切换总是创建新Agent/Transport，不搬运原assistant/tool历史或reasoning；同用户只保留重新鉴权通过的企业年月及带历史标记的用户目标，Task/Preference重新读取SQLite。任务/偏好/发票不删除，旧Draft/Approval失效；无法安全保留的临时消息不伪称完整继承。Key在连接创建时冻结，环境变量变化不会偷偷换Key；轮换后显式重建连接。更换财税身份会清空旧上下文，私有Profile不再可用。
+
+JSONL原生记录api.request/api.response的Profile、Provider、Model、账户逻辑标签、协议、实际usage或UNKNOWN、SDK成功/HTTP错误类别及客户端latency_ms；SDK成功不臆造精确HTTP状态码。turn.finished包含本轮api_counts与原预算/停止原因；`tool.progress`表示无计划的工具证据，只有真实Schedule才记schedule.progress。Token数保留，不能当人民币实付；上下文和Schema字符量不是Token。私有推理和凭据显式遮蔽，偏好键名和计数不再因包含key/token被一概隐藏。
+
+Commit/审计/回读先核实；附加进度日期缺失/非法、规则/SQLite或其他附加查询异常只让task_progress返回ERROR，不遮蔽原COMMITTED/NO_CHANGE，不重写或新增成功审计。详细真实链路见`../docs/flows/models-profiles.md`。

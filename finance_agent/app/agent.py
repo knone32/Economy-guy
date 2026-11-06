@@ -1,6 +1,7 @@
 """唯一Agent Loop与兼容Facade；业务/工具/Trace/写入协调各有所有者。"""
 import json
-import os
+from pathlib import Path
+from contextlib import closing
 from uuid import uuid4
 from .tool_registry import TOOLS, TEACHING_TOOLS, REGISTRY, handle_tool, tool_result, remaining_work_allowed
 from .trace import redact, write_trace, warn_trace_degraded
@@ -11,6 +12,9 @@ from .persistence import ManagementIntent, ManagementTurn, ManagementProposals
 from .context import ContextBuilder, ContextLimitError, reference_hint
 from .scheduler import BudgetPolicy, TurnExecution
 from .thinking_protocol import ThinkingProtocol, ProtocolError
+from .model_config import resolve_connection,ProfileError
+from .model_transport import ModelTransport
+from .permissions import check_permission
 import sqlite3
 
 SYSTEM = """你是财税助手。甲企业=C001，乙企业=C002。需要业务事实时调用工具，不能凭历史结果猜金额。
@@ -47,22 +51,15 @@ harness_schedule是运行时事实。模型不得提交status或自称完成；�
 
 def live_model(messages, tools):
     """兼容 Chat Completions；禁用 SDK 自动重试以控制请求次数。"""
-    from openai import OpenAI
-    config = [os.getenv("OPENAI_" + key) or os.getenv(key) for key in ("API_KEY", "BASE_URL", "MODEL")]
-    config[0] = config[0] or os.getenv("KEY")
-    if not all(config):
-        raise RuntimeError("需要配置 KEY/BASE_URL/MODEL 或 OPENAI_API_KEY/OPENAI_BASE_URL/OPENAI_MODEL")
-    protocol=ThinkingProtocol()
-    protocol.check_binding()
-    messages=protocol.wire(messages,bool(tools))
-    with OpenAI(api_key=config[0], base_url=config[1], max_retries=0, timeout=30) as client:
-        reply = client.chat.completions.create(model=config[2], messages=messages, tools=tools, tool_choice="auto")
-        return reply.choices[0].message.model_dump(exclude_none=True)
+    return ModelTransport(resolve_connection(None))(messages,tools)
+
+
+_BUILTIN_LIVE_MODEL=live_model
 
 
 class Agent:
     """一个 Session 持有一个实例；Mock 和 live 注入不同模型，共用此循环。"""
-    def __init__(self, user_id, db_path, model=live_model, mode="live", trace_path=None, max_requests=9, max_tools=12, teaching=False, max_context_chars=48000, block_requests=3, max_extensions=2, max_replans=1, management_confirmation=None):
+    def __init__(self, user_id, db_path, model=live_model, mode="live", trace_path=None, max_requests=9, max_tools=12, teaching=False, max_context_chars=48000, block_requests=3, max_extensions=2, max_replans=1, management_confirmation=None,connection=None):
         self.user_id, self.db_path, self.model = user_id, db_path, model
         self.mode, self.trace_path = mode, trace_path
         self.max_requests, self.max_tools = max_requests, max_tools
@@ -80,7 +77,20 @@ class Agent:
         self.management_confirmation=management_confirmation
         self.management_turn=None
         self.management_proposals=None
-        self.protocol=ThinkingProtocol(thinking=mode=='live')
+        self.protocol=ThinkingProtocol('','',thinking=False,bind_environment=False)
+        self.connection=connection
+        self._connection_error=None
+        if mode=='live' and model is _BUILTIN_LIVE_MODEL:
+            if connection is None:
+                try: self.connection=resolve_connection(user_id)
+                except ProfileError as error: self._connection_error=str(error)
+        if self.connection: self.connection.authorize(user_id)
+        self.transport=ModelTransport(self.connection,self.trace) if self.connection and mode=='live' and model is _BUILTIN_LIVE_MODEL else None
+        if self.transport: self.protocol=self.transport.protocol
+        self._active=False
+        self._retired=False
+        self.continuity=None
+        self.last_user_request=None
 
     @property
     def update_session(self):
@@ -116,8 +126,11 @@ class Agent:
         return receipt
 
     def commit_update(self, request_id, fingerprint):
+        if self._active or self._retired: raise ProfileError('运行中或已结束的Agent不能提交')
         self._check_identity()
-        receipt = self.coordinator.commit_update(request_id, fingerprint, commit_invoice_update)
+        self._active=True
+        try: receipt = self.coordinator.commit_update(request_id, fingerprint, commit_invoice_update)
+        finally: self._active=False
         receipt["trace_degraded"] = self.trace_degraded or receipt.get("trace_degraded", False)
         return receipt
 
@@ -132,12 +145,19 @@ class Agent:
             self.messages = [{"role":"system", "content":SYSTEM}]
             self.context = ContextBuilder(self.user_id,self.db_path,self.context.max_chars)
             self.execution = None
+            self.continuity=None
+            self.last_user_request=None
 
     def model_messages(self,reference=None):
         """历史事件明确标记程序来源；不编造模型Tool Call或执行记录。"""
         self._check_identity()
+        if self._connection_error and self.model is _BUILTIN_LIVE_MODEL:
+            raise ProtocolError('创建时模型配置不可用，请修正后新建会话：'+self._connection_error)
+        if self.connection:
+            try: self.connection.authorize(self.user_id)
+            except ProfileError: raise ProtocolError('当前身份无权使用已绑定的模型配置，请选择自己的Profile') from None
         self.protocol.check_binding()
-        history = None
+        history = self.continuity
         if self.trusted_events:
             event = self.trusted_events[-1]
             history = {
@@ -153,7 +173,8 @@ class Agent:
 
     def trace(self, event, data):
         try:
-            write_trace(self.trace_path, self.mode, self.trace_id, event, data)
+            metadata={'actor':self.user_id,**(self.connection.metadata() if self.connection else {})}
+            write_trace(self.trace_path, self.mode, self.trace_id, event, data,metadata=metadata)
         except OSError:
             first_failure = not self.trace_degraded
             self.trace_degraded = True
@@ -162,8 +183,44 @@ class Agent:
                 warn_trace_degraded()
 
     def ask(self, text, allow_prepare=False, continue_edit=False, management=None, management_action=None):
+        if self._active or self._retired: raise ProfileError('Agent正在运行或已结束，不能重入')
+        self._active=True
+        try: return self._ask(text,allow_prepare,continue_edit,management,management_action)
+        finally: self._active=False
+
+    def switch_model(self,connection):
+        """可信轮次边界重建协议会话；仅携带可重查的业务范围和历史用户目标。"""
+        self._check_identity()
+        waiting=(self.last_response or {}).get('execution',{}).get('stop_reason')=='WAITING_CONFIRMATION'
+        if (self._active or self._retired or self.pending_edit or self.write_receipt['status']=='UNKNOWN_OUTCOME'
+            or (self.update_session.drafts and self.write_receipt['status'] not in {'COMMITTED','NO_CHANGE','CANCELLED'})
+            or (waiting and self.management_proposals and self.management_proposals.active
+                and self.write_receipt['status'] not in {'COMMITTED','NO_CHANGE','CANCELLED'})):
+            raise ProfileError('当前有运行中/待确认状态，请先完成或/cancel，未切换')
+        connection.authorize(self.user_id)
+        new=Agent(self.user_id,self.db_path,self.model,self.mode,self.trace_path,self.max_requests,self.max_tools,
+            self.teaching,self.context.max_chars,self.budget_policy.block_requests,self.budget_policy.max_extensions,
+            self.budget_policy.max_replans,self.management_confirmation,connection)
+        scope={k:v for k,v in self.context.scope.items() if k in {'company_id','year','month'}}
+        if scope.get('company_id'):
+            with closing(sqlite3.connect(Path(self.db_path).resolve().as_uri()+'?mode=ro',uri=True)) as c:
+                c.row_factory=sqlite3.Row
+                if all(check_permission(c,self.user_id,company,'read').allowed for company in scope['company_id']):
+                    new.context.scope=scope
+                    new.continuity={'source':'trusted_cli_switch','historical':True,'user_request':self.last_user_request,
+                        'usage':'仅历史用户目标/已验证范围，不恢复授权；任务/偏好及当前业务须重新查询SQLite。'}
+        if self.management_turn: self.management_turn.active=False
+        if self.management_proposals: self.management_proposals.active=False
+        self.update_session.begin_turn('',False)
+        self.coordinator.pending=None
+        self._retired=True
+        return new
+
+    def _ask(self, text, allow_prepare=False, continue_edit=False, management=None, management_action=None):
         """执行一轮有界请求；每个 tool_call 都配对结果后才停止。"""
         self._check_identity()
+        self.last_user_request=text
+        api_before=self.transport.counts() if self.transport else None
         if self.management_turn:
             self.management_turn.active=False
         if self.management_proposals:
@@ -224,9 +281,11 @@ class Agent:
                     text += "\n引用锚点未能保存，请使用明确的企业和发票号。"
                     self.trace("context.error",{"source":"reference_display","status":"unavailable"})
             self.last_response = {"source":"runtime_output", "category":category, "text":text, "operation_receipt":self.write_receipt, "trace_degraded":self.trace_degraded,"execution":execution.snapshot()}
+            api={key:self.transport.counts()[key]-api_before[key] for key in api_before} if api_before is not None else None
+            self.last_response['api_counts']=api
             if store:
                 self.messages.append({"role": "assistant", "name":"harness_output", "content": text})
-            self.trace("turn.finished", {"answer": text, "tools_attempted": execution.actual_tools, "write_receipt": self.write_receipt,"execution":execution.snapshot()})
+            self.trace("turn.finished", {"answer": text, "tools_attempted": execution.actual_tools, "write_receipt": self.write_receipt,"execution":execution.snapshot(),'api_counts':api})
             self.last_response["trace_degraded"] = self.trace_degraded
             return text
         if reference and not reference["ok"]:
@@ -252,7 +311,7 @@ class Agent:
                 break
             self.trace("model_input", redact({"messages": context, "tools": self.tools}))
             try:
-                reply = self.model(context, self.tools)
+                reply = self.transport(context,self.tools) if self.transport and self.model is _BUILTIN_LIVE_MODEL else self.model(context, self.tools)
                 if not isinstance(reply, dict) or reply.get("role") != "assistant":
                     raise ValueError("模型不能伪造消息角色")
                 reply = self.protocol.normalize(reply,bool(self.tools))

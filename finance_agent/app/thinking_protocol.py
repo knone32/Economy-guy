@@ -25,8 +25,9 @@ def settings():
 
 class ThinkingProtocol:
     """协议状态随消息对象存活；只在构造API输入时还原。"""
-    def __init__(self,base_url=None,model=None,thinking=True):
+    def __init__(self,base_url=None,model=None,thinking=True,bind_environment=True):
         self.binding=settings() if base_url is None else (base_url,model)
+        self.bind_environment=bind_environment
         url,name=self.binding
         parsed=urlsplit(url)
         official=(parsed.scheme=='https' and parsed.hostname=='api.deepseek.com'
@@ -37,7 +38,7 @@ class ThinkingProtocol:
         self.enabled=bool(official and known and thinking)
 
     def check_binding(self):
-        if self.enabled and settings()!=self.binding:
+        if self.bind_environment and self.enabled and settings()!=self.binding:
             raise ProtocolError('服务配置已变化，请退出并新建会话；不跨服务传递旧协议历史')
         if self.ambiguous:
             raise ProtocolError('自定义DeepSeek代理协议未明确配置，停止猜测；请使用已验证官方端点')
