@@ -4,7 +4,7 @@
 
 ```powershell
 python -m pip install -r requirements.txt
-python main.py
+python main.py home
 ```
 
 输入数字打开菜单。输入 `0` 返回上一级，在主页输入 `0` 退出。`/home` 返回主页，`/cancel` 取消当前操作，`/quit` 退出。Ctrl+C 可中止当前输入。最终确认提示中，只有完整确认语句会提交。

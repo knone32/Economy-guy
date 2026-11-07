@@ -78,7 +78,8 @@ class Stage3ATests(DatabaseTestCaseMixin,unittest.TestCase):
         task_id = self.task()
         self.assertEqual(list_tasks(self.db_path,"U002","C001")["data"],[])
         self.assertEqual(list_tasks(self.db_path,"U002","C002")["status"],"DENIED")
-        self.assertEqual(self.create("U002","C001")["status"],"SUCCESS")
+        # P0 execution policy: a read-only user cannot create work that needs invoice edits.
+        self.assertEqual(self.create("U002","C001")["status"],"DENIED")
         self.assertEqual(self.create("U001","C002")["status"],"SUCCESS")
         other = ManagementIntent("U002","task","取消任务")
         self.assertEqual(manage_task(self.db_path,"U002","C001","cancel",task_id,intent=other)["status"],"NOT_FOUND")

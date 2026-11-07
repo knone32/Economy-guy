@@ -59,12 +59,14 @@ class UpdateSession:
     drafts: dict = dataclass_field(default_factory=dict)
     confirmations: dict = dataclass_field(default_factory=dict)
     expected_scope: dict | None = None
+    explicit_edit_only: bool = False
 
-    def begin_turn(self, request, allow_prepare=False, expected_scope=None):
+    def begin_turn(self, request, allow_prepare=False, expected_scope=None, explicit_edit_only=False):
         self.turn_id = uuid4().hex
         self.source_request = request
         self.allow_prepare = allow_prepare
         self.expected_scope = expected_scope
+        self.explicit_edit_only = explicit_edit_only
         self.drafts.clear()
         self.confirmations.clear()
 

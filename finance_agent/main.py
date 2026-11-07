@@ -25,15 +25,34 @@ def check_runtime(version=None, discover=None, *, dependencies=("openpyxl", "ope
     return True
 
 
+def launch_tui(args):
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        print("全屏工作台需要交互终端。请在 Windows Terminal / PowerShell 运行 python main.py，"
+              "或使用 python main.py home 和原有参数子命令。", file=sys.stderr)
+        raise SystemExit(2)
+    from app.tui import AgentWorkspace
+    log = ROOT / "data" / "logs" / "tui_trace.jsonl"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    application = AgentWorkspace(args.db, args.profiles_file, args.profiles_local, trace_path=log)
+    if application.run() == "legacy_home":
+        from app.cli_home import Home
+        home = Home(application.db, args.profiles_file, args.profiles_local, DEFAULT_EXCEL)
+        if application.user:
+            home.switch_user(application.user)
+        home.run()
+
+
 def main() -> None:
     if not check_runtime(dependencies=()):
         raise SystemExit(2)
-    parser = argparse.ArgumentParser(description="财税 Agent Harness（无子命令时打开交互主页）")
+    parser = argparse.ArgumentParser(description="财税 Agent Harness（无子命令时打开全屏工作台）")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB, help="SQLite 数据库路径")
     from app.model_config import DEFAULT_TEMPLATE,DEFAULT_LOCAL
     parser.add_argument('--profiles-file',type=Path,default=DEFAULT_TEMPLATE,help='无密钥TOML模板')
     parser.add_argument('--profiles-local',type=Path,default=DEFAULT_LOCAL,help='本地新增Profile JSON；不提交Git')
     sub = parser.add_subparsers(dest="command")
+    sub.add_parser("tui", help="全屏 Agent 工作台")
+    sub.add_parser("home", help="原数字菜单与管理入口")
     profiles=sub.add_parser('profiles',help='可信本地模型配置；不调用模型API')
     profiles.add_argument('action',choices=('list','check','add'))
     profiles.add_argument('--user',help='可信模拟业务身份，不是生产认证')
@@ -87,7 +106,9 @@ def main() -> None:
     chat.add_argument("--max-replans",type=int,default=1,help="至多一次显式重规划")
     args = parser.parse_args()
     dependencies = ()
-    if args.command is None:
+    if args.command in {None, "tui"}:
+        dependencies = ("openpyxl", "openai", "textual")
+    elif args.command == "home":
         dependencies = ("openpyxl", "openai")
     elif args.command == "init":
         dependencies = ("openpyxl",)
@@ -95,7 +116,10 @@ def main() -> None:
         dependencies = ("openai",)
     if dependencies and not check_runtime(dependencies=dependencies):
         raise SystemExit(2)
-    if args.command is None:
+    if args.command in {None, "tui"}:
+        launch_tui(args)
+        return
+    if args.command == "home":
         from app.cli_home import Home
         Home(args.db, args.profiles_file, args.profiles_local, DEFAULT_EXCEL).run()
         return

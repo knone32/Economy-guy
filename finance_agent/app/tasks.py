@@ -77,6 +77,35 @@ def task_progress(path, user_id, company_id, year, month):
             connection.close()
 
 
+def task_details(path, user_id, company_id, task_id):
+    """Open a task link against current ownership, ACL, rules and invoice rows."""
+    connection = open_existing(path, readonly=True)
+    try:
+        connection.execute("BEGIN")
+        if not check_permission(connection, user_id, company_id, "read").allowed:
+            return result("DENIED", error="没有企业读取权限")
+        row = connection.execute(
+            "SELECT * FROM tasks WHERE task_id=? AND user_id=? AND company_id=?",
+            (task_id, user_id, company_id)).fetchone()
+        if not row:
+            return result("NOT_FOUND", error="当前用户企业范围内没有该任务")
+        task = _task(row)
+        year, month = task["year"], task["month"]
+        invoices = list_invoices(connection, user_id, company_id, year, month)
+        try:
+            check = _check(connection, user_id, company_id, year, month)
+            problem = None
+        except (RuleError, ValueError):
+            check, problem = None, "当前规则不可用或存在冲突，请核对适用规则。"
+        may_modify = check_permission(connection, user_id, company_id, "modify").allowed
+        return result("SUCCESS", {"task": task, "check": check, "invoices": invoices,
+                                  "problem": problem, "may_modify": may_modify,
+                                  "can_execute": may_modify and bool(check and check["invoice_count"])
+                                  and task["status"] in UNFINISHED})
+    finally:
+        connection.close()
+
+
 def manage_task(path, user_id, company_id, action, task_id="", year=2026, month=9, note="", intent=None):
     """明确创建/补充/更正/转换状态；业务证据不足不能标完成。"""
     if type(action) is not str or action not in ACTIONS or any(type(v) is not str for v in (task_id,note)):
@@ -90,6 +119,9 @@ def manage_task(path, user_id, company_id, action, task_id="", year=2026, month=
             return result("DENIED",error="没有企业读取权限")
         if action != "show" and not (can_manage(intent,user_id,"task",action) or can_propose(intent,user_id,"task",action)):
             return result("DENIED",error="本轮没有可信的明确任务管理意图")
+        if action in {"create", "correct", "resume", "complete"} and not check_permission(
+                connection, user_id, company_id, "modify").allowed:
+            return result("DENIED", error="处理缺失用途待办需要该企业的发票修改权限")
         if action == "create":
             if task_id or not note.strip():
                 return result("INVALID_ARGUMENTS",error="新建需空task_id及明确后续待办说明")

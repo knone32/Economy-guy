@@ -234,12 +234,23 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
         if name == "prepare_invoice_update":
             if update_session is None or update_session.user_id != user_id:
                 return tool_result("DENIED", error="缺少可信更新Session")
+            if update_session.explicit_edit_only:
+                scope = update_session.expected_scope or {}
+                missing_fields = [key for key in ("company_id", "invoice_no") if len(scope.get(key, [])) != 1]
+                if missing_fields:
+                    return tool_result("AMBIGUOUS", error="请明确本次修改的企业和发票",
+                                       evidence={"missing_fields": missing_fields})
+                if scope.get("_conflict") or any(key in scope and args[key] not in scope[key]
+                                                  for key in ("company_id", "invoice_no", "field", "new_value")):
+                    return tool_result("SCOPE_MISMATCH", error="修改提案与本次明确目标或新值不一致")
             with closing(sqlite3.connect(Path(db_path).resolve().as_uri()+"?mode=ro",uri=True)) as c:
                 c.row_factory=sqlite3.Row
                 if not check_permission(c,user_id,args['company_id'],'modify').allowed:
                     return tool_result('DENIED',error='没有修改权限')
-            missing=validate_scope(provenance,user_id,name,args)
-            if missing:return tool_result(**missing)
+            if not update_session.explicit_edit_only:
+                missing = validate_scope(provenance, user_id, name, args)
+                if missing:
+                    return tool_result(**missing)
             if execution and execution.schedule:
                 with closing(sqlite3.connect(Path(db_path).resolve().as_uri()+"?mode=ro",uri=True)) as connection:
                     connection.row_factory=sqlite3.Row
@@ -251,7 +262,7 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
             target = update_session.expected_scope
             if target is None:
                 target = explicit_scope(update_session.source_request, include_update_aliases=True)
-            if expected_scope:
+            if expected_scope and not update_session.explicit_edit_only:
                 target = dict(target)
                 for key in ("company_id","invoice_no"):
                     if key in expected_scope:

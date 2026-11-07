@@ -17,17 +17,17 @@ class WriteCoordinator:
         self.pending = None
         self.events = []
 
-    def begin(self, text, allow_prepare=False, continue_edit=False):
+    def begin(self, text, allow_prepare=False, continue_edit=False, edit_scope=None):
         original = self.pending if continue_edit and self.pending and self.pending["user_id"] == self.user_id else None
         enabled = bool(allow_prepare or original)
         if allow_prepare:
-            original = {"intent_id":uuid4().hex, "user_id":self.user_id, "inputs":[], "scope":{}}
+            original = {"intent_id":uuid4().hex, "user_id":self.user_id, "inputs":[], "scope":{}, "explicit_edit_only":edit_scope is not None}
         self.pending = original if enabled else None
         if self.pending:
             self.pending["inputs"].append(text)
-            incoming = explicit_scope(text, include_update_aliases=True)
+            incoming = edit_scope if edit_scope is not None else explicit_scope(text, include_update_aliases=True)
             scope = self.pending["scope"]
-            for key in ("company_id","invoice_no"):
+            for key in ("company_id", "invoice_no", "field", "new_value"):
                 if key not in incoming:
                     continue
                 if key in scope and scope[key] != incoming[key]:
@@ -36,14 +36,16 @@ class WriteCoordinator:
                 else:
                     scope[key] = incoming[key]
         source = "\n".join(self.pending["inputs"]) if self.pending else text
-        self.session.begin_turn(source, enabled, expected_scope=self.pending["scope"] if self.pending else None)
+        self.session.begin_turn(source, enabled, expected_scope=self.pending["scope"] if self.pending else None,
+                                explicit_edit_only=bool(self.pending and self.pending["explicit_edit_only"]))
         self.receipt = self._receipt("NOT_SUBMITTED")
         return enabled
 
     def record_preparation(self, outcome):
         """只接收Handler的实际结果；草稿与待补充意图不同时存活。"""
         self.receipt = self._receipt(outcome["status"], outcome.get("data"))
-        self.pending = None
+        if not (self.session.explicit_edit_only and outcome["status"] == "AMBIGUOUS"):
+            self.pending = None
 
     @staticmethod
     def _receipt(status, data=None, readback_verified=False):
@@ -71,18 +73,26 @@ class WriteCoordinator:
         """只对可信编辑原句的明确字面目标及本轮真实读取做无需变更回执。"""
         if self.receipt['status']!='NOT_SUBMITTED' or not self.session.allow_prepare:return
         text=self.session.source_request
-        scope=explicit_scope(text,include_update_aliases=True)
-        if any(len(scope.get(key,[]))!=1 for key in ('company_id','invoice_no')):return
-        matches = list(re.finditer(r'(用途|purpose|备注|remark)\s*(?:修改为|改为|改成|设置为|设为)', text))
-        if len(matches) != 1:
+        scope = self.session.expected_scope if self.session.explicit_edit_only else explicit_scope(
+            text, include_update_aliases=True)
+        if not scope or scope.get("_conflict"):
             return
-        match = matches[0]
-        field = 'purpose' if match[1] in {'用途', 'purpose'} else 'remark'
-        value = re.split(r'[。\n]', text[match.end():], maxsplit=1)[0].strip()
-        if value.startswith(('“','"')):
-            closing='”' if value[0]=='“' else '"'
-            if not value.endswith(closing):return
-            value=value[1:-1]
+        if any(len(scope.get(key,[]))!=1 for key in ('company_id','invoice_no')):return
+        if self.session.explicit_edit_only:
+            if any(len(scope.get(key, [])) != 1 for key in ("field", "new_value")):
+                return
+            field, value = scope["field"][0], scope["new_value"][0]
+        else:
+            matches = list(re.finditer(r'(用途|purpose|备注|remark)\s*(?:修改为|改为|改成|设置为|设为)', text))
+            if len(matches) != 1:
+                return
+            match = matches[0]
+            field = 'purpose' if match[1] in {'用途', 'purpose'} else 'remark'
+            value = re.split(r'[。\n]', text[match.end():], maxsplit=1)[0].strip()
+            if value.startswith(('“','"')):
+                closing='”' if value[0]=='“' else '"'
+                if not value.endswith(closing):return
+                value=value[1:-1]
         if not value.strip():
             return
         company,invoice=scope['company_id'][0],scope['invoice_no'][0]

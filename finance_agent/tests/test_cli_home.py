@@ -57,8 +57,8 @@ class HomeTests(unittest.TestCase):
         add_profile(data, "U001", template=self.template, local=self.local)
         self.home.profile = "home-test"
 
-    def test_no_arguments_opens_home_and_old_summary_still_works(self):
-        with (patch.object(main.sys, "argv", ["main.py"]), patch.object(main, "DEFAULT_DB", self.db),
+    def test_explicit_home_and_old_summary_still_work(self):
+        with (patch.object(main.sys, "argv", ["main.py", "home"]), patch.object(main, "DEFAULT_DB", self.db),
               patch("builtins.input", return_value="0"), redirect_stdout(io.StringIO()) as out):
             main.main()
         self.assertIn("财税 Agent 主页", out.getvalue())

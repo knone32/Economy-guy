@@ -184,10 +184,10 @@ class Agent:
             if first_failure:
                 warn_trace_degraded()
 
-    def ask(self, text, allow_prepare=False, continue_edit=False, management=None, management_action=None):
+    def ask(self, text, allow_prepare=False, continue_edit=False, management=None, management_action=None, *, edit_scope=None):
         if self._active or self._retired: raise ProfileError('Agent正在运行或已结束，不能重入')
         self._active=True
-        try: return self._ask(text,allow_prepare,continue_edit,management,management_action)
+        try: return self._ask(text,allow_prepare,continue_edit,management,management_action,edit_scope)
         finally: self._active=False
 
     def switch_model(self,connection):
@@ -221,7 +221,22 @@ class Agent:
         self._retired=True
         return new
 
-    def _ask(self, text, allow_prepare=False, continue_edit=False, management=None, management_action=None):
+    def focus_task(self, company_id, task_id):
+        """A trusted task link may establish a read focus after current checks."""
+        from .tasks import task_details
+        if self._active or self._retired:
+            raise ValueError("当前会话正在处理请求")
+        self._check_identity()
+        details = task_details(self.db_path, self.user_id, company_id, task_id)
+        if not details["ok"] or not details["data"]["can_execute"]:
+            return details
+        self.cancel_update()
+        self.context.scope["task_id"] = [task_id]
+        self.context.sources["task_id"] = "current_sqlite"
+        self.context.accept_task(details)
+        return details
+
+    def _ask(self, text, allow_prepare=False, continue_edit=False, management=None, management_action=None, edit_scope=None):
         """执行一轮有界请求；每个 tool_call 都配对结果后才停止。"""
         self._check_identity()
         self.last_user_request=text
@@ -233,7 +248,7 @@ class Agent:
         self.management_turn=None
         self.management_proposals=ManagementProposals(self.user_id,text)
         self.messages.append({"role": "user", "content": text})
-        allow_prepare = self.coordinator.begin(text, allow_prepare, continue_edit)
+        allow_prepare = self.coordinator.begin(text, allow_prepare, continue_edit, edit_scope)
         # 只读轮不向模型提供写草稿能力；执行白名单仍会拒绝伪造调用。
         turn_tools=[tool for tool in self.tools
                     if allow_prepare or tool['function']['name']!='prepare_invoice_update']
