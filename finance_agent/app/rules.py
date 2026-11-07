@@ -3,6 +3,7 @@ from dataclasses import dataclass, asdict
 from datetime import date
 import json
 from decimal import Decimal
+from uuid import uuid4
 from .permissions import check_permission
 from .queries import list_invoices
 from .stage2_schema import open_existing
@@ -45,7 +46,7 @@ SEED_RULES = [
 
 
 def _validated(rule):
-    if set(rule) != set(SEED_RULES[0]):
+    if type(rule) is not dict or set(rule) != set(SEED_RULES[0]):
         raise RuleError("规则字段不完整或含未知字段")
     for key in set(rule) - {"params"}:
         if type(rule[key]) is not str or not rule[key].strip():
@@ -58,43 +59,77 @@ def _validated(rule):
     return tuple(rule[k] for k in ("rule_id", "version", "name", "company_scope", "effective_from", "status", "rule_type")) + (json.dumps(rule["params"], sort_keys=True, ensure_ascii=False), rule["content"])
 
 
-def import_rules(path, rules, capabilities=frozenset()):
-    """独立rule.manage授权；整批事务导入，同版本不同内容拒绝。"""
+def _require_rule_audit(connection):
+    if not connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='rule_management_audit'").fetchone():
+        raise RuleError("规则审计表缺失，请先执行 migrate-stage2")
+
+
+def _audit_rule_change(connection, actor, operation, rule_id, version, old_status, new_status):
+    row = connection.execute("""INSERT INTO rule_management_audit
+        (event_id,actor,operation,rule_id,version,old_status,new_status,result)
+        VALUES (?,?,?,?,?,?,?,'SUCCESS_CHANGED')""",
+        (uuid4().hex, actor, operation, rule_id, version, old_status, new_status))
+    if row.rowcount != 1:
+        raise RuleError("数据库未写入规则审计，已撤销本次变更")
+
+
+def _change_result(changed, unchanged):
+    return {"status": "SUCCESS_CHANGED" if changed else "NO_CHANGE", "changed": changed, "unchanged": unchanged}
+
+
+def import_rules(path, rules, capabilities=frozenset(), *, actor="trusted_python_rule_manager", operation="import"):
+    """独立 rule.manage 授权，整批规则与成功审计原子提交。"""
     if "rule.manage" not in capabilities:
         raise PermissionError("缺少独立 rule.manage 权限")
+    if operation not in {"seed", "import"}:
+        raise RuleError("规则导入操作无效")
     records = [_validated(rule) for rule in rules]
+    changed = 0
     connection = open_existing(path)
     try:
-        connection.execute("BEGIN IMMEDIATE")
-        for record in records:
-            if record[3] != "*" and not connection.execute("SELECT 1 FROM companies WHERE company_id=?", (record[3],)).fetchone():
-                raise RuleError("规则企业不存在")
-            old = connection.execute("SELECT * FROM rules WHERE rule_id=? AND version=?", record[:2]).fetchone()
-            if old:
-                if tuple(old) != record:
-                    raise RuleError("同号同版规则冲突，不覆盖旧版")
-                continue
-            connection.execute("""INSERT INTO rules (rule_id,version,name,company_scope,effective_from,status,rule_type,params_json,content)
-                               VALUES (?,?,?,?,?,?,?,?,?)""", record)
-        connection.commit()
-    except Exception:
-        connection.rollback()
-        raise
+        with connection:
+            connection.execute("BEGIN IMMEDIATE")
+            _require_rule_audit(connection)
+            for record in records:
+                if record[3] != "*" and not connection.execute("SELECT 1 FROM companies WHERE company_id=?", (record[3],)).fetchone():
+                    raise RuleError("规则企业不存在")
+                old = connection.execute("SELECT * FROM rules WHERE rule_id=? AND version=?", record[:2]).fetchone()
+                if old:
+                    if tuple(old) != record:
+                        raise RuleError("同号同版规则冲突，不覆盖旧版")
+                    continue
+                row = connection.execute("""INSERT INTO rules (rule_id,version,name,company_scope,effective_from,status,rule_type,params_json,content)
+                    VALUES (?,?,?,?,?,?,?,?,?)""", record)
+                if row.rowcount != 1:
+                    raise RuleError("数据库未写入规则，已撤销本次变更")
+                _audit_rule_change(connection, actor, operation, record[0], record[1], None, record[5])
+                changed += 1
     finally:
         connection.close()
+    return _change_result(changed, len(records) - changed)
 
 
-def disable_rule(path, rule_id, version, capabilities=frozenset()):
+def disable_rule(path, rule_id, version, capabilities=frozenset(), *, actor="trusted_python_rule_manager"):
     if "rule.manage" not in capabilities:
         raise PermissionError("缺少独立 rule.manage 权限")
     connection = open_existing(path)
     try:
         with connection:
-            row = connection.execute("UPDATE rules SET status='DISABLED' WHERE rule_id=? AND version=?", (rule_id, version))
-            if not row.rowcount:
+            connection.execute("BEGIN IMMEDIATE")
+            _require_rule_audit(connection)
+            key = (rule_id, version)
+            old = connection.execute("SELECT status FROM rules WHERE rule_id=? AND version=?", key).fetchone()
+            if old is None:
                 raise RuleError("规则不存在")
+            if old["status"] == "DISABLED":
+                return _change_result(0, 1)
+            row = connection.execute("UPDATE rules SET status='DISABLED' WHERE rule_id=? AND version=?", key)
+            if row.rowcount != 1:
+                raise RuleError("数据库未更新规则，已撤销本次变更")
+            _audit_rule_change(connection, actor, "disable", rule_id, version, old["status"], "DISABLED")
     finally:
         connection.close()
+    return _change_result(1, 0)
 
 
 def find_rules(path, capabilities=frozenset()):

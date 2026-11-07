@@ -21,17 +21,28 @@ class ProfileError(ValueError):
 def safe_url(value):
     """只接受显式HTTPS服务地址，拒绝凭据/查询串/本机及私网字面量。"""
     try:
-        p=urlsplit(value)
-        if (p.scheme!='https' or not p.hostname or p.username or p.password or p.query or p.fragment
-            or '\\' in value or any(c.isspace() or ord(c)<32 for c in value) or p.hostname.lower().rstrip('.')=='localhost'
-            or p.hostname.lower().rstrip('.').endswith('.localhost') or p.port not in (None,443)):
+        p = urlsplit(value)
+        host = p.hostname
+        if (p.scheme != 'https' or not host or p.username is not None or p.password is not None
+            or '?' in value or '#' in value or '\\' in value or '%' in host
+            or any(c.isspace() or ord(c) < 32 for c in value) or p.port not in (None, 443)):
             raise ValueError()
         try:
-            address=ipaddress.ip_address(p.hostname)
+            address = ipaddress.ip_address(host)
         except ValueError:
-            address=None
-        if address is not None and not address.is_global:
-            raise ValueError()
+            domain = host.encode('idna').decode('ascii').lower().removesuffix('.')
+            if domain == 'localhost' or domain.endswith('.localhost') or p.netloc.startswith('['):
+                raise ValueError()
+            # Legacy IPv4 parsers accept short, octal, hex and single-integer forms.
+            component = r'(?:[0-9]+|0x[0-9a-f]*)'
+            if re.fullmatch(rf'{component}(?:\.{component})*', domain):
+                raise ValueError()
+            label = r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?'
+            if len(domain) > 253 or not re.fullmatch(rf'{label}(?:\.{label})*', domain):
+                raise ValueError()
+        else:
+            if not address.is_global or address.is_multicast:
+                raise ValueError()
         return value.rstrip('/')
     except (ValueError,TypeError):
         raise ProfileError('模型URL不安全或格式无效，未连接') from None

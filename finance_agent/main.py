@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import sqlite3
 from pathlib import Path
 import sys
 from dataclasses import asdict
@@ -120,20 +121,30 @@ def main() -> None:
         print("Stage 2加法迁移完成，原发票和银行数据保留。请使用rules seed导入规则。")
         return
     if args.command == "rules":
-        from app.rules import import_rules, disable_rule, find_rules, SEED_RULES
-        capabilities = {"rule.manage"} if args.simulate_rule_manager else set()
-        if args.action == "seed":
-            import_rules(args.db, SEED_RULES, capabilities)
-        elif args.action == "import":
-            if not args.file:
-                parser.error("import需要--file（JSON规则列表）")
-            import_rules(args.db, json.loads(args.file.read_text(encoding="utf-8")), capabilities)
-        elif args.action == "disable":
-            if not args.rule_id or not args.version:
-                parser.error("disable需要--rule-id和--version")
-            disable_rule(args.db, args.rule_id, args.version, capabilities)
-        else:
-            print(json.dumps(find_rules(args.db, capabilities), ensure_ascii=False, indent=2))
+        from app.rules import RuleError, import_rules, disable_rule, find_rules, SEED_RULES
+        if not args.simulate_rule_manager:
+            raise PermissionError("缺少独立 rule.manage 权限")
+        capabilities = {"rule.manage"}
+        actor = "simulated_rule_manager"
+        try:
+            if args.action == "find":
+                outcome = find_rules(args.db, capabilities)
+            elif args.action == "disable":
+                if not args.rule_id or not args.version:
+                    parser.error("disable需要--rule-id和--version")
+                outcome = disable_rule(args.db, args.rule_id, args.version, capabilities, actor=actor)
+            else:
+                rules = SEED_RULES
+                if args.action == "import":
+                    if not args.file:
+                        parser.error("import需要--file（JSON规则列表）")
+                    rules = json.loads(args.file.read_text(encoding="utf-8"))
+                    if type(rules) is not list:
+                        raise RuleError("导入文件必须是JSON规则列表")
+                outcome = import_rules(args.db, rules, capabilities, actor=actor, operation=args.action)
+        except sqlite3.Error:
+            raise RuleError("规则管理数据库操作失败，未确认变更") from None
+        print(json.dumps(outcome, ensure_ascii=False, indent=2))
         return
     if args.command == "inspect-update":
         from app.updates import inspect_request

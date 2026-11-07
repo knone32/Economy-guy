@@ -32,6 +32,15 @@ def migrate(path):
           rule_type TEXT NOT NULL, params_json TEXT NOT NULL, content TEXT NOT NULL,
           PRIMARY KEY(rule_id,version)
         );
+        CREATE TABLE IF NOT EXISTS rule_management_audit (
+          event_id TEXT PRIMARY KEY, actor TEXT NOT NULL,
+          operation TEXT NOT NULL CHECK(operation IN ('seed','import','disable')),
+          rule_id TEXT NOT NULL, version TEXT NOT NULL,
+          old_status TEXT CHECK(old_status IN ('ACTIVE','DISABLED')),
+          new_status TEXT NOT NULL CHECK(new_status IN ('ACTIVE','DISABLED')),
+          result TEXT NOT NULL CHECK(result = 'SUCCESS_CHANGED'),
+          occurred_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
         COMMIT;
         """)
     except Exception:
