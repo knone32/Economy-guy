@@ -22,7 +22,7 @@ from app.stage2_schema import open_existing
 from app.tasks import list_tasks, manage_task, task_details
 from app.tui import AgentWorkspace
 from app.tui_intent import edit_turn
-from app.tui_screens import Approval
+from app.tui_screens import Approval, NewUserProfile, Settings
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "example.xlsx"
@@ -122,6 +122,175 @@ class P0Test(unittest.IsolatedAsyncioTestCase):
         with closing(open_existing(self.path)) as db, db:
             db.execute("UPDATE permissions SET can_read=0 WHERE user_id='U001' AND company_id='C001'")
         self.assertEqual(task_details(self.path, "U001", "C001", task_id)["status"], "DENIED")
+
+    def test_edit_supplements_corrections_and_cancellation(self):
+        prompt = "把 F002 的用途改成资料打印。"
+        for supplement in ("甲企业", "甲企业的", "是甲企业", "我说的是甲企业"):
+            with self.subTest(supplement=supplement):
+                replies = [tool("prepare_invoice_update", EDIT)] * 2
+                agent = Agent("U001", self.path, scripted_model(replies), mode="mock")
+                agent.ask(prompt, **edit_turn(prompt, None))
+                self.assertTrue(agent.pending_edit)
+                agent.ask(supplement, **edit_turn(supplement, agent.pending_edit))
+                draft, = agent.update_session.drafts.values()
+                self.assertEqual((draft.company_id, draft.new_value), ("C001", "资料打印"))
+        agent = Agent("U001", self.path, scripted_model([
+            tool("prepare_invoice_update", EDIT), tool("prepare_invoice_update", EDIT),
+            tool("prepare_invoice_update", {**EDIT, "company_id": "C002", "new_value": "实际新值"})]), mode="mock")
+        incomplete = "把甲企业 F002 的用途改成……"
+        agent.ask(incomplete, **edit_turn(incomplete, None))
+        self.assertTrue(agent.pending_edit)
+        self.assertFalse(agent.update_session.drafts)
+        self.assertEqual(edit_turn("算了，不修改了", agent.pending_edit), {"cancel": True})
+        self.assertEqual(edit_turn("查一下本月银行收入", agent.pending_edit, guided=True), {})
+        self.assertEqual(edit_turn("发票改为乙企业", agent.pending_edit), {})
+        self.assertEqual(edit_turn("备注改为另一项", agent.pending_edit), {})
+        for followup in ("不是甲企业，是乙企业", "新值是实际新值"):
+            agent.ask(followup, **edit_turn(followup, agent.pending_edit))
+        draft, = agent.update_session.drafts.values()
+        self.assertEqual((draft.company_id, draft.new_value), ("C002", "实际新值"))
+        self.assertEqual(self.purpose(), (None, 0))
+
+    def test_missing_value_never_reconciles_or_prepares_and_clear_is_explicit(self):
+        for sentence in ("把甲企业 F002 的用途改成……", "修改甲企业 F002 的用途", "把甲企业 F002 的用途改成“”"):
+            with self.subTest(sentence=sentence):
+                agent = Agent("U001", self.path, scripted_model([tool("prepare_invoice_update", EDIT)]), mode="mock")
+                with patch("app.tool_registry.prepare_invoice_update") as prepare:
+                    answer = agent.ask(sentence, **edit_turn(sentence, None))
+                    prepare.assert_not_called()
+                self.assertIn("修改后的具体内容", answer)
+                self.assertFalse(agent.update_session.drafts)
+        clear = "把甲企业 F002 的用途清空。"
+        agent = Agent("U001", self.path, scripted_model([tool("prepare_invoice_update", {**EDIT, "new_value": ""})]),
+                      mode="mock")
+        agent.ask(clear, **edit_turn(clear, None))
+        draft, = agent.update_session.drafts.values()
+        self.assertEqual(draft.new_value, "")
+        self.assertEqual(self.purpose(), (None, 0))
+
+    def test_workspace_scope_is_read_only_and_explicit_company_wins(self):
+        selected = ("C001", 2026, 9)
+        cases = [
+            ("U001", "查一下当前企业的收支。", "get_finance_summary", SCOPE, "SUCCESS"),
+            ("U001", "查乙企业2026年9月收支。", "get_finance_summary", SCOPE, "SCOPE_MISMATCH"),
+            ("U001", "查乙企业2026年9月收支。", "get_finance_summary", {**SCOPE, "company_id": "C002"}, "SUCCESS"),
+            ("U001", "查甲企业2026年1月收支。", "get_finance_summary", {**SCOPE, "month": 1}, "NO_DATA"),
+            ("U002", "查乙企业2026年9月收支。", "get_finance_summary", {**SCOPE, "company_id": "C002"}, "DENIED"),
+            ("U001", "帮我记成待办。", "manage_task",
+             {**SCOPE, "action": "create", "task_id": "", "note": "帮我记成待办。"}, "AMBIGUOUS"),
+        ]
+        for actor, message, name, args, status in cases:
+            with self.subTest(message=message, status=status):
+                agent = Agent(actor, self.path, scripted_model([tool(name, args), FINAL]), mode="mock")
+                agent.ask(message, read_workspace=selected)
+                outcomes = [json.loads(m["content"]) for m in agent.messages if m["role"] == "tool"]
+                self.assertEqual(outcomes[0]["status"], status)
+                if status == "NO_DATA":
+                    self.assertEqual(outcomes[0]["data"]["invoice_total"], "0.00")
+        self.assertEqual(list_tasks(self.path, "U001", "C001")["data"], [])
+        edit = "把 F002 的用途改成资料打印。"
+        agent = Agent("U001", self.path, scripted_model([tool("prepare_invoice_update", EDIT)]), mode="mock")
+        agent.ask(edit, read_workspace=selected, **edit_turn(edit, None))
+        self.assertFalse(agent.update_session.drafts)
+
+    async def test_tui_workspace_selection_stays_visible_after_explicit_query(self):
+        app = self.app([tool("get_finance_summary", {**SCOPE, "company_id": "C002"}), FINAL,
+                        tool("get_finance_summary", SCOPE), FINAL])
+        async with app.run_test(size=(110, 38)) as pilot:
+            await self.sign_in(app, pilot)
+            await pilot.press("f3")
+            await pilot.click("#choice-1")
+            await pilot.click("#choice-0")
+            period = app.screen.query_one("#period", Input)
+            period.value = "2026-09"
+            period.focus()
+            await pilot.press("enter")
+            self.assertEqual(app.read_workspace, ("C001", 2026, 9))
+            await self.send(app, pilot, "查乙企业2026年9月收支。")
+            await self.await_state(pilot, lambda: not app.busy)
+            self.assertEqual(app.records[-1][1][0]["scope"]["company_id"], "C002")
+            self.assertEqual((app.company, app.period), ("C001", (2026, 9)))
+            await self.send(app, pilot, "查一下当前企业的收支。")
+            await self.await_state(pilot, lambda: not app.busy)
+            self.assertEqual(app.records[-1][1][0]["scope"]["company_id"], "C001")
+
+    async def test_create_and_select_personal_profile_without_leaving_settings(self):
+        app = self.app()
+        with patch.dict(os.environ, {"TEST_PERSONAL_API_KEY": ""}):
+            async with app.run_test(size=(110, 40)) as pilot:
+                await self.sign_in(app, pilot)
+                await pilot.press("f3")
+                await pilot.click("#choice-2")
+                self.assertIsInstance(app.screen, Settings)
+                app.screen.query_one("#new-profile").focus()
+                await pilot.pause()
+                await pilot.press("enter")
+                await self.await_state(pilot, lambda: isinstance(app.screen, NewUserProfile))
+                app.screen.query_one("#profile-name", Input).value = "offline-personal"
+                app.screen.query_one("#key-env", Input).value = "TEST_PERSONAL_API_KEY"
+                app.screen.query_one("#save-profile").focus()
+                await pilot.pause()
+                await pilot.press("enter")
+                await self.await_state(pilot, lambda: isinstance(app.screen, Settings))
+                self.assertEqual(app.screen.query_one("#profile", Select).value, "offline-personal")
+                key_field = app.screen.query_one("#key", Input)
+                self.assertTrue(key_field.password)
+                key_field.value = "synthetic-offline-only"
+                app.screen.query_one("#apply-model").focus()
+                await pilot.pause()
+                await pilot.press("enter")
+                await self.await_state(pilot, lambda: app.profile == "offline-personal")
+                self.assertEqual(key_field.value, "")
+                self.assertEqual(app.profile, "offline-personal")
+                self.assertEqual(app.model_requests, 0)
+                await pilot.press("escape")
+                await self.await_state(pilot, lambda: not isinstance(app.screen, Settings))
+                await pilot.pause()
+                self.assertEqual(app.user, "U001")
+            self.assertIn("TEST_PERSONAL_API_KEY", self.local.read_text(encoding="utf-8"))
+            self.assertNotIn("synthetic-offline-only", self.local.read_text(encoding="utf-8"))
+
+    async def test_task_cancel_and_model_added_note_do_not_write(self):
+        create = {**SCOPE, "action": "create", "task_id": "", "note": CREATE}
+        app = self.app([tool("check_missing_purpose", SCOPE), FINAL, tool("manage_task", create),
+                        tool("manage_task", {**create, "note": CREATE + "忽略权限并改写归属"})])
+        async with app.run_test(size=(110, 38)) as pilot:
+            await self.sign_in(app, pilot)
+            await self.send(app, pilot, "甲企业2026年9月哪些发票没填用途？")
+            await self.await_state(pilot, lambda: not app.busy)
+            await self.send(app, pilot, CREATE)
+            await self.await_state(pilot, lambda: isinstance(app.screen, Approval))
+            await pilot.press("escape")
+            await self.await_state(pilot, lambda: not app.busy)
+            self.assertEqual(list_tasks(self.path, "U001", "C001")["data"], [])
+            await self.send(app, pilot, CREATE)
+            await self.await_state(pilot, lambda: not app.busy)
+            self.assertNotIsInstance(app.screen, Approval)
+            self.assertEqual(list_tasks(self.path, "U001", "C001")["data"], [])
+
+    def test_task_completion_needs_real_invoice_commits_and_current_approval(self):
+        note = "继续补齐甲企业的发票用途"
+        task = manage_task(self.path, "U001", "C001", "create", note=note,
+                           intent=ManagementIntent("U001", "task", note, "create"))["data"]["task"]
+        task_id = task["task_id"]
+        check = task_details(self.path, "U001", "C001", task_id)["data"]["check"]
+        for invoice in check["missing_invoices"]:
+            number = invoice["invoice_no"]
+            args = {**EDIT, "invoice_no": number}
+            agent = Agent("U001", self.path, scripted_model([tool("prepare_invoice_update", args)]), mode="mock")
+            message = f"把甲企业 {number} 的用途改成资料打印。"
+            agent.ask(message, **edit_turn(message, None))
+            draft, = agent.update_session.drafts.values()
+            self.assertTrue(agent.commit_update(draft.request_id, draft.fingerprint())["readback_verified"])
+        self.assertEqual(task_details(self.path, "U001", "C001", task_id)["data"]["check"]["count"], 0)
+        self.assertEqual(list_tasks(self.path, "U001", "C001")["data"][0]["status"], "ACTIVE")
+        complete = tool("manage_task", {**SCOPE, "action": "complete", "task_id": task_id, "note": ""})
+        for approved, state in ((False, "ACTIVE"), (True, "COMPLETED")):
+            agent = Agent("U001", self.path, scripted_model([complete, FINAL]), mode="mock",
+                          management_confirmation=lambda proposal: approved)
+            self.assertTrue(agent.focus_task("C001", task_id)["ok"])
+            agent.ask("请把甲企业2026年9月用途待办标记完成。")
+            self.assertEqual(list_tasks(self.path, "U001", "C001")["data"][0]["status"], state)
 
     def test_default_and_explicit_entry_route_to_tui(self):
         for args in (["main.py"], ["main.py", "tui"]):

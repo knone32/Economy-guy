@@ -15,7 +15,7 @@ from .references import resolve_reference
 from .persistence import can_manage, can_propose, confirm_management, ManagementIntent, ManagementCandidate, ManagementProposals
 from contextlib import closing
 from copy import deepcopy
-from .provenance import validate_scope
+from .provenance import MONTHLY, validate_scope
 
 MONTH = {"company_id": "string", "year": "integer", "month": "integer"}
 REGISTRY = {
@@ -235,14 +235,10 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
             if update_session is None or update_session.user_id != user_id:
                 return tool_result("DENIED", error="缺少可信更新Session")
             if update_session.explicit_edit_only:
-                scope = update_session.expected_scope or {}
-                missing_fields = [key for key in ("company_id", "invoice_no") if len(scope.get(key, [])) != 1]
-                if missing_fields:
-                    return tool_result("AMBIGUOUS", error="请明确本次修改的企业和发票",
-                                       evidence={"missing_fields": missing_fields})
-                if scope.get("_conflict") or any(key in scope and args[key] not in scope[key]
-                                                  for key in ("company_id", "invoice_no", "field", "new_value")):
-                    return tool_result("SCOPE_MISMATCH", error="修改提案与本次明确目标或新值不一致")
+                from .updates import edit_scope_error
+                rejection = edit_scope_error(update_session.expected_scope or {}, **args)
+                if rejection:
+                    return rejection
             with closing(sqlite3.connect(Path(db_path).resolve().as_uri()+"?mode=ro",uri=True)) as c:
                 c.row_factory=sqlite3.Row
                 if not check_permission(c,user_id,args['company_id'],'modify').allowed:
@@ -296,6 +292,8 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
                 if business_date.isoformat() != args["business_date"]:
                     raise ValueError("business_date必须为严格YYYY-MM-DD日期")
                 actual_scope = {**args,"year":business_date.year,"month":business_date.month}
+            if name in MONTHLY and provenance and provenance.read_workspace:
+                expected_scope = {**(expected_scope or {}), **provenance.read_workspace}
             if expected_scope and scope_mismatch(expected_scope, actual_scope):
                 return tool_result("SCOPE_MISMATCH", evidence={"scope":actual_scope,"requested_scope":expected_scope,"source":"request_validation"},
                                    error="范围不一致：工具企业或年月与用户明确字面范围不同，请确认实际查询范围")

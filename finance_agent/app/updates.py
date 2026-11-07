@@ -71,12 +71,31 @@ class UpdateSession:
         self.confirmations.clear()
 
 
+def edit_scope_error(scope, **args):
+    """Verify all four slots before an explicit TUI edit reads the invoice."""
+    fields = ("company_id", "invoice_no", "field", "new_value")
+    missing = [key for key in fields if len(scope.get(key, [])) != 1]
+    if scope.get("_conflict"):
+        return result("SCOPE_MISMATCH", error="本次修改的来源冲突，请明确更正")
+    if missing:
+        return {**result("AMBIGUOUS", error="请补充本次修改的具体目标和新值"),
+                "evidence": {"missing_fields": missing}}
+    if any(args[key] != scope[key][0] for key in fields if key in args):
+        return result("SCOPE_MISMATCH", error="修改提案与本次明确目标或新值不一致")
+    return None
+
+
 def prepare_invoice_update(path, session, company_id, invoice_no, field, new_value, expected_scope=None):
     """精确定位并展示旧值，只创建本会话草稿，不写发票。"""
     if not session or not session.allow_prepare or not session.source_request.strip():
         return result("DENIED", error="本轮未在可信CLI声明修改意图")
     if field not in FIELDS or type(new_value) is not str:
         return result("INVALID_ARGUMENTS", error="只允许purpose/remark文本")
+    if session.explicit_edit_only:
+        rejection = edit_scope_error(session.expected_scope or {}, company_id=company_id,
+                                     invoice_no=invoice_no, field=field, new_value=new_value)
+        if rejection:
+            return rejection
     connection = open_existing(path, readonly=True)
     try:
         if not check_permission(connection, session.user_id, company_id, "modify").allowed:

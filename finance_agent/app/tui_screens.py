@@ -10,7 +10,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Select, Static
 
 from .cli_workspaces import import_workspace, missing_migrations, upgrade_workspace, workspace_users
-from .model_config import ProfileError, visible_profiles
+from .model_config import ProfileError, add_profile, load_profiles, validate_profile, visible_profiles
 from .trace import redact
 
 
@@ -153,7 +153,9 @@ class Settings(Dialog):
                          value=app.profile if app.profile in self.profiles else Select.BLANK)
             yield Static(app.profile_status(), id="profile-state", markup=False)
             yield Input(placeholder="可选 · 隐藏输入 Key，仅在本进程设置", password=True, id="key")
-            yield Button("应用模型设置", id="apply-model")
+            with Horizontal():
+                yield Button("应用模型设置", id="apply-model")
+                yield Button("新建个人 Profile", id="new-profile", disabled=not app.user)
             yield Label("工作库")
             yield Input(value=str(app.db), placeholder="已有工作库或新库路径", id="db")
             yield Input(placeholder="官方 .xlsx 路径（仅导入时填写）", id="excel")
@@ -162,7 +164,7 @@ class Settings(Dialog):
                 yield Button("校验并导入", id="import-db")
                 yield Button("升级旧库", id="upgrade-db")
             yield Static("最近联网状态　" + (app.last_api_status or "尚未发起请求"), markup=False)
-            yield Button("规则、Profile 新增与高级管理", id="legacy")
+            yield Button("规则与高级管理", id="legacy")
             yield Static("", id="settings-status", markup=False)
             yield Button("关闭", id="close")
 
@@ -175,11 +177,24 @@ class Settings(Dialog):
         if item:
             ready = bool(os.environ.get(item["api_key_env"], "").strip())
             self.query_one("#profile-state", Static).update(
-                f"{item['provider']} / {redact(item['model'])} · Key {'就绪' if ready else '未设置'}")
+                f"离线配置合法 · {item['provider']} / {redact(item['model'])} · "
+                f"Key {'就绪' if ready else '未设置'}。联网结果请见对话执行记录。")
+
+    def profile_created(self, name):
+        if name is None:
+            return
+        self.profiles = {p["profile_name"]: p for p in visible_profiles(self.app.user, **self.app.profile_options)}
+        select = self.query_one("#profile", Select)
+        select.set_options([(f"{n} · {p['provider']} / {p['model']}", n) for n, p in self.profiles.items()])
+        select.value = name
+        self.message("个人 Profile 已保存且离线校验通过。可输入 Key，再应用模型设置。")
 
     @on(Button.Pressed)
     def pressed(self, event):
         key = event.button.id
+        if key == "new-profile":
+            self.app.push_screen(NewUserProfile(), self.profile_created)
+            return
         if key == "close":
             self.dismiss(None)
             return
@@ -205,6 +220,8 @@ class Settings(Dialog):
                     return
                 os.environ[env] = secret
             self.app.set_model(mode, model if item else None)
+            if item:
+                self.profile_changed(Select.Changed(self.query_one("#profile", Select), model))
             self.message(self.app.profile_status())
             return
         db_text = self.query_one("#db", Input).value.strip().strip('"')
@@ -281,3 +298,45 @@ class Period(Dialog):
             self.query_one("#period-error", Static).update("请输入明确年月，例如 2026-09。")
             return
         self.dismiss((parsed.year, parsed.month))
+
+
+class NewUserProfile(Dialog):
+    def compose(self):
+        with VerticalScroll():
+            yield Label("新建个人 Profile · 仅离线校验")
+            yield Static("只保存配置和环境变量名。请在返回设置后输入 Key。", markup=False)
+            yield Input(placeholder="Profile 名称", id="profile-name")
+            yield Select([("DeepSeek", "deepseek"), ("OpenAI", "openai"), ("OpenAI 兼容", "openai-compatible")],
+                         value="deepseek", allow_blank=False, id="provider")
+            yield Input(value="deepseek-flash", placeholder="模型名称", id="model-name")
+            yield Input(value="https://api.deepseek.com", placeholder="HTTPS 模型端点", id="endpoint")
+            yield Input(value="DEEPSEEK_API_KEY", placeholder="Key 环境变量名", id="key-env")
+            yield Static("", id="profile-error", markup=False)
+            with Horizontal():
+                yield Button("取消", id="cancel")
+                yield Button("离线校验并保存", id="save-profile")
+
+    @on(Button.Pressed)
+    def pressed(self, event):
+        if event.button.id == "cancel":
+            self.dismiss(None)
+            return
+        name = self.query_one("#profile-name", Input).value.strip()
+        data = {
+            "profile_name": name, "scope": "user", "owner_user_id": self.app.user,
+            "provider": self.query_one("#provider", Select).value, "service_account_ref": name,
+            "model": self.query_one("#model-name", Input).value.strip(),
+            "base_url": self.query_one("#endpoint", Input).value.strip(),
+            "api_key_env": self.query_one("#key-env", Input).value.strip(), "protocol": "auto",
+        }
+        try:
+            candidate = validate_profile(data)
+            profiles, _ = load_profiles(**self.app.profile_options)
+            if any(p.api_key_env == candidate.api_key_env and p.base_url != candidate.base_url
+                   for p in profiles.values()):
+                raise ProfileError("不同端点请配置独立的凭据环境变量")
+            add_profile(data, self.app.user, **self.app.profile_options)
+        except ProfileError as error:
+            self.query_one("#profile-error", Static).update(redact(str(error)))
+            return
+        self.dismiss(name)

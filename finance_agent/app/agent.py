@@ -150,7 +150,31 @@ class Agent:
             self.continuity=None
             self.last_user_request=None
 
-    def model_messages(self,reference=None):
+    def _workspace_read_scope(self, selection, text):
+        """Use only a caller-selected company/period that the current actor can read."""
+        if selection is None:
+            return None
+        import re
+        from contextlib import closing
+        from .permissions import check_permission
+        from .responses import explicit_scope
+        from .stage2_schema import open_existing
+        company, year, month = selection
+        if type(year) is not int or type(month) is not int or not (1 <= year <= 9999 and 1 <= month <= 12):
+            raise ValueError("工作区账期无效")
+        explicit = explicit_scope(text, include_update_aliases=True)
+        if explicit.get("company_id", [company]) != [company]:
+            return None
+        with closing(open_existing(self.db_path, readonly=True)) as db:
+            if not check_permission(db, self.user_id, company, "read").allowed:
+                return None
+        scope = {"company_id": [company]}
+        if not {"year", "month", "periods"}.intersection(explicit) and not re.search(
+                r"今年|去年|明年|本月|上月|下月|上个月|下个月|最近", text):
+            scope.update(year=[year], month=[month], periods=[(year, month)])
+        return scope
+
+    def model_messages(self,reference=None,read_workspace=None):
         """历史事件明确标记程序来源；不编造模型Tool Call或执行记录。"""
         self._check_identity()
         if self._connection_error and self.model is _BUILTIN_LIVE_MODEL:
@@ -167,7 +191,7 @@ class Agent:
                 "usage":"仅历史操作数据，当前字段仍须重查SQLite。"}
         messages,selection = self.context.build(self.messages,history,reference,
             self.execution.snapshot() if self.execution and self.execution.schedule else None,
-            measure=self.protocol.size if self.protocol.enabled else None)
+            measure=self.protocol.size if self.protocol.enabled else None, read_workspace=read_workspace)
         self.trace("context.selected",selection)
         messages=self.protocol.wire(messages,bool(self.tools))
         self.trace('protocol.selected',self.protocol.metadata(messages))
@@ -184,10 +208,10 @@ class Agent:
             if first_failure:
                 warn_trace_degraded()
 
-    def ask(self, text, allow_prepare=False, continue_edit=False, management=None, management_action=None, *, edit_scope=None):
+    def ask(self, text, allow_prepare=False, continue_edit=False, management=None, management_action=None, *, edit_scope=None, edit_correction=False, read_workspace=None):
         if self._active or self._retired: raise ProfileError('Agent正在运行或已结束，不能重入')
         self._active=True
-        try: return self._ask(text,allow_prepare,continue_edit,management,management_action,edit_scope)
+        try: return self._ask(text,allow_prepare,continue_edit,management,management_action,edit_scope,edit_correction,read_workspace)
         finally: self._active=False
 
     def switch_model(self,connection):
@@ -236,7 +260,7 @@ class Agent:
         self.context.accept_task(details)
         return details
 
-    def _ask(self, text, allow_prepare=False, continue_edit=False, management=None, management_action=None, edit_scope=None):
+    def _ask(self, text, allow_prepare=False, continue_edit=False, management=None, management_action=None, edit_scope=None, edit_correction=False, read_workspace=None):
         """执行一轮有界请求；每个 tool_call 都配对结果后才停止。"""
         self._check_identity()
         self.last_user_request=text
@@ -248,7 +272,7 @@ class Agent:
         self.management_turn=None
         self.management_proposals=ManagementProposals(self.user_id,text)
         self.messages.append({"role": "user", "content": text})
-        allow_prepare = self.coordinator.begin(text, allow_prepare, continue_edit, edit_scope)
+        allow_prepare = self.coordinator.begin(text, allow_prepare, continue_edit, edit_scope, edit_correction)
         # 只读轮不向模型提供写草稿能力；执行白名单仍会拒绝伪造调用。
         turn_tools=[tool for tool in self.tools
                     if allow_prepare or tool['function']['name']!='prepare_invoice_update']
@@ -267,6 +291,7 @@ class Agent:
             reference_context = {**reference_hint(text),"scope":expected_scope,
                                  "anchor_id":reference["evidence"]["reference"]["anchor_id"]}
             self.trace("reference.resolved",reference)
+        read_workspace = self._workspace_read_scope(read_workspace, text) if not (allow_prepare or management or reference) else None
         # 动作由可信CLI命令指定；模型不能把只读意图变成创建/删除。
         if management in {'task','preference'} and management_action:
             self.management_turn=ManagementTurn(self.user_id)
@@ -318,7 +343,7 @@ class Agent:
             return finish("请明确引用对象："+json.dumps(reference,ensure_ascii=False),category="clarification")
         for index in range(self.max_requests):
             try:
-                context = self.model_messages(reference)
+                context = self.model_messages(reference, read_workspace)
             except ContextLimitError as error:
                 self.coordinator.pending = None
                 self.trace("context.limit",{"error":str(error),"max_chars":self.context.max_chars})
@@ -357,6 +382,12 @@ class Agent:
             self.trace("model_reply", redact(wire_reply))
             self.messages.append(reply)
             if not calls:
+                if self.update_session.explicit_edit_only:
+                    from .updates import edit_scope_error
+                    missing = edit_scope_error(self.update_session.expected_scope or {})
+                    if missing and missing["status"] == "AMBIGUOUS":
+                        return finish(render_clarification(missing["evidence"]), store=False,
+                                      category="clarification")
                 natural = parse_final(reply.get("content"))
                 if natural is None:
                     self.coordinator.pending = None
@@ -400,7 +431,7 @@ class Agent:
                                              reference_context=reference_context,execution=execution,
                                              management_confirmation=confirm_proposal if self.management_confirmation else None,
                                              management_proposals=self.management_proposals if management is None else None,
-                                             provenance=self.context.proof())
+                                             provenance=self.context.proof(read_workspace))
                         if fn.get('name') in {'manage_task','list_tasks'}:self.context.accept_task(result)
                         if fn.get("name") == "prepare_invoice_update":
                             self.coordinator.record_preparation(result)

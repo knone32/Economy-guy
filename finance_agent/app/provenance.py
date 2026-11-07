@@ -11,6 +11,7 @@ class ScopeProof:
     actor: str
     values: dict
     sources: dict
+    read_workspace: dict | None = None
 
     def metadata(self):
         """可记录的来源，不含凭据或模型自报权限。"""
@@ -23,15 +24,20 @@ def validate_scope(proof,user_id,name,args,partial=False):
         return None
     if not isinstance(proof,ScopeProof) or proof.actor!=user_id:
         return {'status':'DENIED','error':'可信范围身份不一致','evidence':{}}
+    accepted_sources = SOURCES
+    if name in MONTHLY and proof.read_workspace:
+        proof = ScopeProof(proof.actor, {**proof.values, **proof.read_workspace},
+                           {**proof.sources, **dict.fromkeys(proof.read_workspace, "workspace_read")})
+        accepted_sources = SOURCES | {"workspace_read"}
     required=['company_id']
     if name in MONTHLY or (name=='manage_task' and args.get('action') in {'create','correct'}):required+=['year','month']
     if name in {'get_invoice','prepare_invoice_update'}:required+=['invoice_no']
     missing=[key for key in required if (key in args or not partial) and
-             (not proof.values.get(key) or proof.sources.get(key) not in SOURCES)]
+             (not proof.values.get(key) or proof.sources.get(key) not in accepted_sources)]
     conflicts=[key for key in required if key in args and key not in missing and args[key] not in proof.values[key]]
     if 'year' in required and 'year' in args and 'month' in args and not missing:
         periods = proof.values.get('periods')
-        if not periods or proof.sources.get('periods') not in SOURCES:
+        if not periods or proof.sources.get('periods') not in accepted_sources:
             missing = ['year', 'month']
         elif (args['year'], args['month']) not in periods:
             conflicts = list(dict.fromkeys([*conflicts, 'year', 'month']))

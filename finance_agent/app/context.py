@@ -106,10 +106,10 @@ class ContextBuilder:
             self.scope.pop("invoice_no",None)
         return dict(self.scope) if explicit else {}
 
-    def proof(self):
+    def proof(self, read_workspace=None):
         """不采信模型或旧SQL汇总的年月。"""
         from copy import deepcopy
-        return ScopeProof(self.user_id,deepcopy(self.scope),dict(self.sources))
+        return ScopeProof(self.user_id,deepcopy(self.scope),dict(self.sources),read_workspace)
 
     def accept_reference(self,evidence):
         """仅在真实引用解析成功后绑定来源。"""
@@ -210,7 +210,7 @@ class ContextBuilder:
             data["reference_status"] = "unavailable"
         return data
 
-    def build(self,messages,history_event=None,reference=None,execution=None,measure=None):
+    def build(self,messages,history_event=None,reference=None,execution=None,measure=None,read_workspace=None):
         """以序列化消息字符数限长；保留本轮整段及tool_call_id配对，旧轮整段取舍。"""
         size = measure or (lambda value: len(json.dumps(value,ensure_ascii=False)))
         last_user = max((i for i,m in enumerate(messages) if m["role"]=="user"),default=len(messages))
@@ -224,7 +224,9 @@ class ContextBuilder:
         dropped = []
         # 这些消息为assistant数据而非system/user；不会制造虚假Tool Call。
         data = self._data()
-        extras = [{"role":"assistant","name":"context_data","content":json.dumps(data,ensure_ascii=False)}] if self.scope or data.get("references") else []
+        if read_workspace:
+            data["read_workspace"] = {"scope": read_workspace, "usage": "仅供本轮只读查询，用户明确要求优先，不授予任何写入权限。"}
+        extras = [{"role":"assistant","name":"context_data","content":json.dumps(data,ensure_ascii=False)}] if self.scope or read_workspace or data.get("references") else []
         if execution:
             extras.append({"role":"assistant","name":"harness_schedule","content":json.dumps({
                 "source":"harness_schedule","usage":"本轮执行状态，不是持久任务/业务授权/提交回执",**execution},ensure_ascii=False)})

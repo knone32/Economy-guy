@@ -17,7 +17,7 @@ class WriteCoordinator:
         self.pending = None
         self.events = []
 
-    def begin(self, text, allow_prepare=False, continue_edit=False, edit_scope=None):
+    def begin(self, text, allow_prepare=False, continue_edit=False, edit_scope=None, edit_correction=False):
         original = self.pending if continue_edit and self.pending and self.pending["user_id"] == self.user_id else None
         enabled = bool(allow_prepare or original)
         if allow_prepare:
@@ -30,7 +30,7 @@ class WriteCoordinator:
             for key in ("company_id", "invoice_no", "field", "new_value"):
                 if key not in incoming:
                     continue
-                if key in scope and scope[key] != incoming[key]:
+                if key in scope and scope[key] != incoming[key] and not edit_correction:
                     # 不能把C001/C002或F002/F003并为多个允许的写目标。
                     scope["_conflict"] = True
                 else:

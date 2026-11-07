@@ -97,6 +97,7 @@ class AgentWorkspace(App):
         self.mode = "live"
         self.company = None
         self.period = None
+        self.read_workspace = None
         self.busy = False
         self.supplement = False
         self.task_route = None
@@ -189,6 +190,7 @@ class AgentWorkspace(App):
     def logout(self):
         self.reset_agent(clear_log=True)
         self.user, self.profile, self.company, self.period, self.task_route = None, None, None, None, None
+        self.read_workspace = None
         self.workspace_widget("#prompt", Input).value = ""
         self.task_links = {}
         self.invoice_rows = []
@@ -343,7 +345,7 @@ class AgentWorkspace(App):
             self.continue_task()
         elif key == "supplement":
             self.supplement = True
-            self.note("本条用于补充同一次修改。也可输入包含完整目标的新修改要求。")
+            self.note("可补充企业或发票，或输入「新值是…」。也可用引号括住完整新值，或发送一项新的要求。")
             self.workspace_widget("#prompt", Input).focus()
 
     @on(Input.Submitted, "#prompt")
@@ -358,13 +360,16 @@ class AgentWorkspace(App):
             return
         event.input.value = ""
         self.chat_message("你", message)
+        args = edit_turn(message, self.agent.pending_edit, guided=self.supplement)
+        if args.pop("cancel", False):
+            self.action_cancel_edit()
+            return
         self.busy = True
         event.input.disabled = True
         self.note("正在核对，请稍候…")
-        guided = self.supplement
         self.supplement = False
         self.workspace_widget("#supplement", Button).display = False
-        self.run_turn(message, guided)
+        self.run_turn(message, args, self.read_workspace)
 
     def wait_confirmation(self, title, body, action):
         """Let the worker wait for the modal while the terminal stays responsive."""
@@ -410,13 +415,12 @@ class AgentWorkspace(App):
         return self.wait_confirmation(title, body, "确认保存")
 
     @work(thread=True, group="agent", exit_on_error=False)
-    def run_turn(self, message, guided):
+    def run_turn(self, message, args, read_workspace):
         agent = self.agent
         offset = len(agent.messages)
         receipt = None
         try:
-            args = edit_turn(message, agent.pending_edit, guided=guided)
-            answer = agent.ask(message, **args)
+            answer = agent.ask(message, read_workspace=read_workspace, **args)
             if agent.update_session.drafts:
                 draft, = agent.update_session.drafts.values()
                 fields = asdict(draft)
@@ -425,7 +429,7 @@ class AgentWorkspace(App):
                     note = "\n此企业与工作区提示不同。" if self.company and self.company != draft.company_id else ""
                     name = self.company_name(draft.company_id)
                     body = (f"企业　{name}（{draft.company_id}）\n发票　{draft.invoice_no}\n字段　{field}\n"
-                            f"原值　{draft.old_value or '（空）'}\n新值　{draft.new_value}{note}\n尚未提交。")
+                            f"原值　{draft.old_value or '（空）'}\n新值　{draft.new_value or '（清空）'}{note}\n尚未提交。")
                     if self.wait_confirmation("确认发票修改", body, "确认修改"):
                         receipt = agent.commit_update(draft.request_id, draft.fingerprint())
                 if receipt is None:
@@ -499,7 +503,7 @@ class AgentWorkspace(App):
         self.records.append((status, calls, self.last_api_status))
         for call in calls:
             scope = call.get("scope") or {}
-            if call["status"] in {"SUCCESS", "NO_DATA"} and scope.get("company_id"):
+            if self.read_workspace is None and call["status"] in {"SUCCESS", "NO_DATA"} and scope.get("company_id"):
                 self.company = scope["company_id"]
                 if "year" in scope and "month" in scope:
                     self.period = scope["year"], scope["month"]
@@ -609,6 +613,7 @@ class AgentWorkspace(App):
             return
         data = outcome["data"]
         task, count = data["task"], data["check"]["count"]
+        self.read_workspace = None
         self.company = task["company_id"]
         self.period = task["year"], task["month"]
         self.show("chat")
@@ -635,6 +640,7 @@ class AgentWorkspace(App):
             if period is None:
                 return
             self.company, self.period = company, period
+            self.read_workspace = (company, *period)
             self.update_header()
             if for_finance:
                 self.show("finance")
