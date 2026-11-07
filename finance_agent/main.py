@@ -1,28 +1,39 @@
-"""Stage 0–3C 命令行入口与可信模拟管理交互。"""
+"""财税 Agent 主页与兼容的 argparse 子命令。"""
 import argparse
 import json
-import os
 import sqlite3
 from pathlib import Path
 import sys
-from dataclasses import asdict
-from app.database import connect
-from app.finance import bank_expense_total, bank_income_total, invoice_total
-from app.importer import initialize_database
-from app.queries import list_bank_transactions, list_invoices
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_EXCEL = ROOT.parent / "赛题二：财税Harness初赛材料包-v1.1.0 2" / "02_示例数据.xlsx"
 DEFAULT_DB = ROOT / "data" / "finance.db"
 
 
+def check_runtime(version=None, discover=None, *, dependencies=("openpyxl", "openai")):
+    from importlib.util import find_spec
+    if (version if version is not None else sys.version_info) < (3, 11):
+        print("需要 Python 3.11 或更新版本。Windows 可用 py -3.11 main.py 启动。", file=sys.stderr)
+        return False
+    discover = discover or find_spec
+    missing = [name for name in dependencies if discover(name) is None]
+    if missing:
+        print("缺少依赖 " + "、".join(missing)
+              + "。请在 finance_agent 目录执行 python -m pip install -r requirements.txt。",
+              file=sys.stderr)
+        return False
+    return True
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="财税 Agent Harness Stage 0–3C")
+    if not check_runtime(dependencies=()):
+        raise SystemExit(2)
+    parser = argparse.ArgumentParser(description="财税 Agent Harness（无子命令时打开交互主页）")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB, help="SQLite 数据库路径")
     from app.model_config import DEFAULT_TEMPLATE,DEFAULT_LOCAL
     parser.add_argument('--profiles-file',type=Path,default=DEFAULT_TEMPLATE,help='无密钥TOML模板')
     parser.add_argument('--profiles-local',type=Path,default=DEFAULT_LOCAL,help='本地新增Profile JSON；不提交Git')
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command")
     profiles=sub.add_parser('profiles',help='可信本地模型配置；不调用模型API')
     profiles.add_argument('action',choices=('list','check','add'))
     profiles.add_argument('--user',help='可信模拟业务身份，不是生产认证')
@@ -75,6 +86,19 @@ def main() -> None:
     chat.add_argument("--max-extensions",type=int,default=2,help="至多两次证据驱动续期")
     chat.add_argument("--max-replans",type=int,default=1,help="至多一次显式重规划")
     args = parser.parse_args()
+    dependencies = ()
+    if args.command is None:
+        dependencies = ("openpyxl", "openai")
+    elif args.command == "init":
+        dependencies = ("openpyxl",)
+    elif args.command == "chat" and args.mode == "live":
+        dependencies = ("openai",)
+    if dependencies and not check_runtime(dependencies=dependencies):
+        raise SystemExit(2)
+    if args.command is None:
+        from app.cli_home import Home
+        Home(args.db, args.profiles_file, args.profiles_local, DEFAULT_EXCEL).run()
+        return
     if args.command=='profiles':
         from app.model_config import add_profile,visible_profiles,resolve_connection,ProfileError
         options={'template':args.profiles_file,'local':args.profiles_local}
@@ -151,101 +175,19 @@ def main() -> None:
         print(json.dumps(inspect_request(args.db, args.user, args.request_id), ensure_ascii=False, indent=2))
         return
     if args.command == "chat":
-        from app.agent import Agent, live_model, _BUILTIN_LIVE_MODEL
-        from app.model_config import resolve_connection,visible_profiles,load_profiles,ProfileError
-        profile_options={'template':args.profiles_file,'local':args.profiles_local}
-        model = live_model
-        if args.mode == "mock":
-            print("MOCK / 固定模拟响应：每轮查询 C001 2026-09，不代表自然语言理解")
-            def model(messages, tools):
-                if messages[-1]["role"] == "tool":
-                    return {"role": "assistant", "content": json.dumps({"kind":"information", "text":"MOCK 结果：" + messages[-1]["content"]}, ensure_ascii=False)}
-                return {"role": "assistant", "tool_calls": [{"id": "mock_query", "type": "function", "function": {"name": "get_finance_summary", "arguments": '{"company_id":"C001","year":2026,"month":9}'}}]}
-        _,default_profile=load_profiles(**profile_options)
-        selected=args.profile or os.getenv('FINANCE_MODEL_PROFILE') or default_profile
-        connection=resolve_connection(args.user,args.profile,require_key=args.mode=='live',**profile_options) if selected or (args.mode=='live' and model is _BUILTIN_LIVE_MODEL) else None
-        def confirm_long_term(proposal):
-            """可信交互只确认本次展示的对象与内容，不让模型提供确认。"""
-            print('长期状态待确认（尚未保存）：')
-            print(json.dumps(proposal,ensure_ascii=False,indent=2))
-            try:
-                return input('核对原始要求及实际对象/内容，输入 confirm '+proposal['request_id']+' 才保存；其他输入取消：')=='confirm '+proposal['request_id']
-            except (EOFError,KeyboardInterrupt):
-                return False
-        agent = Agent(args.user, args.db, model, args.mode, args.trace,max_context_chars=args.max_context_chars,
-                      block_requests=args.block_requests,max_requests=args.max_requests,max_tools=args.max_tools,
-                      max_extensions=args.max_extensions,max_replans=args.max_replans,management_confirmation=confirm_long_term,connection=connection)
-        print("财税Agent（模拟身份）：普通自然语言可提出待办/偏好候选，核对具体内容并确认才保存；/task、/preference兼容。/edit准备发票草稿，仍须最终确认。exit退出。")
-        while True:
-            try:
-                text = input("你：")
-            except (EOFError, KeyboardInterrupt):
-                break
-            if text.strip().lower() == "exit":
-                break
-            if text.strip():
-                if text.strip()=='/provider list':
-                    print(json.dumps(visible_profiles(args.user,**profile_options),ensure_ascii=False,indent=2))
-                    continue
-                if text.strip()=='/provider status':
-                    print(json.dumps(agent.connection.metadata() if agent.connection else {'mode':'mock','profile_name':None},ensure_ascii=False))
-                    continue
-                if text.startswith('/provider use '):
-                    try:
-                        new_connection=resolve_connection(args.user,text[len('/provider use '):].strip(),require_key=args.mode=='live',**profile_options)
-                        agent=agent.switch_model(new_connection)
-                        print('模型协议会话已重建：保留可重新鉴权的业务范围，任务/偏好重读SQLite；旧消息、草稿和确认不继承。')
-                        print(json.dumps(agent.connection.metadata(),ensure_ascii=False))
-                    except ProfileError as error:
-                        print('未切换：'+str(error))
-                    continue
-                if text.strip() == "/cancel":
-                    print(json.dumps(agent.cancel_update(), ensure_ascii=False, indent=2))
-                    continue
-                allow_prepare = text.startswith("/edit ")
-                request = text[6:] if allow_prepare else text
-                management = None
-                management_action = None
-                if text.startswith("/task "):
-                    management,request = "task",text[6:]
-                elif text.startswith("/preference "):
-                    management,request = "preference",text[12:]
-                if management:
-                    management_action,separator,request = request.partition(" ")
-                    actions = {"create","show","update","correct","wait","pause","resume","complete","cancel","list","get","delete"}
-                    if management_action not in actions or not separator or not request.strip():
-                        print("请用明确管理动作和要求，例如 /task create 保存C001九月用途后续待办。未执行写入。")
-                        continue
-                continue_edit = False
-                if agent.pending_edit and not allow_prepare:
-                    print("尚有待补充修改意图：" + agent.pending_edit["inputs"][0])
-                    try:
-                        continue_edit = input("本条是补充该修改？输入 continue 关联；其他输入按新主题处理：") == "continue"
-                    except (EOFError, KeyboardInterrupt):
-                        continue_edit = False
-                print("答复（一般说明会标明未核实；查询另附实际范围）：" + agent.ask(request, allow_prepare=allow_prepare, continue_edit=continue_edit,management=management,management_action=management_action))
-                print("Harness发票写入回执：" + json.dumps(agent.write_receipt, ensure_ascii=False))
-                for request_id, draft in list(agent.update_session.drafts.items()):
-                    print("本轮原始要求：" + draft.source_request)
-                    print(json.dumps(asdict(draft), ensure_ascii=False, indent=2))
-                    print("请核对企业/发票/字段/旧值/新值。输入完整 confirm " + request_id + " 才提交，其余输入取消。")
-                    try:
-                        confirmation = input("最终确认：")
-                    except (EOFError, KeyboardInterrupt):
-                        confirmation = ""
-                    if confirmation != "confirm " + request_id:
-                        print(json.dumps(agent.cancel_update(), ensure_ascii=False, indent=2))
-                        continue
-                    outcome = agent.commit_update(request_id, draft.fingerprint())
-                    print(json.dumps(outcome, ensure_ascii=False, indent=2))
-                    if 'task_progress' in outcome:
-                        from app.responses import render_task_progress
-                        print(render_task_progress(outcome['task_progress']))
+        from app.cli_chat import run_chat
+        run_chat(args)
         return
-    if args.command == "init": print(json.dumps(initialize_database(args.excel, args.db), ensure_ascii=False)); return
+    if args.command == "init":
+        from app.importer import initialize_database
+        print(json.dumps(initialize_database(args.excel, args.db), ensure_ascii=False))
+        return
     if args.command == "test":
         import unittest
         suite = unittest.defaultTestLoader.discover(str(ROOT / "tests")); result = unittest.TextTestRunner(verbosity=2).run(suite); raise SystemExit(not result.wasSuccessful())
+    from app.database import connect
+    from app.finance import bank_expense_total, bank_income_total, invoice_total
+    from app.queries import list_bank_transactions, list_invoices
     connection = connect(args.db)
     try:
         if args.command == "invoices": result = list_invoices(connection, args.user, args.company, args.year, args.month)
