@@ -82,6 +82,37 @@ def render_scope(evidence):
     return f"实际查询范围：企业 {company}；年月 {period}；来源 {evidence.get('source','未知')}；规则 {rule_text}。"
 
 
+def _verified_task_progress(results):
+    """仅合并本轮唯一匹配的已鉴权任务读取与用途检查。"""
+    reads = []
+    checks = []
+    for name, outcome in results:
+        evidence = outcome.get("evidence", {})
+        if name == "manage_task" and evidence.get("management_confirmation"):
+            return None
+        if outcome["status"] != "SUCCESS" or evidence.get("source") != "current_sqlite":
+            continue
+        if name == "list_tasks":
+            reads.extend((task, evidence["scope"]) for task in outcome["data"])
+        elif name == "manage_task" and "task" in outcome["data"]:
+            reads.append((outcome["data"]["task"], evidence["scope"]))
+        elif name == "check_missing_purpose":
+            checks.append(outcome)
+    if len(checks) != 1:
+        return None
+    outcome = checks[0]
+    check, evidence = outcome["data"], outcome["evidence"]
+    scope = evidence["scope"]
+    tasks = [task for task, read_scope in reads
+             if task.get("task_id") and task.get("task_type") == "missing_purpose"
+             and task.get("status") in {"ACTIVE", "WAITING_USER", "PAUSED"}
+             and read_scope.get("company_id") == scope.get("company_id")
+             and all(key in scope and task.get(key) == scope[key] for key in ("company_id", "year", "month"))]
+    if len(tasks) != 1 or check["rule"] != evidence.get("rule") or check["count"] != len(check["missing_invoices"]):
+        return None
+    return {"status": "SUCCESS", "data": {"task": tasks[0], "check": check}, "evidence": evidence}
+
+
 def render_information(results):
     """只从本轮实际只读工具结果生成信息答复，不转述模型自由成功声明。"""
     parts = []
@@ -116,6 +147,12 @@ def render_information(results):
             parts.append("没有匹配记录；这不是权限拒绝。")
         if outcome["status"] == "NO_CHANGE":
             parts.append("未发生更改：" + (outcome.get("error") or "当前状态无需改变"))
+    progress = _verified_task_progress(results)
+    if progress:
+        parts.append(render_task_progress(progress))
+    elif any(name == "check_missing_purpose" for name, _ in results) and any(
+            name in {"list_tasks", "manage_task"} for name, _ in results):
+        parts.append("本轮无法核实同一任务与缺失用途的完整进度，请明确待办范围后核对。")
     receipt=preference_receipt(results)
     if receipt:parts.append(receipt)
     return "\n".join(parts) if parts else "该模型信息尚未核实；没有本轮可核验查询证据，也没有提交成功依据。"
@@ -173,7 +210,7 @@ def render_task_progress(outcome):
     task,check=outcome['data']['task'],outcome['data']['check']
     return (render_scope(outcome['evidence'])+f"\n任务 {task['task_id']} 状态仍为 {task['status']}；当前剩余 {check['count']} 张必填用途缺失。"
             +'\n当前剩余对象：'+json.dumps(check['missing_invoices'],ensure_ascii=False)
-            +'\n下一步：核对剩余对象并明确提供用途，经Prepare和可信确认后逐张保存；若已无缺项，任务完成仍须单独确认。')
+            +'\n下一步：核对剩余对象并明确提供用途，经Prepare、可信确认和Commit逐张保存；全部补齐后仍须单独核对并确认任务完成。')
 
 
 def render_clarification(value):

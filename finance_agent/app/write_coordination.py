@@ -5,7 +5,7 @@ from datetime import date
 from uuid import uuid4
 from .updates import UpdateSession, confirm_draft, commit_invoice_update, result as tool_result
 from .trace import warn_trace_degraded
-from .responses import explicit_scope
+from .responses import explicit_scope, scope_mismatch
 from .tasks import task_progress
 from .updates import current_target_matches
 
@@ -73,19 +73,29 @@ class WriteCoordinator:
         text=self.session.source_request
         scope=explicit_scope(text,include_update_aliases=True)
         if any(len(scope.get(key,[]))!=1 for key in ('company_id','invoice_no')):return
-        matches=list(re.finditer(r'(用途|purpose|备注|remark)\s*(?:改为|改成|设置为|设为)\s*(.+?)(?:[。\n]|$)',text))
-        if len(matches)!=1:return
-        name,value=matches[0].groups();field='purpose' if name in {'用途','purpose'} else 'remark'
-        value=value.strip()
+        matches = list(re.finditer(r'(用途|purpose|备注|remark)\s*(?:修改为|改为|改成|设置为|设为)', text))
+        if len(matches) != 1:
+            return
+        match = matches[0]
+        field = 'purpose' if match[1] in {'用途', 'purpose'} else 'remark'
+        value = re.split(r'[。\n]', text[match.end():], maxsplit=1)[0].strip()
         if value.startswith(('“','"')):
             closing='”' if value[0]=='“' else '"'
             if not value.endswith(closing):return
             value=value[1:-1]
+        if not value.strip():
+            return
         company,invoice=scope['company_id'][0],scope['invoice_no'][0]
         # 模型可能只引用历史值；可信编辑入口的明确目标仍须独立新连接核对。
         # 此次核对不是模型Tool Call，亦不产生Prepare/Commit/成功审计。
-        try:current=current_target_matches(self.db_path,self.user_id,company,invoice,field,value)
-        except (sqlite3.Error,ValueError,PermissionError):return
+        try:
+            current = current_target_matches(self.db_path, self.user_id, company, invoice, field, value)
+            if current:
+                day = date.fromisoformat(current['current_invoice']['invoice_date'])
+                if scope_mismatch(scope, {'year': day.year, 'month': day.month}):
+                    current = None
+        except (sqlite3.Error, ValueError, PermissionError):
+            return
         if current:
             current['checked_by']='harness_readonly_reconciliation'
             self.receipt=self._receipt('CURRENT_VALUE_MATCHES',current)
