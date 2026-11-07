@@ -1032,11 +1032,12 @@ class AgentWorkspace(App):
         self.invoice_rows = data["rows"]
         table = DataTable(id="invoice-table", cursor_type="row")
         table.add_columns("日期", "发票号（查看）", "价税合计", "用途")
-        for index, row in enumerate(self.invoice_rows):
+        for row in self.invoice_rows:
+            key = json.dumps([row["company_id"], row["invoice_no"]], ensure_ascii=False)
             table.add_row(Text(safe_text(row["invoice_date"])), Text(safe_text(row["invoice_no"]), style="#91cbff underline"),
                           Text(row["amount"], style="#91cbff"),
                           Text("已填写" if row["has_purpose"] else "未填写",
-                               style="" if row["has_purpose"] else "#f3cf83"), key=str(index))
+                               style="" if row["has_purpose"] else "#f3cf83"), key=key)
         period = f"{year:04d}-{month:02d}" if year else "全部账期"
         pages = max(1, (data["total"] + data["page_size"] - 1) // data["page_size"])
         page = Horizontal(TextAction("上一页", id="invoice-prev", disabled=self.invoice_page <= 1),
@@ -1049,14 +1050,13 @@ class AgentWorkspace(App):
 
     @on(DataTable.RowSelected, "#invoice-table")
     def invoice_selected(self, event):
-        index = int(event.row_key.value)
-        if not self.user or not 0 <= index < len(self.invoice_rows):
+        if not self.user or self.workspace_widget("#panes", ContentSwitcher).current != "finance":
             return
-        row = self.invoice_rows[index]
+        company, invoice = json.loads(event.row_key.value)
         try:
             with closing(open_existing(self.db, readonly=True)) as db, db:
                 db.execute("BEGIN")
-                current = get_invoice(db, self.user, row["company_id"], row["invoice_no"])
+                current = get_invoice(db, self.user, company, invoice)
         except (ValueError, OSError, sqlite3.Error):
             current = None
         if current:

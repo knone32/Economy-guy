@@ -11,20 +11,21 @@ from threading import Event
 import unittest
 from unittest.mock import patch
 
-from textual.widgets import Button, ContentSwitcher, DataTable, Input, Select
+from textual.widgets import Button, ContentSwitcher, DataTable, DirectoryTree, Input, Select
 
 import httpx
 
 import main
 from app.agent import Agent, scripted_model
 from app.cli_workspaces import import_workspace
+from app.importer import initialize_database
 from app.model_config import DEFAULT_TEMPLATE, add_profile
 from app.persistence import ManagementIntent
 from app.stage2_schema import open_existing
 from app.tasks import list_tasks, manage_task, task_details
 from app.tui import AgentWorkspace
 from app.tui_intent import edit_turn
-from app.tui_screens import Approval, Choices, NewUserProfile, Period, Settings, TextAction
+from app.tui_screens import Approval, Choices, Login, NewUserProfile, Period, Settings, TextAction
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "example.xlsx"
@@ -220,6 +221,59 @@ class P0Test(unittest.IsolatedAsyncioTestCase):
             await self.send(app, pilot, "查一下当前企业的收支。")
             await self.await_state(pilot, lambda: not app.busy)
             self.assertEqual(app.records[-1][1][0]["scope"]["company_id"], "C001")
+
+    async def test_startup_browse_backup_upgrade_and_query_scope_at_all_sizes(self):
+        for width, height in ((120, 35), (90, 26), (80, 24)):
+            with self.subTest(size=(width, height)):
+                old = self.directory / f"older-{width}.sqlite"
+                initialize_database(FIXTURE, old)
+                with closing(open_existing(old)) as db, db:
+                    db.execute("INSERT INTO users (user_id,name) VALUES ('U003','第三位模拟账号')")
+                prefs = self.directory / f"recent-{width}.json"
+                app = AgentWorkspace(self.directory / "missing.db", DEFAULT_TEMPLATE, self.local,
+                                     recent_path=prefs, restore_recent=True)
+                async with app.run_test(size=(width, height)) as pilot:
+                    await self.await_state(pilot, lambda: isinstance(app.screen, Settings))
+                    await self.press_button(app, pilot, "#browse-db")
+                    await self.await_state(pilot, lambda: bool(app.screen.query("#workbook-tree")))
+                    tree = app.screen.query_one("#workbook-tree", DirectoryTree)
+                    await self.await_state(pilot, lambda: any(
+                        node.data and node.data.path == old for node in tree.root.children))
+                    node = next(n for n in tree.root.children if n.data and n.data.path == old)
+                    tree.select_node(node)
+                    await self.await_state(pilot, lambda: isinstance(app.screen, Approval) and app.screen.focused)
+                    self.assertIn("原有发票和流水将保留", app.screen.body)
+                    await pilot.press("escape")
+                    await self.await_state(pilot, lambda: isinstance(app.screen, Settings))
+                    self.assertFalse(list(self.directory.glob(f"older-{width}-backup-*.sqlite3")))
+                    await self.press_button(app, pilot, "#upgrade-db")
+                    await self.await_state(pilot, lambda: isinstance(app.screen, Approval) and app.screen.focused)
+                    await pilot.press("tab", "enter")
+                    await self.await_state(pilot, lambda: isinstance(app.screen, Login)
+                                           and not app.screen.query_one("#sign-in").disabled)
+                    self.assertTrue(list(self.directory.glob(f"older-{width}-backup-*.sqlite3")))
+                    await self.sign_in(app, pilot, "U003")
+                    self.assertEqual(app.db, old)
+                    await self.press_button(app, pilot, "#account")
+                    await self.press_button(app, pilot, "#choice-5")
+                    await self.await_state(pilot, lambda: isinstance(app.screen, Login)
+                                           and bool(app.screen.query("#login-user")))
+                    await self.sign_in(app, pilot, "U002")
+                    await self.press_button(app, pilot, "#query-scope")
+                    await self.await_state(pilot, lambda: isinstance(app.screen, Choices))
+                    self.assertEqual(len(app.screen.choices), 1)
+                    self.assertIn("只读", app.screen.choices[0][0])
+                    await self.press_button(app, pilot, "#choice-0")
+                    await self.await_state(pilot, lambda: bool(app.screen.query("#period-month")))
+                    self.assertEqual(app.screen.months[0], ("2026-09", 10, 12))
+                    app.screen.query_one("#period-month", Select).value = "2026-09"
+                    await self.press_button(app, pilot, "#choose-listed")
+                    await self.await_state(pilot, lambda: app.read_workspace == ("C001", 2026, 9))
+                restored = AgentWorkspace(self.path, DEFAULT_TEMPLATE, self.local,
+                                          recent_path=prefs, restore_recent=True)
+                async with restored.run_test(size=(width, height)) as pilot:
+                    self.assertEqual(restored.db, old)
+                    await self.sign_in(restored, pilot, "U002")
 
     async def test_agent_invoice_directory_detail_and_back(self):
         directory = tool("list_invoice_directory", {"company_id": "C001", "year": 0, "month": 0, "page": 1})
@@ -478,7 +532,8 @@ class P0Test(unittest.IsolatedAsyncioTestCase):
 
     async def press_button(self, app, pilot, selector):
         await self.await_state(pilot, lambda: bool(app.screen.query(selector))
-                               and app.screen.query_one(selector).region.width > 0)
+                               and app.screen.query_one(selector).region.width > 0
+                               and not app.screen.query_one(selector).has_class("-active"))
         app.screen.query_one(selector, Button).focus()
         await pilot.pause()
         await pilot.press("enter")

@@ -17,12 +17,32 @@ from .stage3_schema import STAGE3_DDL
 from .references import REFERENCE_DDL
 
 
-MIGRATED_TABLES = {"invoice_audit", "rules", "rule_management_audit", "tasks", "preferences", "reference_anchors"}
+MIGRATED_COLUMNS = {
+    "invoice_audit": "request_id,fingerprint,actor,company_id,invoice_no,field,old_value,new_value,status,committed_at",
+    "rules": "rule_id,version,name,company_scope,effective_from,status,rule_type,params_json,content",
+    "rule_management_audit": "event_id,actor,operation,rule_id,version,old_status,new_status,result,occurred_at",
+    "tasks": "task_id,user_id,company_id,task_type,year,month,context_json,status,created_at,updated_at",
+    "preferences": "user_id,company_id,preference_key,value,explicit_request,created_at,updated_at",
+    "reference_anchors": "anchor_id,display_id,user_id,company_id,year,month,source,keys_json,active,created_at",
+}
+MIGRATED_TABLES = set(MIGRATED_COLUMNS)
+MIGRATED_INDEXES = {"one_unfinished_task_per_user_company", "reference_owner"}
+
+
+def _missing_structure(db):
+    names = {(row[0], row[1]) for row in db.execute("SELECT name,type FROM sqlite_master")}
+    pending = {name for name in MIGRATED_INDEXES if (name, "index") not in names}
+    for name, columns in MIGRATED_COLUMNS.items():
+        if (name, "table") in names:
+            db.execute(f"SELECT {columns} FROM {name} LIMIT 0")
+        else:
+            pending.add(name)
+    return pending
 
 
 def missing_migrations(path):
     with closing(open_existing(path, readonly=True)) as db:
-        return MIGRATED_TABLES - {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        return _missing_structure(db)
 
 
 BASE_COLUMNS = {
@@ -51,7 +71,7 @@ def upgrade_workspace(path, *, backup=False):
     ddl = STAGE2_DDL + STAGE3_DDL + REFERENCE_DDL
     with closing(open_existing(path)) as db, db:
         db.execute("BEGIN IMMEDIATE")
-        preserved = set(BASE_COLUMNS) | (MIGRATED_TABLES - missing_migrations(path))
+        preserved = set(BASE_COLUMNS) | (MIGRATED_TABLES - _missing_structure(db))
         before = _snapshot(db, preserved)
         copy = None
         if backup:
@@ -69,8 +89,7 @@ def upgrade_workspace(path, *, backup=False):
         for statement in ddl.split(";"):
             if statement.strip():
                 db.execute(statement)
-        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        if MIGRATED_TABLES - tables or _snapshot(db, preserved) != before:
+        if _missing_structure(db) or _snapshot(db, preserved) != before:
             raise ValueError("升级验证未通过，原账簿已回滚。")
     return copy
 
