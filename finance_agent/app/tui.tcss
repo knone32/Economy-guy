@@ -18,9 +18,9 @@ TextAction {
 }
 TextAction.-primary { color: $accent; text-style: bold; }
 TextAction.-error { color: $danger; }
-TextAction:hover { color: $ink; text-style: underline; }
+TextAction:hover { color: $ink; }
 TextAction.current { color: $accent; text-style: bold; }
-TextAction:focus { background: $accent-fill; color: $ink; text-style: bold underline; }
+TextAction:focus { background: $accent-fill; color: $ink; text-style: bold; }
 TextAction:disabled { color: $quiet; background: transparent; text-style: dim; }
 TextAction.text-link { text-style: underline; }
 Input, SelectCurrent {
@@ -42,10 +42,8 @@ SelectOverlay > .option-list--option-highlighted {
 
 #status { height: 2; padding: 0 1; background: $canvas; color: $ink; }
 #layout { height: 1fr; }
-#rail { width: 7; height: 1fr; background: $canvas; border-right: solid $line; }
-#rail.expanded { width: 17; }
+#rail { width: 11; height: 1fr; background: $canvas; border-right: solid $line; }
 #rail TextAction { width: 100%; min-width: 4; padding: 0; margin: 0; }
-#rail.expanded TextAction { padding: 0 1; text-align: left; }
 #rail-spacer { height: 1fr; }
 #panes { width: 1fr; height: 1fr; }
 #chat { height: 1fr; padding: 0 2; }

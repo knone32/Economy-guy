@@ -32,10 +32,15 @@ def launch_tui(args):
         raise SystemExit(2)
     from app.tui import AgentWorkspace
     from app.tui_local import settings_path
+    from app.win_vault import CredentialError, WindowsVault
+    try:
+        vault = WindowsVault()
+    except CredentialError:
+        vault = None
     log = ROOT / "data" / "logs" / "tui_trace.jsonl"
     log.parent.mkdir(parents=True, exist_ok=True)
     application = AgentWorkspace(args.db, args.profiles_file, args.profiles_local, trace_path=log,
-                                 recent_path=settings_path(), restore_recent=not args.explicit_db)
+                                 recent_path=settings_path(), restore_recent=not args.explicit_db, vault=vault)
     if application.run() == "legacy_home":
         from app.cli_home import Home
         home = Home(application.db, args.profiles_file, args.profiles_local, DEFAULT_EXCEL)

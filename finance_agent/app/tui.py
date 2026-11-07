@@ -17,7 +17,7 @@ from textual.worker import get_current_worker
 from .agent import Agent
 from .cli_chat import safe_text, turn_tools
 from .cli_workspaces import company_access, invoice_history, missing_migrations, workspace_users
-from .model_config import ProfileError, load_profiles, resolve_connection
+from .model_config import ModelConnection, ProfileError, load_profiles, resolve_connection
 from .persistence import ManagementIntent, ManagementTurn, confirm_management
 from .queries import QueryError, available_periods, get_invoice, invoice_directory
 from .rules import RuleError, check_missing_purpose
@@ -27,6 +27,7 @@ from .trace import redact
 from .tui_intent import edit_turn
 from .tui_local import remember_workbook, startup_workbook
 from .tui_screens import Approval, Choices, Login, Settings, TaskNote, TextAction
+from .win_vault import CredentialError, profile_target
 
 ROOT = Path(__file__).resolve().parents[1]
 STATUS = {
@@ -67,21 +68,18 @@ def offline_model(messages, tools):
 class AgentWorkspace(App):
     TITLE = "Economy-guy · 财税工作台"
     CSS_PATH = "tui.tcss"
-    NAV_ITEMS = (
-        ("go-chat", "对话", "当前对话"),
-        ("go-tasks", "待办", "待办事项"),
-        ("go-finance", "发票", "发票明细"),
-        ("go-records", "记录", "执行记录"),
-        ("account", "账户", "我的账户"),
-    )
+    NAV_ITEMS = (("go-chat", "对话"), ("go-tasks", "待办"), ("go-finance", "发票"),
+                 ("go-records", "记录"), ("account", "账户"))
     BINDINGS = [("f2", "navigation", "导航"), ("f3", "account", "账户"),
                 ("f4", "cancel_edit", "取消未提交操作"), ("ctrl+q", "quit_safe", "退出")]
 
-    def __init__(self, db, template, local, *, model=None, trace_path=None, recent_path=None, restore_recent=False):
+    def __init__(self, db, template, local, *, model=None, trace_path=None, recent_path=None, restore_recent=False, vault=None):
         super().__init__()
         self.db = Path(db).resolve()
         self.recent_path = recent_path
         self.restore_recent = restore_recent
+        self.vault = vault
+        self.session_keys = {}
         self.profile_options = {"template": template, "local": local}
         self.trace_path = trace_path
         self.model_override = model
@@ -111,11 +109,10 @@ class AgentWorkspace(App):
         yield TextAction("选择查询企业和账期", id="query-scope", classes="text-link")
         with Horizontal(id="layout"):
             with Vertical(id="rail"):
-                yield TextAction("菜单", id="nav", classes="compact-action", tooltip="展开导航 · F2")
-                for key, short, label in self.NAV_ITEMS:
+                for key, label in self.NAV_ITEMS:
                     if key == "account":
                         yield Static("", id="rail-spacer")
-                    yield TextAction(short, id=key, tooltip=label, classes="compact-action current" if key == "go-chat" else "compact-action")
+                    yield TextAction(label, id=key, classes="current" if key == "go-chat" else None)
             with ContentSwitcher(initial="chat", id="panes"):
                 with Vertical(id="chat"):
                     yield RichLog(id="chat-log", markup=False, wrap=True)
@@ -178,7 +175,7 @@ class AgentWorkspace(App):
         if self.user:
             self.logout()
 
-    def model_changes(self, mode, profile):
+    def model_changes(self, mode, profile, *, new_key=None):
         if mode != self.mode:
             return True
         if mode == "mock":
@@ -188,14 +185,17 @@ class AgentWorkspace(App):
             if self.agent and self.agent.connection:
                 connection = self.agent.connection
                 return (target != connection.profile or
-                        os.environ.get(target.api_key_env, "").strip() != connection.api_key)
+                        (new_key if new_key is not None else self.current_key(target)) != connection.api_key)
             return target != self.resolve_profile(require_key=False).profile
         except ProfileError:
             return profile != self.profile
 
     def set_model(self, mode, profile):
         if self.model_changes(mode, profile):
-            self.reset_agent(clear_log=True)
+            had_agent = self.agent is not None
+            self.reset_agent(clear_log=False)
+            if had_agent:
+                self.chat_message("会话分界", "模型连接已更换。上方文字可供回看。新的 AI 上下文从此处开始，未提交操作已取消。")
         self.mode, self.profile = mode, profile
         self.update_header()
 
@@ -251,7 +251,54 @@ class AgentWorkspace(App):
         name = selected or os.environ.get("FINANCE_MODEL_PROFILE") or default
         if not name:
             raise ProfileError("No AI configuration selected")
-        return resolve_connection(self.user, name, require_key=require_key, **self.profile_options)
+        bound = resolve_connection(self.user, name, require_key=False, **self.profile_options)
+        if not require_key:
+            return bound
+        key = self.current_key(bound.profile)
+        if not key:
+            raise ProfileError("当前配置缺少 API 密钥。")
+        return ModelConnection(bound.profile, key)
+
+    def current_key(self, profile):
+        target = profile_target(profile)
+        if target in self.session_keys:
+            return self.session_keys[target]
+        try:
+            saved = self.vault.read(target) if self.vault else None
+        except CredentialError:
+            saved = None
+        return saved or os.environ.get(profile.api_key_env, "").strip()
+
+    def key_status(self, profile):
+        if not self.vault:
+            return "系统安全存储不可用。可仅本次使用。"
+        try:
+            if self.vault.read(profile_target(profile)):
+                return "此模型配置在 Windows 中已有保存的密钥。"
+        except CredentialError:
+            return "暂时无法读取系统凭据。可仅本次使用。"
+        return "此模型配置没有保存的密钥。"
+
+    def apply_key(self, profile, secret, remember):
+        target = profile_target(profile)
+        self.session_keys[target] = secret
+        if remember and self.vault:
+            try:
+                self.vault.write(target, secret)
+                return "密钥已保存到 Windows 凭据管理器。"
+            except CredentialError:
+                pass
+        if remember:
+            return "系统未能安全保存密钥，密钥仅本次使用。"
+        return "密钥仅本次使用。"
+
+    def forget_key(self, profile):
+        if not self.vault:
+            raise CredentialError("系统安全存储不可用。")
+        target = profile_target(profile)
+        self.vault.forget(target)
+        self.session_keys.pop(target, None)
+        self.set_model(self.mode, self.profile)
 
     def model_state(self):
         """Offline configuration checks and observed transport outcomes stay distinct."""
@@ -261,7 +308,7 @@ class AgentWorkspace(App):
             profile = self.resolve_profile(require_key=False).profile
         except ProfileError:
             return "unconfigured", "尚未配置 AI", "选择现有 AI 配置或新建一个。"
-        if not os.environ.get(profile.api_key_env, "").strip():
+        if not self.current_key(profile):
             return "missing-key", "缺少 API 密钥", f"为 {profile.model} 输入密钥后即可发送。"
         if self.last_api_ok is True:
             return "connected", "真实 AI 已响应", profile.model
@@ -343,18 +390,8 @@ class AgentWorkspace(App):
             self.agent.transport.trace = observe
 
     def action_navigation(self):
-        if not self.user or self.screen is not self.screen_stack[0]:
-            return
-        rail = self.workspace_widget("#rail")
-        expanded = not rail.has_class("expanded")
-        rail.set_class(expanded, "expanded")
-        nav = self.workspace_widget("#nav", Button)
-        nav.label = "收起导航" if expanded else "菜单"
-        nav.set_class(not expanded, "compact-action")
-        for key, short, label in self.NAV_ITEMS:
-            action = self.workspace_widget("#" + key, Button)
-            action.label = label if expanded else short
-            action.set_class(not expanded, "compact-action")
+        if self.user and self.screen is self.screen_stack[0]:
+            self.workspace_widget("#rail .current", Button).focus()
 
     def open_settings(self):
         if self.user and not self.busy:
@@ -452,8 +489,6 @@ class AgentWorkspace(App):
         key = event.button.id or ""
         if key.startswith("go-"):
             self.show(key.removeprefix("go-"))
-        elif key == "nav":
-            self.action_navigation()
         elif key == "account":
             self.action_account()
         elif key == "query-scope":
@@ -698,7 +733,7 @@ class AgentWorkspace(App):
                 if "year" in scope and "month" in scope:
                     self.period = scope["year"], scope["month"]
         self.workspace_widget("#supplement", Button).display = bool(self.agent.pending_edit)
-        self.note(f"{status_label(status)} · F2 打开导航，可选择执行记录")
+        self.note(f"{status_label(status)} · F2 聚焦导航，可选择执行记录")
         self.unlock()
 
     def fail_turn(self):
@@ -718,7 +753,7 @@ class AgentWorkspace(App):
 
     def select_pane(self, page):
         self.workspace_widget("#panes", ContentSwitcher).current = page
-        for key, _, _ in self.NAV_ITEMS:
+        for key, _ in self.NAV_ITEMS:
             self.workspace_widget("#" + key, Button).set_class(key == f"go-{page}", "current")
 
     def show(self, page):

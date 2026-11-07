@@ -524,6 +524,65 @@ class P0Test(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNone(app.last_api_ok)
                 self.assertEqual(app.model_requests, 0)
 
+    async def test_credential_replacement_preserves_chat_and_reloads_saved_profile(self):
+        self.configured_profile()
+        app = self.app()
+
+        class Vault:
+            def __init__(self):
+                self.entries = {}
+            def read(self, target):
+                return self.entries.get(target)
+            def write(self, target, secret):
+                self.entries[target] = secret
+            def forget(self, target):
+                self.entries.pop(target, None)
+
+        vault = app.vault = Vault()
+        with patch.dict(os.environ, {"FINANCE_MODEL_PROFILE": "first-ai", "UX_TEST_API_KEY": ""}):
+            async with app.run_test(size=(80, 24)) as pilot:
+                await self.sign_in(app, pilot)
+                app.chat_message("你", "旧对话仍应保留")
+                app.open_settings()
+                await self.await_state(pilot, lambda: bool(app.screen.query("#key-mode")))
+                app.screen.query_one("#key-mode", Select).value = "saved"
+                key_field = app.screen.query_one("#key", Input)
+                key_field.value = "first-synthetic-credential"
+                await self.press_button(app, pilot, "#apply-model")
+                self.assertEqual(app.model_state()[0], "unverified")
+                self.assertIn("Windows 凭据管理器", str(app.screen.query_one("#model-feedback").renderable))
+                self.assertEqual(key_field.value, "")
+                app.ensure_agent()
+                old = app.agent
+                key_field.value = "first-synthetic-credential"
+                await self.press_button(app, pilot, "#apply-model")
+                self.assertIs(app.agent, old)
+                self.assertIsInstance(app.screen, Settings)
+                key_field.value = "replacement-synthetic-credential"
+                await self.press_button(app, pilot, "#apply-model")
+                await self.await_state(pilot, lambda: isinstance(app.screen, Approval) and app.screen.focused)
+                await pilot.press("tab", "enter")
+                await self.await_state(pilot, lambda: isinstance(app.screen, Settings) and app.agent is None)
+                self.assertFalse(old.update_session.confirmations)
+                visible = "".join(line.text for line in app.workspace_widget("#chat-log").lines)
+                self.assertIn("旧对话仍应保留", visible)
+                self.assertIn("会话分界", visible)
+                self.assertNotIn("replacement-synthetic-credential", visible)
+                self.assertEqual(app.model_requests, 0)
+            reopened = self.app()
+            reopened.vault = vault
+            async with reopened.run_test(size=(90, 26)) as pilot:
+                await self.sign_in(reopened, pilot)
+                self.assertEqual(reopened.model_state()[0], "unverified")
+                self.assertEqual(reopened.resolve_profile(require_key=True).api_key,
+                                 "replacement-synthetic-credential")
+                reopened.open_settings()
+                await self.press_button(reopened, pilot, "#forget-key")
+                await self.await_state(pilot, lambda: isinstance(reopened.screen, Approval) and reopened.screen.focused)
+                await pilot.press("tab", "enter")
+                await self.await_state(pilot, lambda: reopened.model_state()[0] == "missing-key")
+                self.assertEqual(vault.entries, {})
+
     async def test_model_switch_cancel_preserves_pending_edit_and_secret(self):
         self.configured_profile()
         app = self.app([tool("prepare_invoice_update", EDIT)])
@@ -553,7 +612,8 @@ class P0Test(unittest.IsolatedAsyncioTestCase):
                 await self.await_state(pilot, lambda: app.mode == "live")
                 self.assertIsNone(app.agent)
                 self.assertFalse(agent.pending_edit)
-                self.assertEqual(os.environ["UX_TEST_API_KEY"], "synthetic-offline-only")
+                self.assertFalse(os.environ["UX_TEST_API_KEY"])
+                self.assertEqual(app.resolve_profile(require_key=True).api_key, "synthetic-offline-only")
                 # The same effective configuration never requires a new confirmation.
                 self.assertFalse(app.model_changes("live", None))
                 self.assertEqual(self.purpose(), (None, 0))
@@ -591,16 +651,17 @@ class P0Test(unittest.IsolatedAsyncioTestCase):
                 async with app.run_test(size=(width, height)) as pilot:
                     await self.sign_in(app, pilot)
                     rail = app.workspace_widget("#rail")
-                    self.assertFalse(rail.has_class("expanded"))
+                    width_before = rail.region.width
                     await pilot.press("f2")
-                    self.assertTrue(rail.has_class("expanded"))
-                    self.assertEqual(str(app.workspace_widget("#go-finance", Button).label), "发票明细")
-                    nav = app.workspace_widget("#nav", TextAction)
-                    self.assertTrue(await pilot.click(nav))
-                    self.assertFalse(rail.has_class("expanded"))
-                    self.assertIn("›", app.workspace_widget("#go-chat", TextAction).render().plain)
-                    nav.focus()
-                    await pilot.press("tab", "tab", "enter")
+                    chat = app.workspace_widget("#go-chat", TextAction)
+                    self.assertIs(app.screen.focused, chat)
+                    self.assertEqual(rail.region.width, width_before)
+                    self.assertEqual(str(app.workspace_widget("#go-finance", Button).label), "发票")
+                    self.assertFalse(chat.styles.text_style.underline)
+                    await pilot.hover(chat)
+                    self.assertFalse(chat.styles.text_style.underline)
+                    self.assertIn("›", chat.render().plain)
+                    await pilot.press("tab", "enter")
                     await self.await_state(pilot, lambda: app.workspace_widget("#panes").current == "tasks")
                     self.assertIn("›", app.workspace_widget("#go-tasks", TextAction).render().plain)
                     await pilot.click("#go-chat")
