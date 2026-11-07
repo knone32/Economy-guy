@@ -3,7 +3,8 @@
 **版本**：v1.2（继承 v1.1 的官方要求、架构和安全契约；补齐 S4-P-E 真实验收后的 P0 阻碍、结构化意图候选方案及后续安全审计阶段）  
 **编制日期**：2026-11-06  
 **仓库**：[`knone32/Economy-guy`](https://github.com/knone32/Economy-guy)（Private）  
-**最新被测业务源码**：`f6d99267358e5202752afbbdd062600781cdab29`（4P0C）；**2026-11-07收尾被测仓库SHA**：`fc3f9d70a4ef66a46a8ffb666dd9d01db7b3a94a`（仅新增测试/冻结准则/CLI驱动，生产源码未改）；Base `1f75f03ab4e5ace4fc5922d55a5a596ac9614684`；报告提交SHA取包含[S4-P0C-CLOSURE](verification/stage4/S4-P0C-CLOSURE.md)的Git提交，不与生产源码混称。
+**最新被测仓库**：`111c9f97cd710084b1cfc18b9bf139e159e01389`（S4-C 验证基线）；**生产源码提交**：`bde7ec7bb7ca5f2a2460faade82e817b4302d6ef`（S4-BR）。
+
 **适用范围**：云帐房 2026 AI 技术创新大赛赛题二「财税 Agent Harness」，**不含** Sky Core 研究及其他 AI 比赛。  
 **文档性质**：项目目标和验收台账；它不是新开发指令，也不是未经运行证明的「已完成认证」。
 
@@ -11,7 +12,20 @@
 >
 > **2026-11-06 最新决策**：Stage 4P 的工程缺口修复优先级不变，但**从「严格压缩 API 调用次数」转向「真实运行数据优先，调用效率可观测」**。Mock 仍为确定性回归和边界注入的必需工具，不删除、不伪装成模型理解；业务场景完成必须以**真实 LLM + 可信 CLI + SQLite/Trace**的复核证据为准。用户表示 DeepSeek 账户目前约有 **50 元余额**（用户陈述，未查询服务商账单），不再沿用旧计划的 18 次 API 全期硬限制。
 
-### 现行状态速览（2026-11-07更新；按代码版本，不按聊天轮次）
+### 2026-11-07 S4-C 最新状态快照
+
+| 项目 | 结算 |
+| --- | --- |
+| 版本 | S4-C Base/Verified Code `111c9f97cd710084b1cfc18b9bf139e159e01389`，生产代码 `bde7ec7bb7ca5f2a2460faade82e817b4302d6ef`。BR Report `111c9f97cd710084b1cfc18b9bf139e159e01389`。S4-C Report SHA 取 [封板报告](verification/stage4/S4-C.md) 的提交 |
+| 4P0C-CLOSURE | 测试 checkout `fc3f9d70a4ef66a46a8ffb666dd9d01db7b3a94a`，生产 `f6d99267358e5202752afbbdd062600781cdab29`。C1→C6 持久链在绑定本轮提案的模拟确认下通过，真人 C2 NOT_TESTED / USER_DEFERRED |
+| SEC-A / SEC-B1～B3 | SEC-A 完成 25 项公开隔离发现。SEC-B 工程修复 PASS，B1/B2/B3 历史全量分别 345/355/363，原始失败和各自被测 SHA 见 [证据索引](verification/stage4/S4-C-EVIDENCE-INDEX.md) |
+| SEC-B4 | `e834bbb961030c0671d788bc629026031078f743`，27 次 Flash，132,701 tokens。原 A/B/C Live 均 PARTIAL，C 持久链与偏好数据库业务有证据 |
+| S4-BR | 工程 PASS，10 次 Flash，40,108 tokens，补齐 B2 已匹配回执和 C5 下一步。A1 主动追问，A2 财务事实正确，MODEL_LIMIT 自然收尾使 P0 Live 仍 PARTIAL。B/C 与偏好分别采用历史链加当前增量证据 |
+| S4-C | 本地新跑 369/369、架构 2/2、八条原探针全部退出 0，模型 API 0。#1–#10 逐项核对原关闭条件、留言并关闭，局限见 [封板报告](verification/stage4/S4-C.md) |
+| S4-D 准入 | EVIDENCE GATE PASS，PREPARATION READY。索引可直接用于启动复验、设计说明、脱敏运行记录和 ≤5 分钟演示，执行须另行授权 |
+| 发布范围 | OFFICIAL_P0_LIVE PARTIAL，EXTERNAL_HOLDOUT PENDING，PRODUCTION_SECURITY_CERTIFICATION NOT_TESTED，SECURITY_RELEASE_GATE BLOCKED，历史实际费用 COST_UNKNOWN |
+
+### 历史状态速览（按各自被测版本）
 
 | 对象 | 当前事实 | 验收属性 |
 |---|---|---|
@@ -24,8 +38,7 @@
 | S4-P-E | 代码3a83a2c，309/309；59条冻结PUBLIC_REGRESSION含24变体；298次真实API尝试，294 HTTP200，4失败usage未知 | **整体BLOCKED**：Flash同题49/59→51/59；A1猜月份、原C2确认未完成、Pro非JSON/超时等保留；H2只读及P11部分修复；EXTERNAL_HOLDOUT_PENDING不是功能失败；未启动后续审计 |
 | S4-P0-Closure（历史结算） | f6d9926；335/335，62次真实API；P12来源/A1→A2、P11保存核对、B6无重复写回执有证据；Intent B无收益不采用 | 上轮C2真人具体确认USER_DEFERRED、原链BLOCKED的历史结果不改，见S4-P0C报告 |
 | S4-P0C-CLOSURE（2026-11-07） | 生产源码未变；5新测试、340/340；11次Flash API，三个真实进程完成C1→C6，真实task/Commit/audit/readback/缺5→4 | **PASS_WITH_SIMULATED_CONFIRMATION / P0 ENGINEERING GATE=PROVISIONAL_PASS**；仅本轮冻结策略，新C2模拟确认不批准上轮旧候选；真人C2未测/仍暂缓，外部Holdout待提供、安全审计未执行 |
-| S4-SEC-A / SEC-B（拟新增） | P1/P2 遗留项、资源耗尽/溢出、权限绕过、提示注入的独立测试及经证实问题的最小修复 | **尚未执行；仅在隔离、限时、可控环境测试**，不等于已经发现可利用漏洞 |
-| S4-BR / S4-C / S4-D | 独立真实复核、证据链封板、比赛打包 | 尚未完成，前置依赖见第 8、9 节 |
+| S4-SEC-A / SEC-B / S4-BR / S4-C | 各阶段实测及边界 | 见上方 S4-C 快照与证据索引 |
 
 **事实划线**：4P-E 的 309/309 是 Codex 本地 unittest 报告，**不是独立 CI 复跑**；公开集 59 条已冻结，但 Codex 已知，**不是真正 Holdout**。4P-E 成功响应可观测 usage 合计 **1,167,596 Token**，另有 4 次无 HTTP 响应用量未知；实际余额和人民币费用均未核对。HTTP200、Tool Call 配对、SQLite 查询正确与“完整业务目标完成”必须分开评分。
 
@@ -459,19 +472,19 @@ finance_agent/app/agent.py::Agent.ask  ← 单一模型调用循环
 | **4P-C** | DeepSeek Thinking 多轮协议兼容、思考隐私、工具 ID 配对 | **已完成，274/274**；最终代码 `d27ca917`，本阶段最终 9/9 HTTP200（阶段合计 24 次） | P07 在 4P-E 未复现原 HTTP400；其他 Provider live 不能自动算通过 |
 | **4P-D** | Provider Profile/独立 Key/安全切换、Trace 语义与最小调用元数据 | **304/304及15次HTTP200**；P08～P10；[报告](verification/stage4/S4-P-D.md) | D/L/B：Key冻结/权限与两模型协议通过，F002单次审计+缺项5→4，原续问PARTIAL/只读对照PASS；无自动路由；E未执行 |
 | **4P-E** | 冻结 59 条公开题、全量测试与官方三场景 live 回归 | **执行与报告完成；309/309；官方业务门禁 BLOCKED** | [报告](verification/stage4/S4-P-E.md)、[题集](verification/stage4/S4-P-E-CASES.md)、[逐题结果](verification/stage4/S4-P-E-RESULTS.md)；A FAIL、B PARTIAL、C FAIL；费用 UNKNOWN、Holdout 未测 | 
-| **S4-P0-Closure（建议新增）** | P12 字段来源、C2 确认准则、P11/B6 回执与 Pro 输出分类；结构化 Intent 小型 A/B 验证 | **待用户另行授权；本次仅更新规划** | 冻结旧原题不改，新增外部审查版测试，先根因+最小补丁，再按原题复验；未完成 P0 不宣布比赛封板 |
-| **S4-SEC-A（建议新增）** | P1/P2 遗留台账、权限边界、提示注入、长度/资源/金额边界的限时隔离发现测试 | **尚未运行，不可宣称无漏洞** | 先固定输入及安全限制；发现问题但不改生产代码；避免外部系统攻击、无限压测 |
-| **S4-SEC-B（建议新增）** | 经 SEC-A 证实缺陷的最小修复及相邻边界补查 | **尚未运行** | 不重构大架构、不用绿灯代替副作用核验；严重 P0 修复前不得封板 |
-| **S4-BR** | 外部独立复核 4P-E 真实结果与失败复现 | 待执行 | GitHub 源码/报告、现场保留的 Trace/SQLite 只读证据核对 |
-| **S4-C** | 模型输入/工具/规则/记忆/计数/审计日志证据封板 | 待执行 | 4P-D 元数据基础上整理精简演示证据，不建日志平台 |
-| **S4-D** | README 可独立运行、设计说明、≤5 分钟真实演示及安全交付 ZIP | 待执行 | 只有 P0 live 过关后封板 |
+| **S4-P0-Closure / CLOSURE** | P12/P11/B6 与三进程持久链 | 历史模拟确认链通过 | 保留此前 C2 暂缓及旧失败 |
+| **S4-SEC-A** | 隔离冻结安全发现 | 25 个公开案例已执行 | 历史发现见原报告 |
+| **S4-SEC-B** | 最小安全修复及公开 Live | 工程 PASS，SEC-B4 Live PARTIAL | 不以安全回归替代业务验收 |
+| **S4-BR** | 两项交互补丁与独立 SQL 核对 | 工程 PASS | P0 Live PARTIAL，B/C 使用组合证据 |
+| **S4-C** | 证据索引、Issue 结算与回归 | EVIDENCE GATE PASS | 见 [封板报告](verification/stage4/S4-C.md) |
+| **S4-D** | 启动说明、设计、关键记录、≤5 分钟演示及安全交付 ZIP | PREPARATION READY，执行待授权 | 安全发布 BLOCKED；如实保留 P0 和 Holdout 状态 |
 | P1/P2/P3 | 长对话摘要、动态估算、生产认证、GUI、DAG、复杂模型路由 | 延后 | 当前任务不执行 |
 
 ### 8.1 新的执行顺序（每阶段单独提交、独立门禁）
 
-**已执行历史**：`4P-B → 4P-C → 4P-D → 4P-E（业务 BLOCKED）`。
+**已执行**：`4P-B → 4P-C → 4P-D → 4P-E → S4-P0-Closure/CLOSURE → S4-SEC-A → S4-SEC-B → S4-BR → S4-C`。历史业务失败保持原判定。
 
-**建议后续路径（阶段名待下轮正式确认）**：`S4-P0-Closure → S4-SEC-A → S4-SEC-B（若发现问题）→ S4-BR → S4-C → S4-D`。P0 未通过不得比赛封板；但**可在隔离环境先进行 SEC-A 只读/无副作用的有限发现性测试**，不要把“安全审计”和“最终交付批准”混淆。每次只单独授权一个阶段；安全修复待独立审核缺陷后执行。
+**待授权阶段**：S4-D 准备就绪。交付准备与安全发布分别记录，后者仍为 BLOCKED。
 
 - **阶段交付模式**：锁定 HEAD + 审核冻结原题/已有失败 Trace → 先记录独立真值/根因假设 → 最小红色反例 → 仅修改必要代码 → 定向与全量 unittest → 小批量同原题 live/独立 SQLite → Git 代码/报告分开提交 → ChatGPT 外部核验。业务写事务必须在隔离临时数据库操作。新题和新评分规则要用独立 Case ID，不得覆盖 4P-E 公开冻结历史。
 - **实时结果与预算**：4P-E 已消耗 298 次 API 尝试并提供关键失败证据；后续从已冻结失败原题中定向复验，不再为无新诊断的同一失败反复跑完整 59 题。实际余额/人民币费用须对服务商后台，不用 Token 估算。
@@ -508,7 +521,9 @@ finance_agent/app/agent.py::Agent.ask  ← 单一模型调用循环
 - **274/274**：4P-C 最终代码 `d27ca917`，DeepSeek Thinking 同进程工具续问真实通过；旧缺失 reasoning_content 的 HTTP400 在 4P-E 未复现。
 - **304/304**：4P-D 代码 `bd59b2e3`，Global/User Profiles、安全切换、Trace usage/latency 及提交后附加进度隔离；15 次 HTTP200，两模型使用同一合法 Key，真实第二独立服务账户未测。
 - **309/309**：4P-E 代码 `3a83a2c8`，新 5 项确定性测试；59 条冻结 PUBLIC_REGRESSION（24 条变体），Flash 最终 51/59、Pro 有效子集 14/23；阶段 298 次 API 尝试、294 HTTP200、4 次无响应、成功响应 usage 1,167,596 Token，失败 usage/费用 UNKNOWN。**官方 A FAIL / B PARTIAL / C FAIL，偏好 Flash CRUD PASS**。
-- **当前真实缺口**：P12 无年月来源、C2 原题确认策略争议、P11/B6 复合目标与回执、Pro 非法 JSON/超时；有害 Prepare 被拦截与已完成业务应分开评分。EXTERNAL_HOLDOUT_PENDING 不代表功能 FAIL，也不能写已通过。
+- **4P-E 当时缺口**：P12 无年月来源、C2 原题确认策略争议、P11/B6 复合目标与回执、Pro 非法 JSON/超时；有害 Prepare 被拦截与已完成业务应分开评分。EXTERNAL_HOLDOUT_PENDING 不代表功能 FAIL，也不能写已通过。
+
+- **369/369**：S4-C 在 `111c9f97cd710084b1cfc18b9bf139e159e01389` 新跑，2 项架构与八条原冻结探针另列，真实模型 API 0。当前 D/B/L/E 索引见 [S4-C](verification/stage4/S4-C-EVIDENCE-INDEX.md)。
 
 上述通过数是**各自 SHA 上的总数**，不要累加、替代或直接推算下一版本通过数。4P-E 的 59 题属于开发者已见的 PUBLIC_REGRESSION，非外部 Holdout；修复后原题必须留存最初失败分数，不允许根据答案改题。
 
@@ -620,7 +635,7 @@ Trace: trace_id、model_requests、requested_tool_calls、actual_tool_calls、ex
 
 每次阶段结算只更新：**当前 HEAD、被测代码 SHA、该阶段的历史报告链接、对应的 P 编号状态、D/L/B 证据、实际模型用量和下一阶段门禁**。V0～V3 的设计沿革和已冻结安全契约不反复重写；不复制总纲到 `AGENTS.md`。
 
-## 11. 当前判定（截至 4P-E 被测源码 `3a83a2c87afe` / 报告 `09d851d1e364`）
+## 11. 历史判定（截至 4P-E 被测源码 `3a83a2c87afe` / 报告 `09d851d1e364`）
 
 **基础设施已有真实成果**：Python + SQLite 单 Agent Loop、业务权限/规则、受控 Prepare→Confirm→Commit→Audit→Readback、持久 Task/Preference、Context/引用、3+3+3 预算与 Tool Call 配对、DeepSeek Thinking 协议、多模型 Profile 安全切换、Trace/usage 已形成当前代码与历史实测证据。
 
@@ -628,7 +643,7 @@ Trace: trace_id、model_requests、requested_tool_calls、actual_tool_calls、ex
 
 **当前最优先阻力**：P12 缺年月却先查库；C2 固定 note 白名单造成的原链取消与测试确认有效性争议；P11/B6 的完成事实与重复/软限停止回执；Pro 非 JSON/超时。尤其 P12 需要“参数来源证明”，不只是 JSON Schema 合法；C2 需要不削弱可信确认的语义标准。未发现“权限系统可被模型直接越过”的已证实事实，不可将拒绝成功称为模型决策正确或宣称全面无漏洞。
 
-**下一步建议**：以独立任务执行 `S4-P0-Closure`：先建 P12 Issue、冻结原 A1/C2/P11/B6/H2 对照和判定边界，尝试无额外请求的来源核验，再决定是否做轻量 Intent Frame A/B。随后在隔离环境进行 `S4-SEC-A` P1/P2 与权限/资源/提示注入审计、必要的 `SEC-B` 修复，再独立复核 `S4-BR`、证据封板 `S4-C` 和交付 `S4-D`。每轮另行授权，不能因文档更新自动执行。
+**当时建议**：以独立任务执行 `S4-P0-Closure`：先建 P12 Issue、冻结原 A1/C2/P11/B6/H2 对照和判定边界，尝试无额外请求的来源核验，再决定是否做轻量 Intent Frame A/B。随后在隔离环境进行 `S4-SEC-A` P1/P2 与权限/资源/提示注入审计、必要的 `SEC-B` 修复，再独立复核 `S4-BR`、证据封板 `S4-C` 和交付 `S4-D`。每轮另行授权，不能因文档更新自动执行。
 
 **本轮文档提交的范围**：仅更新此总纲的进度/缺陷/阻力与候选方案。未修改生产代码、冻结题集或历史报告；未创建/关闭 GitHub Issue，也未执行新的单测或真实 API。后续任务有需要时由 Codex 在 GitHub 正常创建或更新 Issue，并提供 URL 与根因证据。
 

@@ -7,7 +7,7 @@
 - 项目目标、证据台账和阶段门禁见[工程总纲v1.1](docs/PROJECT_MASTER_PLAN.md)；分阶段范围及验收策略见[4P执行计划v1.1](docs/STAGE4P_EXECUTION.md)。文档中的后续提示词不代表自动领取任务。
 - 新版真实API验收策略替代旧版全期18次请求限制；单轮9次模型/12次Handler/2次续期/1次重规划安全硬限不变。只执行用户本轮指定阶段，Mock与live证据分别记录。
 - 当前已有Stage 0–2底座、3A持久任务/偏好、3B有限上下文/展示引用、3C最小单轮计划/预算及长期状态内容确认补丁；每次核实真实实现和测试，不沿用旧报告数字。
-- 当前优先级：Stage 3验收补丁与回归 → Stage 4 P0 E2E → 初赛交付。只做用户指定阶段；生产登录、GUI、多Agent、向量库、动态预算估算和复杂长对话摘要延期。
+- 当前阶段：S4-C 证据已封板，S4-D 准备就绪、执行待授权。官方 P0 Live 为 PARTIAL，安全发布门禁为 BLOCKED。只做用户指定阶段；生产登录、GUI、多Agent、向量库、动态预算估算和复杂长对话摘要延期。
 
 ## 架构与状态所有权
 - Python 3.11+、SQLite、单LLM、OpenAI-compatible Tool Calling、CLI。生产唯一Loop为finance_agent/app/agent.py的Agent.ask；examples教学Demo不作为第二生产运行时。
