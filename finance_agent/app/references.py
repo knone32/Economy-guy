@@ -70,15 +70,27 @@ def invalidate_references(path, user_id):
         connection.close()
 
 
-def _candidates(connection, user_id, scope=None, anchor_id="",authorized_only=True):
+def _candidates(connection, user_id, scope=None, anchor_id="",authorized_only=True,display_ids=None):
     if not _available(connection):
         return []
+    filters = "user_id=? AND active=1"
+    params = [user_id]
+    if display_ids is not None:
+        if not display_ids:
+            return []
+        filters += " AND display_id IN (" + ",".join("?" for _ in display_ids) + ")"
+        params.extend(display_ids)
     if anchor_id:
-        rows = connection.execute("SELECT * FROM reference_anchors WHERE user_id=? AND active=1 AND anchor_id=?",(user_id,anchor_id)).fetchall()
+        filters += " AND anchor_id=?"
+        params.append(anchor_id)
     else:
-        latest = connection.execute("SELECT display_id FROM reference_anchors WHERE user_id=? AND active=1 ORDER BY rowid DESC LIMIT 1",(user_id,)).fetchone()
-        # 同一次展示有多个列表时不擅自挑选其中一个。
-        rows = connection.execute("SELECT * FROM reference_anchors WHERE user_id=? AND active=1 AND display_id=? ORDER BY rowid",(user_id,latest["display_id"])).fetchall() if latest else []
+        latest = connection.execute(f"SELECT display_id FROM reference_anchors WHERE {filters} ORDER BY rowid DESC LIMIT 1",
+                                    params).fetchone()
+        if not latest:
+            return []
+        filters += " AND display_id=?"
+        params.append(latest["display_id"])
+    rows = connection.execute(f"SELECT * FROM reference_anchors WHERE {filters} ORDER BY rowid", params).fetchall()
     scope = scope or {}
     return [row for row in rows if all(key not in scope or row[key] in scope[key]
             for key in ("company_id","year","month")) and
@@ -86,7 +98,7 @@ def _candidates(connection, user_id, scope=None, anchor_id="",authorized_only=Tr
             (not authorized_only or check_permission(connection,user_id,row["company_id"],"read").allowed)]
 
 
-def reference_catalog(path, user_id, scope=None):
+def reference_catalog(path, user_id, scope=None, *, display_ids=None):
     """提供自己的可访问展示来源；元数据不是当前业务值。"""
     connection = open_existing(path,readonly=True)
     try:
@@ -94,12 +106,12 @@ def reference_catalog(path, user_id, scope=None):
         return [{"anchor_id":row["anchor_id"],"display_id":row["display_id"],
                  "scope":{key:row[key] for key in ("company_id","year","month") if row[key] is not None},
                  "source":row["source"],"count":len(json.loads(row["keys_json"]))}
-                for row in _candidates(connection,user_id,scope)]
+                for row in _candidates(connection,user_id,scope,display_ids=display_ids)]
     finally:
         connection.close()
 
 
-def resolve_reference(path, user_id, ordinal, scope=None, anchor_id=""):
+def resolve_reference(path, user_id, ordinal, scope=None, anchor_id="", *, display_ids=None):
     """先找用户实际展示锚点，再鉴权并重读SQLite；不足以唯一定位则追问。"""
     try:
         connection = open_existing(path,readonly=True)
@@ -111,7 +123,7 @@ def resolve_reference(path, user_id, ordinal, scope=None, anchor_id=""):
         for company in scope.get("company_id",[]):
             if not check_permission(connection,user_id,company,"read").allowed:
                 return result("DENIED",error="没有企业读取权限")
-        rows = _candidates(connection,user_id,scope,anchor_id,authorized_only=False)
+        rows = _candidates(connection,user_id,scope,anchor_id,authorized_only=False,display_ids=display_ids)
         if len(rows) != 1:
             return result("AMBIGUOUS",error="没有唯一可信展示列表，请提供企业、年月或已展示的anchor编号")
         row = rows[0]

@@ -132,7 +132,7 @@ def render_information(results):
         elif name == "check_missing_purpose":
             parts.append(f"本轮检查：{data['count']}张必填用途缺失。依据{data['rule']['name']} {data['rule']['version']}版。")
             parts.append("缺失明细（业务数据）：" + json.dumps(data["missing_invoices"], ensure_ascii=False))
-        elif name in {"manage_task","manage_preference"}:
+        elif name in {"manage_task","manage_preference","manage_display_preference"}:
             parts.append("持久化管理结果 "+outcome['status']+"（不授予发票修改许可）：" + json.dumps(data,ensure_ascii=False))
         elif name != "prepare_invoice_update":
             parts.append("本轮查询结果（业务数据，不是操作回执）：" + json.dumps(data, ensure_ascii=False))

@@ -34,6 +34,7 @@ REGISTRY = {
     "add": (None, {"a": "integer", "b": "integer"}),
     "list_tasks": (None, {"company_id":"string"}),
     "manage_task": (None, {"company_id":"string","action":"string","task_id":"string","year":"integer","month":"integer","note":"string"}),
+    "manage_display_preference": (None, {"action":"string","value":"string"}),
     "manage_preference": (None, {"company_id":"string","action":"string","key":"string","value":"string"}),
     "resolve_invoice_reference": (None, {"company_id":"string","ordinal":"integer","anchor_id":"string"}),
     "set_schedule": (None, {"goal":"string","steps":"array","stop_condition":"string"}),
@@ -47,18 +48,19 @@ TEACHING_TOOLS = TOOLS
 TOOLS = [tool for tool in TOOLS if tool["function"]["name"] in {
     "get_finance_summary", "list_invoices", "list_invoice_directory", "get_invoice", "list_bank_transactions",
     "check_missing_purpose", "get_applicable_rules", "prepare_invoice_update",
-    "list_tasks", "manage_task", "manage_preference", "resolve_invoice_reference", "set_schedule"}]
+    "list_tasks", "manage_task", "manage_preference", "manage_display_preference", "resolve_invoice_reference", "set_schedule"}]
 DESCRIPTIONS = {
     "get_finance_summary":"发票和银行收支综合查询首选：一次返回指定企业年月的价税合计/张数、收入/支出总额/分别条数和R001版本；补充月份后沿用原综合目标。无记录明确返回零，无需额外计划。",
     "list_invoices":"查询指定企业月份的发票明细；大列表优先使用分页目录。",
     "list_invoice_directory":"分页列出企业发票目录，返回真实总数；每页10条，page从1开始。全企业目录使用year=0、month=0，无需追问月份。用户明确选择年月时提供完整配对。",
     "get_invoice":"企业编号和发票号联合定位当前发票，不猜测模糊指代。",
     "list_bank_transactions":"查询指定企业年月的银行流水，只读，不推断发票已付款。",
-    "check_missing_purpose":"按唯一有效RuleDecision检查2026年9月必填用途缺失；备注不代替用途。",
+    "check_missing_purpose":"用户问哪些发票用途未填写、还剩多少缺项时，使用本工具。采用可信只读账期或当前明确范围，按有效规则返回实际缺项和发票编号；不要改为财务汇总。备注不代替用途。",
     "get_applicable_rules":"按企业、业务日期和规则类型获取唯一启用依据；不提供管理权限。",
     "prepare_invoice_update":"只生成用途/备注草稿，展示旧值，不保存；必须等待可信CLI最终确认。",
     "list_tasks":"列出当前用户指定企业的持久任务，不创建或修改待办。",
     "manage_task":"为普通自然语言后续待办提出创建/更正/取消等候选，或查询任务；候选无写入权限，需可信CLI展示具体对象和内容并确认。恢复重查规则与发票，完成必须有业务证据；不能修改发票。",
+    "manage_display_preference":"仅当前模拟账号的个人回复详细度；明确要求以后简洁或详细时用set，value为简洁、详细或普通；get/delete时value为空。保存需要独立可信确认。与企业偏好、权限和财务事实无关。",
     "manage_preference":"用户企业隔离的偏好CRUD；普通自然语言可提出create/update/delete候选，get/list只读。删除需明确key、value为空。所有写候选须可信CLI展示旧值/新值并确认，不能自行声称保存。",
     "resolve_invoice_reference":"仅解析用户本轮明确的第几张发票线索；必须有真实展示锚点，重新鉴权查库，无唯一对象则追问。不能自由猜序号。",
     "set_schedule":"仅真正多步依赖时提出本轮粗计划；不是长期任务或授权。再次调用为一次显式重规划，不创造进展或预算。简单查询直接调用业务工具。",
@@ -84,6 +86,8 @@ for tool in TOOLS:
         tool["function"]["parameters"]["properties"]["field"]["enum"] = ["purpose", "remark"]
     if tool["function"]["name"] == "manage_task":
         tool["function"]["parameters"]["properties"]["action"]["enum"] = ["create","show","update","correct","wait","pause","resume","complete","cancel"]
+    if tool["function"]["name"] == "manage_display_preference":
+        tool["function"]["parameters"]["properties"]["action"]["enum"] = ["get","set","delete"]
     if tool["function"]["name"] == "manage_preference":
         tool["function"]["parameters"]["properties"]["action"]["enum"] = ["create","get","list","update","delete"]
     if tool["function"]["name"] == "set_schedule":
@@ -220,7 +224,28 @@ def remaining_work_allowed(path,user_id,steps,session,intent,permitted=None,prop
         return False
 
 
-def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allowed_tools=None, expected_scope=None, management_intent=None, reference_context=None, execution=None, management_confirmation=None, management_proposals=None,provenance=None):
+def _confirm_proposal(outcome, service, intent, user_id, action, confirm):
+    if outcome["status"] != "WAITING_CONFIRMATION" or confirm is None:
+        return outcome
+    proposal = outcome["data"]
+    try:
+        accepted = confirm(deepcopy(proposal))
+    except (EOFError, KeyboardInterrupt):
+        accepted = False
+    except Exception:
+        return tool_result("ERROR", error="可信管理确认入口失败，未保存")
+    if accepted is not True:
+        return tool_result("CANCELLED", error="用户未确认该对象和内容，未持久化")
+    if not (can_propose(intent,user_id,intent.domain,action) or can_manage(intent,user_id,intent.domain,action)):
+        return tool_result("DENIED", error="确认上下文已失效，未保存")
+    approved = confirm_management(intent, proposal)
+    outcome = service(approved)
+    outcome["evidence"]["management_confirmation"] = {"source":"trusted_cli","request_id":proposal["request_id"],
+        "fingerprint":proposal["fingerprint"],"turn_id":approved.turn.turn_id}
+    return outcome
+
+
+def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allowed_tools=None, expected_scope=None, management_intent=None, reference_context=None, execution=None, management_confirmation=None, management_proposals=None,provenance=None,display_preference=None):
     """严格按 Schema 校验，身份仅取可信 Session，并复用业务函数。"""
     try:
         if not isinstance(name, str) or name not in REGISTRY:
@@ -233,6 +258,13 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
         function = REGISTRY[name][0]
         if name=="set_schedule":
             return _set_schedule(args,user_id,db_path,execution,permitted,update_session,expected_scope,management_intent,management_proposals,provenance)
+        if name == "manage_display_preference":
+            if display_preference is None or (execution and execution.schedule):
+                return tool_result("DENIED",error="当前会话或计划不支持个人显示偏好操作")
+            action = args["action"]
+            intent = _management_context(None,management_proposals,user_id,"display_preference",action)
+            service = lambda approval: display_preference(**args,intent=approval,actor=user_id)
+            return _confirm_proposal(service(intent),service,intent,user_id,action,management_confirmation)
         if name == "add":
             return tool_result("SUCCESS", args["a"] + args["b"])
         if name == "prepare_invoice_update":
@@ -319,7 +351,8 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
             if name == "resolve_invoice_reference":
                 if not reference_context or args["ordinal"] != reference_context["ordinal"] or args["anchor_id"] not in {"",reference_context["anchor_id"]}:
                     return tool_result("AMBIGUOUS",error="缺少匹配的本轮用户引用线索，不接受模型自行选取序号或列表")
-                return resolve_reference(db_path,user_id,args["ordinal"],reference_context["scope"],reference_context["anchor_id"])
+                return resolve_reference(db_path,user_id,args["ordinal"],reference_context["scope"],reference_context["anchor_id"],
+                                         display_ids=reference_context.get("display_ids"))
             if name in {"list_tasks","manage_task","manage_preference"}:
                 writing=(name=='manage_task' and args['action']!='show') or (name=='manage_preference' and args['action'] not in {'get','list'})
                 domain='task' if name=='manage_task' else 'preference'
@@ -335,24 +368,18 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
                     outcome = manage_task(db_path,user_id,**args,intent=intent)
                 else:
                     outcome = manage_preference(db_path,user_id,**args,intent=intent)
-                if outcome['status']=='WAITING_CONFIRMATION' and management_confirmation is not None:
-                    # 预览事务已经关闭；不在持有SQLite锁时等待用户输入。
-                    proposal=outcome['data']
-                    try:
-                        accepted=management_confirmation(deepcopy(proposal))
-                    except (EOFError,KeyboardInterrupt):
-                        accepted=False
-                    except Exception:
-                        return tool_result('ERROR',error='可信管理确认入口失败，未保存')
-                    if accepted is not True:
-                        return tool_result('CANCELLED',error='用户未确认该对象和内容，未持久化')
-                    if not (can_propose(intent,user_id,intent.domain,args['action']) or can_manage(intent,user_id,intent.domain,args['action'])):
-                        return tool_result('DENIED',error='确认上下文已失效，未保存')
-                    approved=confirm_management(intent,proposal)
-                    service=manage_task if name=='manage_task' else manage_preference
-                    outcome=service(db_path,user_id,**args,intent=approved)
-                    outcome['evidence']['management_confirmation']={'source':'trusted_cli','request_id':proposal['request_id'],
-                        'fingerprint':proposal['fingerprint'],'turn_id':approved.turn.turn_id}
+                if writing:
+                    service = manage_task if name == "manage_task" else manage_preference
+                    outcome = _confirm_proposal(outcome, lambda approval: service(db_path,user_id,**args,intent=approval),
+                                                intent,user_id,args["action"],management_confirmation)
+                    if name == "manage_preference" and outcome["status"] == "SUCCESS":
+                        try:
+                            current = manage_preference(db_path,user_id,args["company_id"],"get",args["key"])
+                            verified = current["status"] == "NOT_FOUND" if args["action"] == "delete" else (
+                                current["status"] == "SUCCESS" and current["data"]["value"] == args["value"])
+                        except sqlite3.Error:
+                            verified = False
+                        outcome["evidence"]["preference_readback_verified"] = verified
                 if outcome["ok"] or (name=='manage_preference' and args['action']=='get' and outcome['status']=='NOT_FOUND'):
                     if name=='manage_preference':outcome['evidence']['operation']={'action':args['action'],'key':args['key']}
                     outcome["evidence"].setdefault("scope",{"company_id":args["company_id"]})

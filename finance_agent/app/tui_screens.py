@@ -300,6 +300,7 @@ class Settings(Dialog):
                     yield Static(selected + " · 仅用于查询", classes="field-hint", markup=False)
                     if app.user:
                         yield TextAction("选择企业和账期", id="settings-scope")
+                        yield TextAction("偏好设置", id="settings-preferences")
                 with VerticalScroll(id="settings-advanced"):
                     yield Label("开发诊断", classes="section")
                     yield Static("固定脚本仅用于开发和界面联调，无法理解自然语言。结果仅供开发核对。",
@@ -466,7 +467,7 @@ class Settings(Dialog):
                 "即将结束当前 TUI 工作台，进入高级命令行管理。当前对话会关闭，已保存的业务数据不会删除。",
                 "进入高级管理", danger=True), lambda yes: self.app.open_legacy_home() if yes else None)
             return
-        if key in {"settings-scope", "settings-records"}:
+        if key in {"settings-scope", "settings-records", "settings-preferences"}:
             self.dismiss(key)
             return
         if key in {"switch-account", "sign-out"}:

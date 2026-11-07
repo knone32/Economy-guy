@@ -54,6 +54,9 @@ class ContextBuilder:
         self.diagnostics = []
         self.references_blocked = False
         self.prior_query_tools = []
+        self.display_ids = None
+        self.restored_turns = []
+        self.personal_detail = "普通"
 
     def begin(self,text,message_index,reset=False):
         """明确范围更正后弃用旧焦点；不更改长期任务，也不产生提交许可。"""
@@ -64,7 +67,7 @@ class ContextBuilder:
         self.diagnostics = []
         if not previous and not self.references_blocked:
             try:
-                anchors = reference_catalog(self.db_path,self.user_id)
+                anchors = reference_catalog(self.db_path,self.user_id,display_ids=self.display_ids)
                 if len(anchors)==1:
                     previous = {key:[value] for key,value in anchors[0]["scope"].items()}
                     self.scope = dict(previous)
@@ -145,7 +148,7 @@ class ContextBuilder:
             return None
         if self.references_blocked:
             return {"ok":False,"status":"AMBIGUOUS","data":None,"evidence":{},"error":"旧引用未能安全失效，请明确目标"}
-        return resolve_reference(self.db_path,self.user_id,scope=self.scope,**hint)
+        return resolve_reference(self.db_path,self.user_id,scope=self.scope,display_ids=self.display_ids,**hint)
 
     def record_displayed(self,results,display_id):
         """调用方已经按实际结果渲染后，提取展示的有序联合键，不采信模型描述。"""
@@ -175,10 +178,12 @@ class ContextBuilder:
         if self.references_blocked:
             invalidate_references(self.db_path,self.user_id)
         anchors = record_display(self.db_path,self.user_id,display_id,groups)
+        if anchors and self.display_ids is not None:
+            self.display_ids = [*self.display_ids[-63:], display_id]
         self.references_blocked = False
         return anchors
 
-    def _data(self):
+    def _data(self, read_workspace=None):
         """按企业/年月筛选任务和偏好；描述始终是低信任数据。"""
         data = {"source":"context_selection","historical":True,"scope":self.scope,
                 "origins":{},
@@ -186,7 +191,11 @@ class ContextBuilder:
         if self.prior_query_tools:
             data['prior_query_tools']=list(self.prior_query_tools)
             data['origins']['prior_query_tools']='runtime.previous_read_results/tool_names_only'
-        companies = self.scope.get("company_id",[])
+        scope = {**self.scope, **(read_workspace or {})}
+        companies = scope.get("company_id",[])
+        if self.personal_detail != "普通":
+            data["personal_display"] = {"reply_detail": self.personal_detail,
+                                        "usage": "个人表达习惯。当前明确要求优先。"}
         data['scope_provenance']=self.proof().metadata()
         if len(companies)==1:
             company = companies[0]
@@ -195,7 +204,7 @@ class ContextBuilder:
                 data["origins"]["tasks"] = "sqlite.tasks/list_tasks"
                 data["tasks"] = [{key:task[key] for key in ("task_id","company_id","year","month","status","context")}
                     for task in (tasks.get("data") or []) if task["status"] in {"ACTIVE","WAITING_USER","PAUSED"}
-                    and not scope_mismatch(self.scope, task)]
+                    and not scope_mismatch(scope, task)]
                 preferences = manage_preference(self.db_path,self.user_id,company,"list")
                 data["origins"]["preferences"] = "sqlite.preferences/manage_preference(list)"
                 data["preferences"] = [{"company_id":row["company_id"],"key":row["preference_key"],"value":row["value"]}
@@ -203,7 +212,7 @@ class ContextBuilder:
             except sqlite3.Error:
                 data["storage_status"] = "task_or_preference_unavailable"
         try:
-            data["references"] = [] if self.references_blocked else reference_catalog(self.db_path,self.user_id,self.scope)
+            data["references"] = [] if self.references_blocked else reference_catalog(self.db_path,self.user_id,scope,display_ids=self.display_ids)
             if not self.references_blocked:
                 data["origins"]["references"] = "sqlite.reference_anchors/actual_display"
         except sqlite3.Error:
@@ -223,10 +232,16 @@ class ContextBuilder:
         sources = ["system","current_turn"]
         dropped = []
         # 这些消息为assistant数据而非system/user；不会制造虚假Tool Call。
-        data = self._data()
+        data = self._data(read_workspace)
+        data_origins = data["origins"]
         if read_workspace:
             data["read_workspace"] = {"scope": read_workspace, "usage": "仅供本轮只读查询，用户明确要求优先，不授予任何写入权限。"}
-        extras = [{"role":"assistant","name":"context_data","content":json.dumps(data,ensure_ascii=False)}] if self.scope or read_workspace or data.get("references") else []
+        extras = [{"role":"assistant","name":"context_data","content":json.dumps(data,ensure_ascii=False)}] if self.scope or read_workspace or data.get("references") or data.get("personal_display") else []
+        if self.restored_turns and self.history_start == 1:
+            extras.append({"role":"assistant","name":"harness_history","content":json.dumps({
+                "source":"local_session","historical":True,
+                "usage":"仅是历史查询话题和来源，当前金额、缺项及权限必须重新查询。",
+                "turns":self.restored_turns},ensure_ascii=False)})
         if execution:
             extras.append({"role":"assistant","name":"harness_schedule","content":json.dumps({
                 "source":"harness_schedule","usage":"本轮执行状态，不是持久任务/业务授权/提交回执",**execution},ensure_ascii=False)})
@@ -238,6 +253,14 @@ class ContextBuilder:
                 selected = candidate
                 sources.append(extra["name"])
             else:
+                if extra["name"] == "context_data" and read_workspace:
+                    minimal = {**extra, "content": json.dumps({"read_workspace":data["read_workspace"]}, ensure_ascii=False)}
+                    candidate = [selected[0],minimal,*selected[1:]]
+                    if size(candidate) > self.max_chars:
+                        raise ContextLimitError("当前输入与可信查询范围超过上下文上限")
+                    selected = candidate
+                    data_origins = {}
+                    sources.append("context_data")
                 dropped.append(extra["name"])
         # 按完整用户轮次裁剪；工具结果永不成为脱离调用的孤立消息。
         start = max(1,self.history_start)
@@ -258,5 +281,5 @@ class ContextBuilder:
             sources.append("reference_data")
         selection = {"sources":sources,"scope":dict(self.scope),"chars":size(selected),"max_chars":self.max_chars,
                      "trimmed":bool(dropped) or start>1,"omitted":dropped,"diagnostics":list(self.diagnostics),
-                     "data_origins":data["origins"] if "context_data" in sources else {}}
+                     "data_origins":data_origins if "context_data" in sources else {}}
         return selected,selection

@@ -4,6 +4,7 @@ from contextlib import closing
 from dataclasses import asdict
 import json
 import os
+import re
 from pathlib import Path
 import sqlite3
 
@@ -26,6 +27,7 @@ from .tasks import list_tasks, manage_task, task_details
 from .trace import redact
 from .tui_intent import edit_turn
 from .tui_local import remember_workbook, startup_workbook
+from .tui_sessions import ConversationUI
 from .tui_screens import Approval, Choices, Login, Settings, TaskNote, TextAction
 from .win_vault import CredentialError, profile_target
 
@@ -52,20 +54,28 @@ def status_label(code):
 
 
 def offline_model(messages, tools):
-    """A deliberately fixed offline script for checking UI wiring."""
+    """Two deterministic read examples for the development diagnostic."""
     current = next(m["content"] for m in reversed(messages) if m["role"] == "user")
     if messages[-1]["role"] == "tool":
-        return {"role": "assistant", "content": '{"kind":"information","text":"已返回本轮业务核验。"}'}
+        return {"role":"assistant","content":'{"kind":"information","text":"已返回本轮业务核验。"}'}
     from .responses import explicit_scope
-    scope = explicit_scope(current, include_update_aliases=True)
-    if not scope.get("periods") and not scope.get("month"):
-        return {"role": "assistant", "content": '{"kind":"clarification","text":"请补充账期","missing_fields":["year","month"]}'}
-    return {"role": "assistant", "tool_calls": [{
-        "id": "offline-query", "type": "function", "function": {"name": "get_finance_summary",
-        "arguments": '{"company_id":"C001","year":2026,"month":9}'}}]}
+    if re.search(r"用途|缺项", current) and re.search(r"未填|没填|没有填|缺|还剩", current):
+        tool = "check_missing_purpose"
+    elif re.search(r"收支|汇总|合计", current):
+        tool = "get_finance_summary"
+    else:
+        return {"role":"assistant","content":'{"kind":"clarification","text":"固定脚本不支持这项请求，请配置真实 AI。","missing_fields":["live_model"]}'}
+    data = next((json.loads(m["content"]) for m in messages if m.get("name") == "context_data"), {})
+    scope = {**data.get("scope", {}), **data.get("read_workspace", {}).get("scope", {}), **explicit_scope(current, include_update_aliases=True)}
+    company, periods = scope.get("company_id", []), scope.get("periods", [])
+    if len(company) != 1 or len(periods) != 1:
+        return {"role":"assistant","content":'{"kind":"clarification","text":"请选择明确企业和账期","missing_fields":["company_id","year","month"]}'}
+    year, month = periods[0]
+    return {"role":"assistant","tool_calls":[{"id":"offline-query","type":"function","function":{
+        "name":tool,"arguments":json.dumps({"company_id":company[0],"year":year,"month":month})}}]}
 
 
-class AgentWorkspace(App):
+class AgentWorkspace(ConversationUI, App):
     TITLE = "Economy-guy · 财税工作台"
     CSS_PATH = "tui.tcss"
     NAV_ITEMS = (("go-chat", "对话"), ("go-tasks", "待办"), ("go-finance", "发票"),
@@ -73,12 +83,22 @@ class AgentWorkspace(App):
     BINDINGS = [("f2", "navigation", "导航"), ("f3", "account", "账户"),
                 ("f4", "cancel_edit", "取消未提交操作"), ("ctrl+q", "quit_safe", "退出")]
 
-    def __init__(self, db, template, local, *, model=None, trace_path=None, recent_path=None, restore_recent=False, vault=None):
+    def __init__(self, db, template, local, *, model=None, trace_path=None, recent_path=None, restore_recent=False, vault=None, session_path=None):
         super().__init__()
         self.db = Path(db).resolve()
         self.recent_path = recent_path
         self.restore_recent = restore_recent
         self.vault = vault
+        self.session_path = session_path
+        self.conversation = None
+        self.conversation_blocked = False
+        self.turn_seq = None
+        self.turn_display = []
+        self.resumed = []
+        self.resume_focus = None
+        self.resume_displays = []
+        self.has_saved_history = False
+        self.saved_records = []
         self.session_keys = {}
         self.profile_options = {"template": template, "local": local}
         self.trace_path = trace_path
@@ -157,9 +177,13 @@ class AgentWorkspace(App):
         self.profile = None
         self.reset_agent(clear_log=True)
         self.note("可输入问题，按 Enter 发送。")
-        self.chat_message("工作台", "可直接查询、提出修改、保存待办。发票和待办变更会弹出确认。"
+        if not self.open_conversation():
+            self.chat_message("工作台", "可直接查询、提出修改、保存待办。发票和待办变更会弹出确认。"
                           "\n例如：把甲企业 F002 的用途改成资料打印。")
         self.show("chat")
+
+    def on_unmount(self):
+        self.close_conversation()
 
     def open_legacy_home(self):
         self.reset_agent(clear_log=True)
@@ -194,13 +218,20 @@ class AgentWorkspace(App):
         if self.model_changes(mode, profile):
             had_agent = self.agent is not None
             self.reset_agent(clear_log=False)
-            if had_agent:
-                self.chat_message("会话分界", "模型连接已更换。上方文字可供回看。新的 AI 上下文从此处开始，未提交操作已取消。")
+            if had_agent or self.has_saved_history:
+                message = "模型连接已更换。上方文字可供回看。新的 AI 上下文从此处开始，未提交操作已取消。"
+                self.resumed, self.resume_displays, self.resume_focus = [], [], None
+                if self.conversation:
+                    try:
+                        self.conversation.boundary(message)
+                    except (OSError, ValueError, sqlite3.Error):
+                        self.notify("无法保存上下文分界。请先检查会话存储。", severity="warning")
+                self.chat_message("会话分界", message)
         self.mode, self.profile = mode, profile
         self.update_header()
 
     def reset_agent(self, *, clear_log, keep_connection_state=False):
-        if self.agent:
+        if self.agent and self.agent.workbook_available():
             self.agent.cancel_update()
         self.agent = None
         self.task_focus = None
@@ -219,6 +250,7 @@ class AgentWorkspace(App):
 
     def logout(self):
         self.reset_agent(clear_log=True)
+        self.close_conversation()
         self.user, self.profile, self.company, self.period, self.task_route = None, None, None, None, None
         self.read_workspace = None
         self.invoice_route = None
@@ -239,6 +271,9 @@ class AgentWorkspace(App):
             self.open_task(self.task_route)
         elif destination == "settings-scope":
             self.choose_workspace_scope()
+        elif destination == "settings-preferences":
+            from .tui_preferences import open_preferences
+            open_preferences(self)
         elif destination == "settings-records":
             self.show("records")
         elif destination in {"switch-account", "sign-out"}:
@@ -358,7 +393,10 @@ class AgentWorkspace(App):
     def chat_message(self, role, text):
         log = self.workspace_widget("#chat-log", RichLog)
         log.write(Text(role, style="bold #83ddd6"))
-        log.write(Text(safe_text(text)))
+        clean = self.storage_text(text)
+        log.write(Text(clean))
+        if self.turn_seq is not None and role != "你":
+            self.turn_display.append((role,clean))
 
     def ensure_agent(self):
         if not self.user:
@@ -373,10 +411,19 @@ class AgentWorkspace(App):
         else:
             options["model"] = offline_model
         self.agent = Agent(self.user, self.db, mode=self.mode, trace_path=self.trace_path,
-                           management_confirmation=self.confirm_management, **options)
+                           management_confirmation=self.confirm_management,
+                           display_preference=self.conversation.manage_detail if self.conversation else None, **options)
         self.agent.messages[0]["content"] += (
             "\n本工作台内，待办 create/update/correct 的 note 必须逐字保留当前用户原始要求，"
             "不补造任务内容、期限或目标。明确缺失参数时追问。")
+        if self.session_path is not None:
+            self.agent.context.display_ids = list(self.resume_displays)
+        if self.conversation:
+            self.agent.workbook_guard = self.conversation.validate
+            if self.task_focus:
+                self.agent.focus_task(*self.task_focus)
+            self.agent.context.restored_turns = list(self.resumed)
+            self.agent.context.personal_detail = self.conversation.personal_detail()
         if self.agent.transport:
             trace = self.agent.transport.trace
 
@@ -447,12 +494,21 @@ class AgentWorkspace(App):
 
         def start(confirmed):
             if confirmed is True and not self.busy:
+                if self.conversation:
+                    try:
+                        self.conversation.new_chat(self.read_workspace)
+                    except (OSError, ValueError, sqlite3.Error):
+                        self.note("无法保存新对话，请重新打开账簿。")
+                        return
+                self.resumed, self.resume_displays, self.resume_focus = [], [], None
+                self.has_saved_history = False
+                self.saved_records = []
                 self.reset_agent(clear_log=True, keep_connection_state=True)
                 prompt.value = ""
                 self.show("chat")
                 self.note("已开始新对话。可输入问题，按 Enter 发送。")
 
-        if self.agent is not None or prompt.value.strip():
+        if self.agent is not None or self.has_saved_history or prompt.value.strip():
             self.push_screen(Approval(
                 "开始新对话？",
                 "当前对话内容将不再显示，未提交的修改意图会取消。已保存的待办、财务数据和审计记录不会删除。",
@@ -479,6 +535,7 @@ class AgentWorkspace(App):
         if self.agent and not self.busy:
             self.agent.cancel_update()
             self.task_focus = None
+            self.remember_focus()
             self.update_header()
             self.supplement = False
             self.workspace_widget("#supplement", Button).display = False
@@ -532,24 +589,43 @@ class AgentWorkspace(App):
         message = event.value.strip()
         if not message or self.busy or not self.user:
             return
+        if self.conversation_blocked:
+            self.note("此账号的账簿对话已在另一窗口打开。请关闭后重新登录。")
+            return
         try:
             self.ensure_agent()
-        except (ProfileError, ValueError):
+        except (OSError, ProfileError, ValueError, sqlite3.Error):
             self.update_header()
             self.note("暂时无法发送。请使用「配置 AI 模型」检查设置。")
             return
-        event.input.value = ""
-        self.chat_message("你", message)
+        if self.conversation:
+            try:
+                self.agent.context.personal_detail = self.conversation.personal_detail()
+            except (OSError, ValueError, sqlite3.Error):
+                self.note("工作库身份或会话存储已变化，请重新打开。")
+                return
         args = edit_turn(message, self.agent.pending_edit, guided=self.supplement)
         if args.pop("cancel", False):
+            event.input.value = ""
             self.action_cancel_edit()
             return
+        if self.conversation:
+            try:
+                self.turn_seq = self.conversation.begin(self.storage_text(message), self.mode)
+            except (OSError, ValueError, sqlite3.Error):
+                self.note("无法保存本轮记录。请重新打开工作库后再试。")
+                return
+        event.input.value = ""
+        self.chat_message("你", message)
         self.busy = True
         event.input.disabled = True
         self.note("正在处理，请稍候。")
         self.supplement = False
         self.workspace_widget("#supplement", Button).display = False
-        self.run_turn(message, args, self.read_workspace)
+        scope = self.read_workspace or self.resume_focus
+        if self.resume_focus and any(word in message for word in ("刚才","上一轮")):
+            scope = self.resume_focus
+        self.run_turn(message, args, scope)
 
     def wait_confirmation(self, title, body, action, *, danger=False):
         """Let the worker wait for the modal while the terminal stays responsive."""
@@ -594,13 +670,23 @@ class AgentWorkspace(App):
                     f"{previous}{notes}\n关联表格　发票明细\n"
                     f"操作　{dict(create='新建', update='补充', correct='更正', resume='恢复', complete='完成', cancel='取消', wait='等待补充', pause='暂停').get(p['action'], p['action'])}\n"
                     "尚未提交。确认后会重新检查权限与冲突。")
+        elif proposal["domain"] == "display_preference":
+            title = "确认个人回复习惯"
+            body = (f"用户　{self.user}\n生效范围　当前账号与账簿\n"
+                    f"原值　{proposal['current']['value']}\n"
+                    f"拟保存值　{p['value'] or '普通'}\n尚未保存。")
         else:
             title = "确认偏好"
             body = (f"用户　{self.user}\n企业　{p['company_id']}\n"
                     f"偏好　{p['key']}\n原值　{(proposal.get('current') or {}).get('value') or '（无）'}\n"
                     f"拟保存值　{p.get('value') or '（空）'}\n操作　{'删除' if p['action'] == 'delete' else '保存'}\n尚未提交。")
+        if proposal["domain"] in {"display_preference","preference"}:
+            body += "\n原始要求　" + proposal["original_request"]
         danger = p["action"] in {"cancel", "delete"}
-        return self.wait_confirmation(title, body, "确认操作" if danger else "确认保存", danger=danger)
+        accepted = self.wait_confirmation(title, body, "确认操作" if danger else "确认保存", danger=danger)
+        if accepted and self.conversation and self.turn_seq is not None:
+            self.conversation.checkpoint(self.turn_seq)
+        return accepted
 
     @work(thread=True, group="agent", exit_on_error=False)
     def run_turn(self, message, args, read_workspace):
@@ -619,6 +705,8 @@ class AgentWorkspace(App):
                     body = (f"企业　{name}（{draft.company_id}）\n发票　{draft.invoice_no}\n字段　{field}\n"
                             f"原值　{draft.old_value or '（空）'}\n新值　{draft.new_value or '（清空）'}{note}\n尚未提交。")
                     if self.wait_confirmation("确认发票修改", body, "确认修改"):
+                        if self.conversation and self.turn_seq is not None:
+                            self.conversation.checkpoint(self.turn_seq, draft.request_id)
                         receipt = agent.commit_update(draft.request_id, draft.fingerprint())
                 if receipt is None:
                     receipt = agent.cancel_update()
@@ -644,10 +732,16 @@ class AgentWorkspace(App):
                                      outcome["data"]["page"] if call["tool"] == "list_invoice_directory" else 1)
                         cards.append((*card, route))
                 if outcome["status"] == "SUCCESS" and evidence.get("management_confirmation"):
-                    verified.append("已按本次确认保存，业务库记录可重新查看。")
-            self.call_from_thread(self.finish_turn, answer, calls, receipt, verified, cards)
+                    if "preference_readback_verified" in evidence:
+                        verified.append("偏好已保存并回读。" if evidence["preference_readback_verified"] else
+                                        "偏好已提交，当前值尚未核实，请打开偏好设置。")
+                    else:
+                        verified.append("已按本次确认保存，业务库记录可重新查看。")
+            self.call_from_thread(self.finish_turn, answer, calls, receipt, verified, cards,
+                                  not args.get("allow_prepare") and not args.get("continue_edit"))
         except Exception:
-            agent.cancel_update()
+            if agent.workbook_available():
+                agent.cancel_update()
             if self.is_running:
                 self.call_from_thread(self.fail_turn)
 
@@ -670,7 +764,9 @@ class AgentWorkspace(App):
             header = f"共 {data['total']} 张 · 第 {data['page']} 页 · 每页 {data['page_size']} 张"
             return ("发票目录", header + "\n" + AgentWorkspace.invoice_lines(rows))
         if tool == "check_missing_purpose":
-            return ("用途检查", f"当前缺失用途 {data['count']} 张")
+            rule = data["rule"]
+            return ("用途检查", f"当前缺失用途 {data['count']} 张 · {rule['rule_id']} v{rule['version']}\n"
+                    + "\n".join(f"{r['invoice_date']}　{r['invoice_no']}" for r in data["missing_invoices"]))
         return None
 
     @staticmethod
@@ -683,7 +779,7 @@ class AgentWorkspace(App):
                 f"销售方　{row['seller_name']}\n项目　{row['item_name']}\n价税合计　¥{row['amount']}\n"
                 f"用途　{row['purpose'] or '未填写'}\n备注　{row['remark'] or '（无）'}")
 
-    def finish_turn(self, answer, calls, receipt, verified, cards):
+    def finish_turn(self, answer, calls, receipt, verified, cards, read_only=True):
         response = self.agent.last_response
         status = receipt["status"] if receipt else response["execution"]["stop_reason"]
         # Keep raw wire JSON and internal anchors in execution evidence rather than chat.
@@ -733,10 +829,15 @@ class AgentWorkspace(App):
                 if "year" in scope and "month" in scope:
                     self.period = scope["year"], scope["month"]
         self.workspace_widget("#supplement", Button).display = bool(self.agent.pending_edit)
+        self.save_turn(calls, "UNKNOWN_OUTCOME" if any(c["status"] == "UNKNOWN_OUTCOME" for c in calls) else status,
+                       read_only)
+        self.remember_focus()
         self.note(f"{status_label(status)} · F2 聚焦导航，可选择执行记录")
         self.unlock()
 
     def fail_turn(self):
+        self.turn_seq = None
+        self.turn_display = []
         self.note("本轮处理失败。请核对设置。若结果未知，请先查执行记录。")
         self.unlock()
 
@@ -930,6 +1031,7 @@ class AgentWorkspace(App):
         self.read_workspace = None
         self.company = self.period = None
         self.task_focus = route
+        self.remember_focus()
         self.supplement = False
         self.workspace_widget("#supplement", Button).display = False
         self.show("chat")
@@ -986,6 +1088,7 @@ class AgentWorkspace(App):
                 return
             self.company, self.period = company, period
             self.read_workspace = (company, *period)
+            self.remember_focus()
             self.update_header()
             if for_finance:
                 self.show("finance")
@@ -1082,6 +1185,12 @@ class AgentWorkspace(App):
                 lines.append(f"{call['tool']} · {status_label(call['status'])} · {where}{rule} · {call['id']}")
                 if call.get("error"):
                     lines.append(f"  {call['error']}")
+            items.append(Static(safe_text("\n".join(lines)), markup=False))
+        for state, mode, calls in reversed(self.saved_records):
+            lines = [f"历史轮次 · {state} · {mode or '未记录'}"]
+            for call in calls:
+                scope = call.get("scope") or {}
+                lines.append(f"{call['tool']} · {status_label(call['status'])} · {scope.get('company_id','')} · {call['id']}")
             items.append(Static(safe_text("\n".join(lines)), markup=False))
         for audit in invoice_history(self.db, self.user):
             items.append(Static(safe_text(

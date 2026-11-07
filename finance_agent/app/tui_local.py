@@ -53,3 +53,7 @@ def startup_workbook(default, settings, *, restore):
         return candidate, bool(missing_migrations(candidate))
     except (OSError, ValueError, sqlite3.Error):
         return candidate, True
+
+
+def session_path():
+    return settings_path().with_name("conversations.sqlite3")
