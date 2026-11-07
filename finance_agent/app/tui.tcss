@@ -1,0 +1,88 @@
+$canvas: #101a22;
+$surface: #182630;
+$raised: #223540;
+$line: #36515d;
+$ink: #e6efef;
+$quiet: #a4b7bd;
+$accent: #9ad8ce;
+$accent-fill: #285953;
+$danger: #f4bfaf;
+$danger-fill: #593933;
+
+Screen { background: $canvas; color: $ink; }
+Label { color: $ink; }
+Button {
+    height: 3; min-width: 8; width: auto; max-width: 100%;
+    padding: 0 1; border: none; background: $raised; color: $ink;
+    text-style: none;
+}
+Button.-primary { background: $accent-fill; color: $ink; text-style: bold; }
+Button.-error { background: $danger-fill; color: $danger; }
+Button:hover { background: $line; }
+Button:focus { background: $line; color: $accent; text-style: bold underline; }
+Button.-primary:focus { background: $accent-fill; color: $accent; }
+Button.-error:focus { background: $danger-fill; color: $danger; }
+Button:disabled { color: $quiet; background: $surface; }
+Input, SelectCurrent {
+    height: 3; background: $canvas; color: $ink; border: round $line;
+}
+Input:focus, Select:focus SelectCurrent { border: round $accent; }
+Input > .input--placeholder { color: $quiet; }
+SelectOverlay { background: $surface; border: round $line; }
+SelectOverlay > .option-list--option-highlighted {
+    background: $accent-fill; color: $ink; text-style: bold;
+}
+.field-label { margin-top: 1; color: $ink; text-style: bold; }
+.field-hint { color: $quiet; height: auto; }
+.field-error { color: $danger; height: auto; }
+.dialog-title { color: $accent; text-style: bold; margin-bottom: 1; }
+.dialog-actions { height: 3; margin-top: 1; }
+.dialog-actions Button { margin-right: 1; }
+.choice { width: 100%; text-align: left; margin-bottom: 1; }
+
+#status { height: 2; padding: 0 1; background: $surface; color: $accent; }
+#layout { height: 1fr; }
+#rail { width: 6; height: 1fr; background: $surface; }
+#rail.expanded { width: 17; }
+#rail Button { width: 100%; min-width: 4; padding: 0; margin: 0; background: $surface; }
+#rail.expanded Button { padding: 0 1; text-align: left; }
+#rail Button.current { color: $accent; background: $accent-fill; text-style: bold; }
+#rail Button:focus { background: $line; color: $accent; text-style: bold underline; }
+#rail-spacer { height: 1fr; }
+#panes { width: 1fr; height: 1fr; }
+#chat { height: 1fr; padding: 0 2; }
+#chat-log { height: 1fr; min-height: 1; scrollbar-size-vertical: 1; padding-top: 1; }
+#ai-guide { height: auto; background: $surface; padding: 0 1; margin-bottom: 1; }
+#ai-guide-text { width: 1fr; height: auto; color: $quiet; }
+#configure-ai { margin-left: 1; }
+#composer-label { height: 1; color: $accent; text-style: bold; }
+#chat-note { height: auto; min-height: 1; color: $quiet; }
+#prompt { height: 3; border: round $accent-fill; }
+#prompt:focus { border: round $accent; }
+#supplement { display: none; }
+#tasks, #records, #finance { padding: 1 2; height: 1fr; }
+#task-body, #record-list, #finance-body { height: 1fr; }
+#invoice-table { height: 1fr; min-height: 6; background: $surface; }
+#invoice-table > .datatable--header { background: $raised; color: $accent; }
+#invoice-table > .datatable--cursor { background: $accent-fill; color: $ink; }
+#invoice-detail { height: auto; min-height: 2; }
+.section { color: $accent; margin-bottom: 1; text-style: bold; }
+.task-card { height: auto; background: $surface; padding: 1; margin: 1 0; }
+.task-fields { height: auto; }
+.task-progress { color: $accent; margin-bottom: 1; }
+Footer { background: $surface; color: $quiet; }
+
+Dialog { align: center middle; background: $canvas 75%; }
+Dialog > VerticalScroll, Dialog > Vertical {
+    width: 72; max-width: 96%; height: auto; max-height: 94%;
+    background: $surface; border: round $line; padding: 1 2;
+}
+#approval-content { height: auto; max-height: 56vh; }
+#approval-content Static { height: auto; }
+#settings-shell { width: 76; height: 92%; }
+#settings-tabs { height: 3; margin-bottom: 1; }
+#settings-tabs Button { width: 1fr; min-width: 0; padding: 0; }
+#settings-tabs Button.current { background: $accent-fill; color: $accent; text-style: bold; }
+#settings-tabs Button:focus { text-style: bold underline; }
+#settings-groups { height: 1fr; }
+#settings-groups > VerticalScroll { height: 1fr; padding-right: 1; }

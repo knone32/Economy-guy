@@ -28,15 +28,16 @@ from .tui_screens import Approval, Choices, Login, Settings
 
 ROOT = Path(__file__).resolve().parents[1]
 STATUS = {
-    "ANSWERED": "对话已结束", "COMPLETED": "本轮处理完成", "SUCCESS": "执行成功",
+    "ANSWERED": "本轮回复完成", "COMPLETED": "本轮处理完成", "SUCCESS": "执行成功",
     "NO_DATA": "没有符合条件的记录", "NO_CHANGE": "当前无需变更",
     "WAITING_USER": "等待补充", "AMBIGUOUS": "请补充范围", "WAITING_CONFIRMATION": "等待确认",
-    "COMMITTED": "已提交，且回读成功", "CURRENT_VALUE_MATCHES": "当前值已相同",
-    "DENIED": "没有权限", "ERROR": "本轮执行失败", "SCOPE_MISMATCH": "请求范围不一致", "CANCELLED": "已取消",
+    "COMMITTED": "已成功保存并核验", "CURRENT_VALUE_MATCHES": "当前值已相同",
+    "DENIED": "权限不足", "ERROR": "本轮执行失败", "SCOPE_MISMATCH": "请求范围不一致", "CANCELLED": "已取消",
     "UNKNOWN_OUTCOME": "提交结果未知，请查看执行记录", "MODEL_LIMIT": "本轮处理达到上限",
     "CONFLICT": "当前状态有变化，请重新核对", "NOT_FOUND": "没有找到目标",
     "API_OR_RESPONSE_ERROR": "模型连接或响应失败，请检查设置与执行记录",
     "INVALID_RESPONSE": "模型回复格式无效，请重新描述",
+    "PROTOCOL_ERROR": "模型响应异常，请查看执行记录",
     "RULE_CONFLICT": "当前规则存在冲突", "NO_APPLICABLE_RULE": "没有适用规则",
 }
 TASK_STATUS = {"ACTIVE": "进行中", "WAITING_USER": "等待补充", "PAUSED": "已暂停",
@@ -63,25 +64,14 @@ def offline_model(messages, tools):
 
 class AgentWorkspace(App):
     TITLE = "Economy-guy · 财税工作台"
-    CSS = """
-    Screen { background: #10212a; color: #e5efeb; }
-    #status { height: 3; padding: 1 2; background: #182d36; color: #a5e1d9; }
-    #layout { height: 1fr; }
-    #rail { width: 8; height: 1fr; background: #182d36; }
-    #rail Button { width: 100%; min-width: 4; border: none; margin: 0; }
-    #rail-spacer { height: 1fr; }
-    #panes { width: 1fr; height: 1fr; }
-    #chat { height: 1fr; padding: 0 2; }
-    #chat-log { height: 1fr; scrollbar-size-vertical: 1; }
-    #chat-note { height: auto; min-height: 1; color: #a5e1d9; }
-    #prompt { height: 3; }
-    #supplement { display: none; }
-    #tasks, #records, #finance { padding: 1 2; height: 1fr; }
-    #task-body, #record-list, #finance-body { height: 1fr; }
-    #invoice-table { height: 1fr; min-height: 8; }
-    #invoice-detail { height: auto; min-height: 2; }
-    .section { color: #a5e1d9; margin-bottom: 1; }
-    """
+    CSS_PATH = "tui.tcss"
+    NAV_ITEMS = (
+        ("go-chat", "对话", "当前对话"),
+        ("go-tasks", "待办", "待办事项"),
+        ("go-finance", "发票", "发票明细"),
+        ("go-records", "记录", "执行记录"),
+        ("account", "账户", "我的账户"),
+    )
     BINDINGS = [("f2", "navigation", "导航"), ("f3", "account", "账户"),
                 ("f4", "cancel_edit", "取消未提交操作"), ("ctrl+q", "quit_safe", "退出")]
 
@@ -105,21 +95,24 @@ class AgentWorkspace(App):
         self.records = []
         self.model_requests = 0
         self.last_api_status = ""
+        self.last_api_ok = None
 
     def compose(self):
         yield Static("Economy-guy", id="status", markup=False)
         with Horizontal(id="layout"):
             with Vertical(id="rail"):
-                yield Button("≡", id="nav", tooltip="展开导航 · F2")
-                yield Button("对", id="go-chat", tooltip="当前对话")
-                yield Button("待", id="go-tasks", tooltip="待办事项")
-                yield Button("账", id="go-finance", tooltip="财务数据")
-                yield Button("录", id="go-records", tooltip="执行记录")
-                yield Static("", id="rail-spacer")
-                yield Button("人", id="account", tooltip="账户 · F3")
+                yield Button("菜单", id="nav", tooltip="展开导航 · F2")
+                for key, short, label in self.NAV_ITEMS:
+                    if key == "account":
+                        yield Static("", id="rail-spacer")
+                    yield Button(short, id=key, tooltip=label, classes="current" if key == "go-chat" else None)
             with ContentSwitcher(initial="chat", id="panes"):
                 with Vertical(id="chat"):
                     yield RichLog(id="chat-log", markup=False, wrap=True)
+                    with Horizontal(id="ai-guide"):
+                        yield Static("", id="ai-guide-text", markup=False)
+                        yield Button("配置 AI 模型", id="configure-ai", variant="primary")
+                    yield Static("发送消息", id="composer-label", markup=False)
                     yield Static("", id="chat-note", markup=False)
                     yield Button("补充本次修改", id="supplement")
                     yield Input(placeholder="输入财税问题或修改要求，按 Enter 发送", id="prompt")
@@ -127,7 +120,7 @@ class AgentWorkspace(App):
                     yield Static("待办事项", classes="section", markup=False)
                     yield VerticalScroll(id="task-body")
                 with Vertical(id="finance"):
-                    yield Static("财务数据 · 只读", classes="section", markup=False)
+                    yield Static("发票明细 · 只读", classes="section", markup=False)
                     yield VerticalScroll(id="finance-body")
                 with Vertical(id="records"):
                     yield Static("执行记录 · 当前对话与本人成功审计", classes="section", markup=False)
@@ -149,7 +142,7 @@ class AgentWorkspace(App):
         self.user = user
         self.profile = None
         self.reset_agent(clear_log=True)
-        self.note(self.profile_status())
+        self.note("可输入问题，按 Enter 发送。")
         self.chat_message("工作台", "可直接查询、提出修改、保存待办。发票和待办变更会弹出确认。"
                           "\n例如：把甲企业 F002 的用途改成资料打印。")
         self.show("chat")
@@ -168,8 +161,19 @@ class AgentWorkspace(App):
         if self.user:
             self.logout()
 
+    def model_changes(self, mode, profile):
+        if mode != self.mode:
+            return True
+        try:
+            _, default = load_profiles(**self.profile_options)
+        except ProfileError:
+            default = None
+        fallback = os.environ.get("FINANCE_MODEL_PROFILE") or default
+        current = self.agent.connection.profile.profile_name if self.agent and self.agent.connection else self.profile
+        return (profile or fallback) != (current or fallback)
+
     def set_model(self, mode, profile):
-        if (mode, profile) != (self.mode, self.profile):
+        if self.model_changes(mode, profile):
             self.reset_agent(clear_log=True)
         self.mode, self.profile = mode, profile
         self.update_header()
@@ -184,6 +188,7 @@ class AgentWorkspace(App):
         self.records.clear()
         self.model_requests = 0
         self.last_api_status = ""
+        self.last_api_ok = None
         if clear_log:
             self.workspace_widget("#chat-log", RichLog).clear()
 
@@ -201,40 +206,62 @@ class AgentWorkspace(App):
         if not isinstance(self.screen, Settings):
             self.push_screen(Login(), self.signed_in)
 
-    def settings_closed(self, _):
+    def settings_closed(self, destination):
         if not self.user and not isinstance(self.screen, Login):
             self.push_screen(Login(), self.signed_in)
-        self.note(self.profile_status())
+        elif destination == "settings-scope":
+            self.choose_workspace_scope()
+        elif destination == "settings-records":
+            self.show("records")
+        elif destination in {"switch-account", "sign-out"}:
+            self.confirm_logout("切换账号" if destination == "switch-account" else "退出登录")
+        self.update_header()
 
     def resolve_profile(self, *, require_key):
         _, default = load_profiles(**self.profile_options)
         name = self.profile or os.environ.get("FINANCE_MODEL_PROFILE") or default
         if not name:
-            raise ProfileError("请在设置选择可见 Profile，或明确选择离线 Mock。")
+            raise ProfileError("No AI configuration selected")
         return resolve_connection(self.user, name, require_key=require_key, **self.profile_options)
 
-    def profile_status(self):
+    def model_state(self):
+        """Offline configuration checks and observed transport outcomes stay distinct."""
         if self.mode == "mock":
-            return "Mock · 固定离线查询"
+            return "mock", "固定脚本测试（开发诊断）", "使用固定示例联调界面。"
         try:
-            p = self.resolve_profile(require_key=False).profile
-            ready = bool(os.environ.get(p.api_key_env, "").strip())
-            return f"Live · {p.profile_name} / {p.model} · Key {'就绪' if ready else '未设置'}"
-        except ProfileError as error:
-            return "Live · " + str(error)
+            profile = self.resolve_profile(require_key=False).profile
+        except ProfileError:
+            return "unconfigured", "尚未配置 AI", "选择现有 AI 配置或新建一个。"
+        if not os.environ.get(profile.api_key_env, "").strip():
+            return "missing-key", "缺少 API 密钥", f"为 {profile.model} 输入密钥后即可发送。"
+        if self.last_api_ok is True:
+            return "connected", "真实 AI 已响应", profile.model
+        if self.last_api_ok is False:
+            return "failed", "最近连接失败", "请核对网络和 AI 配置，可在执行记录查看详情。"
+        return "unverified", "连接尚未验证", f"{profile.model} 的密钥已设置。发送消息后才会联网。"
+
+    def profile_status(self):
+        _, title, detail = self.model_state()
+        return f"{title} · {detail}"
 
     def update_header(self):
         company = self.company or "未选择"
         period = f"{self.period[0]:04d}-{self.period[1]:02d}" if self.period else "未选择"
-        self.workspace_widget("#status", Static).update(
-            safe_text(f"财税工作台  /  {self.user or '未登录'}  ·  企业 {company}  ·  账期 {period}  ·  {self.profile_status()}"))
+        state, title, detail = self.model_state()
+        mode = "固定脚本测试" if state == "mock" else "真实 AI"
+        model_label = title if state == "mock" else f"{mode}  /  {title}"
+        self.workspace_widget("#status", Static).update(safe_text(
+            f"Economy-guy  /  财税工作台     比赛模拟数据 · {self.user or '未登录'}\n"
+            f"{company}  ·  {period}     {model_label}"))
+        self.workspace_widget("#ai-guide-text", Static).update(safe_text(f"{title}\n{detail}"))
+        self.workspace_widget("#ai-guide").display = state in {"unconfigured", "missing-key", "unverified", "failed"}
 
     def note(self, text):
         self.workspace_widget("#chat-note", Static).update(safe_text(text))
 
     def chat_message(self, role, text):
         log = self.workspace_widget("#chat-log", RichLog)
-        log.write(Text(role, style="bold #a5e1d9"))
+        log.write(Text(role, style="bold #9ad8ce"))
         log.write(Text(safe_text(text)))
 
     def ensure_agent(self):
@@ -259,6 +286,7 @@ class AgentWorkspace(App):
 
             def observe(event, data):
                 if event == "api.response":
+                    self.last_api_ok = data["success"] is True
                     self.last_api_status = ("已收到模型响应" if data["success"] else
                                             f"{data['http_category']} HTTP {data['http_status'] or '无响应'}")
                 trace(event, data)
@@ -266,10 +294,26 @@ class AgentWorkspace(App):
             self.agent.transport.trace = observe
 
     def action_navigation(self):
+        if not self.user or self.screen is not self.screen_stack[0]:
+            return
+        rail = self.workspace_widget("#rail")
+        expanded = not rail.has_class("expanded")
+        rail.set_class(expanded, "expanded")
+        self.workspace_widget("#nav", Button).label = "收起导航" if expanded else "菜单"
+        for key, short, label in self.NAV_ITEMS:
+            self.workspace_widget("#" + key, Button).label = label if expanded else short
+
+    def open_settings(self):
         if self.user and not self.busy:
-            self.push_screen(Choices("工作区导航", [("当前对话", "chat"), ("待办事项", "tasks"),
-                             ("财务数据", "finance"), ("执行记录", "records")]),
-                             lambda page: self.show(page) if page else None)
+            self.push_screen(Settings(self), self.settings_closed)
+
+    def confirm_logout(self, title):
+        if self.agent is None:
+            self.logout()
+        else:
+            self.push_screen(Approval(
+                title, "当前对话将关闭，未提交的操作会取消。已保存的业务记录仍可查看。",
+                title, danger=True), lambda yes: self.logout() if yes else None)
 
     def action_account(self):
         if not self.user:
@@ -278,16 +322,16 @@ class AgentWorkspace(App):
             self.note("请等待本轮操作结束。")
             return
         self.push_screen(Choices("账户 · SIMULATED_IDENTITY", [
-            ("我的账户与权限", "account"), ("切换企业 / 账期提示", "company"),
-            ("设置", "settings"), ("帮助与关于", "help"), ("新对话", "new"),
+            ("我的账户与权限", "account"), ("当前查询范围", "company"),
+            ("工作台设置", "settings"), ("帮助与关于", "help"), ("新对话", "new"),
             ("切换账号", "switch"), ("退出登录", "logout"), ("退出程序", "quit"),
         ]), self.account_choice)
 
     def account_choice(self, choice):
         if choice == "settings":
-            self.push_screen(Settings(self), self.settings_closed)
+            self.open_settings()
         elif choice in {"switch", "logout"}:
-            self.logout()
+            self.confirm_logout("切换账号" if choice == "switch" else "退出登录")
         elif choice == "new":
             self.reset_agent(clear_log=True)
             self.show("chat")
@@ -299,7 +343,7 @@ class AgentWorkspace(App):
             self.push_screen(Choices("帮助与关于", [
                 ("输入问题或完整修改要求，按 Enter 发送", None),
                 ("Tab 切换焦点，Esc 取消弹窗，F2 导航，F3 账户", None),
-                ("模拟身份与真实模型模式独立", None)]))
+                ("比赛模拟数据可搭配真实 AI。固定脚本测试位于高级诊断。", None)]))
         elif choice == "account":
             rows = company_access(self.db, self.user)
             self.push_screen(Choices(f"我的账户 · {self.user} · 比赛模拟",
@@ -309,6 +353,15 @@ class AgentWorkspace(App):
     def action_quit_safe(self):
         if self.busy:
             self.note("等待本轮结束或取消弹窗后可退出。")
+        elif isinstance(self.screen, Approval):
+            return
+        elif self.agent is not None:
+            def leave(confirmed):
+                if confirmed:
+                    self.reset_agent(clear_log=True)
+                    self.exit()
+            self.push_screen(Approval("退出程序", "将关闭当前对话。已保存的业务记录仍可查看。",
+                                      "退出程序", danger=True), leave)
         else:
             self.exit()
 
@@ -328,6 +381,8 @@ class AgentWorkspace(App):
             self.action_navigation()
         elif key == "account":
             self.action_account()
+        elif key == "configure-ai":
+            self.open_settings()
         elif key.startswith("todo-"):
             route = getattr(self, "task_links", {}).get(key)
             if route:
@@ -335,7 +390,7 @@ class AgentWorkspace(App):
         elif key == "back-tasks":
             self.show("tasks")
         elif key == "linked-finance":
-            self.workspace_widget("#panes", ContentSwitcher).current = "finance"
+            self.select_pane("finance")
             self.call_later(self.refresh_pane, "finance")
         elif key == "back-detail" and self.task_route:
             self.open_task(self.task_route)
@@ -355,8 +410,9 @@ class AgentWorkspace(App):
             return
         try:
             self.ensure_agent()
-        except (ProfileError, ValueError) as error:
-            self.note(f"{error} 请通过左下角「人」打开设置。")
+        except (ProfileError, ValueError):
+            self.update_header()
+            self.note("暂时无法发送。请使用「配置 AI 模型」检查设置。")
             return
         event.input.value = ""
         self.chat_message("你", message)
@@ -366,12 +422,12 @@ class AgentWorkspace(App):
             return
         self.busy = True
         event.input.disabled = True
-        self.note("正在核对，请稍候…")
+        self.note("正在处理，请稍候。")
         self.supplement = False
         self.workspace_widget("#supplement", Button).display = False
         self.run_turn(message, args, self.read_workspace)
 
-    def wait_confirmation(self, title, body, action):
+    def wait_confirmation(self, title, body, action, *, danger=False):
         """Let the worker wait for the modal while the terminal stays responsive."""
         answer = Future()
         epoch = self.session_epoch
@@ -380,7 +436,8 @@ class AgentWorkspace(App):
             def resolve(yes):
                 if not answer.done():
                     answer.set_result(yes is True and epoch == self.session_epoch)
-            self.push_screen(Approval(title, body, action), resolve)
+            self.note("等待确认。")
+            self.push_screen(Approval(title, body, action, danger=danger), resolve)
 
         self.call_from_thread(present)
         worker = get_current_worker()
@@ -412,7 +469,8 @@ class AgentWorkspace(App):
             body = (f"用户　{self.user}\n企业　{p['company_id']}\n"
                     f"偏好　{p['key']}\n原值　{(proposal.get('current') or {}).get('value') or '（无）'}\n"
                     f"拟保存值　{p.get('value') or '（空）'}\n操作　{'删除' if p['action'] == 'delete' else '保存'}")
-        return self.wait_confirmation(title, body, "确认保存")
+        danger = p["action"] in {"cancel", "delete"}
+        return self.wait_confirmation(title, body, "确认操作" if danger else "确认保存", danger=danger)
 
     @work(thread=True, group="agent", exit_on_error=False)
     def run_turn(self, message, args, read_workspace):
@@ -487,7 +545,7 @@ class AgentWorkspace(App):
             self.chat_message("Agent", readable)
         log = self.workspace_widget("#chat-log", RichLog)
         for title, text in cards:
-            log.write(Panel(Text(safe_text(text)), title=title, border_style="#508a8a", expand=False))
+            log.write(Panel(Text(safe_text(text)), title=title, border_style="#36515d", expand=False))
         for detail in verified:
             self.chat_message("业务回执", detail)
         if receipt:
@@ -508,7 +566,7 @@ class AgentWorkspace(App):
                 if "year" in scope and "month" in scope:
                     self.period = scope["year"], scope["month"]
         self.workspace_widget("#supplement", Button).display = bool(self.agent.pending_edit)
-        self.note(f"{status_label(status)} · 真实模型尝试 {self.model_requests} · F2 查看执行记录")
+        self.note(f"{status_label(status)} · F2 打开导航，可选择执行记录")
         self.unlock()
 
     def fail_turn(self):
@@ -526,12 +584,17 @@ class AgentWorkspace(App):
     def workspace_widget(self, selector, widget=None):
         return self.screen_stack[0].query_one(selector, widget)
 
+    def select_pane(self, page):
+        self.workspace_widget("#panes", ContentSwitcher).current = page
+        for key, _, _ in self.NAV_ITEMS:
+            self.workspace_widget("#" + key, Button).set_class(key == f"go-{page}", "current")
+
     def show(self, page):
         if not self.user:
             return
         if page != "finance":
             self.task_route = None
-        self.workspace_widget("#panes", ContentSwitcher).current = page
+        self.select_pane(page)
         self.update_header()
         if page == "chat":
             self.workspace_widget("#prompt", Input).focus()
@@ -573,7 +636,7 @@ class AgentWorkspace(App):
 
     def open_task(self, route):
         self.task_route = route
-        self.workspace_widget("#panes", ContentSwitcher).current = "tasks"
+        self.select_pane("tasks")
         self.call_later(self.refresh_pane, "tasks")
 
     def task_detail_widgets(self, route):
@@ -592,10 +655,15 @@ class AgentWorkspace(App):
         note = task["context"].get("note", "")
         return [
             back,
-            Static(safe_text(f"用户　{self.user}\n对象　{title}\n备注　{note}\n"
-                             f"状态　{TASK_STATUS[task['status']]} · {permission}\n{progress}"), markup=False),
-            Button(Text(safe_text(title)), id="linked-finance", tooltip="打开应用内只读明细"),
-            Button("在 Agent 中继续", id="continue-task", disabled=not data["can_execute"]),
+            Vertical(
+                Static(safe_text(f"用户　{self.user}\n对象　{title}\n备注　{note}"),
+                       classes="task-fields", markup=False),
+                Static(safe_text(f"{TASK_STATUS[task['status']]} · {permission}\n{progress}"),
+                       classes="task-progress", markup=False),
+                Button(Text(safe_text(title)), id="linked-finance", tooltip="打开当前发票明细"),
+                Button("在对话中继续", id="continue-task", variant="primary", disabled=not data["can_execute"]),
+                classes="task-card",
+            ),
         ]
 
     def continue_task(self):
@@ -706,7 +774,7 @@ class AgentWorkspace(App):
         self.workspace_widget("#invoice-detail", Static).update(safe_text(details))
 
     def record_widgets(self):
-        items = []
+        items = [Static(f"本次对话的真实模型请求尝试　{self.model_requests}", markup=False)] if self.model_requests else []
         if self.last_api_status:
             items.append(Static(safe_text("最近联网状态　" + self.last_api_status), markup=False))
         for index, (status, calls, api) in reversed(list(enumerate(self.records, 1))):

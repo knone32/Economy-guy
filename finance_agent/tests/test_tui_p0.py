@@ -11,12 +11,12 @@ from threading import Event
 import unittest
 from unittest.mock import patch
 
-from textual.widgets import DataTable, Input, Select
+from textual.widgets import Button, ContentSwitcher, DataTable, Input, Select
 
 import main
 from app.agent import Agent, scripted_model
 from app.cli_workspaces import import_workspace
-from app.model_config import DEFAULT_TEMPLATE
+from app.model_config import DEFAULT_TEMPLATE, add_profile
 from app.persistence import ManagementIntent
 from app.stage2_schema import open_existing
 from app.tasks import list_tasks, manage_task, task_details
@@ -213,6 +213,144 @@ class P0Test(unittest.IsolatedAsyncioTestCase):
             await self.send(app, pilot, "查一下当前企业的收支。")
             await self.await_state(pilot, lambda: not app.busy)
             self.assertEqual(app.records[-1][1][0]["scope"]["company_id"], "C001")
+
+    def configured_profile(self, name="first-ai"):
+        add_profile(dict(profile_name=name, scope="user", owner_user_id="U001", provider="deepseek",
+                         service_account_ref=name, model="deepseek-flash",
+                         base_url="https://api.deepseek.com", api_key_env="UX_TEST_API_KEY", protocol="auto"),
+                    "U001", template=DEFAULT_TEMPLATE, local=self.local)
+
+    async def press_button(self, app, pilot, selector):
+        await self.await_state(pilot, lambda: bool(app.screen.query(selector)))
+        app.screen.query_one(selector, Button).focus()
+        await pilot.pause()
+        await pilot.press("enter")
+
+    async def test_first_use_and_model_connection_states_stay_distinct(self):
+        app = self.app()
+        with patch.dict(os.environ, {"FINANCE_MODEL_PROFILE": "", "UX_TEST_API_KEY": ""}):
+            async with app.run_test(size=(90, 26)) as pilot:
+                await self.sign_in(app, pilot)
+                self.assertEqual(app.model_state()[0], "unconfigured")
+                self.assertTrue(app.workspace_widget("#ai-guide").display)
+                await pilot.click("#configure-ai")
+                self.assertIsInstance(app.screen, Settings)
+                groups = app.screen.query_one("#settings-groups", ContentSwitcher)
+                await self.await_state(pilot, lambda: groups.current == "settings-model")
+                await pilot.pause()
+                self.assertEqual(app.screen.query_one("#use-mock").region.width, 0)
+                await self.press_button(app, pilot, "#group-advanced")
+                await self.await_state(pilot, lambda: groups.current == "settings-advanced")
+                self.assertEqual(app.mode, "live")
+                await pilot.press("escape")
+                await self.await_state(pilot, lambda: not isinstance(app.screen, Settings))
+                self.configured_profile()
+                app.set_model("live", "first-ai")
+                self.assertEqual(app.model_state()[0], "missing-key")
+                await self.send(app, pilot, "查询")
+                self.assertIsNone(app.agent)
+                self.assertEqual(app.workspace_widget("#prompt", Input).value, "查询")
+                os.environ["UX_TEST_API_KEY"] = "synthetic-offline-only"
+                app.update_header()
+                self.assertEqual(app.model_state()[0], "unverified")
+                app.last_api_ok = True
+                app.update_header()
+                self.assertEqual(app.model_state()[0], "connected")
+                self.assertFalse(app.workspace_widget("#ai-guide").display)
+                app.last_api_ok = False
+                app.update_header()
+                self.assertEqual(app.model_state()[0], "failed")
+                self.assertTrue(app.workspace_widget("#ai-guide").display)
+                app.set_model("mock", "first-ai")
+                self.assertEqual(app.model_state()[0], "mock")
+                self.assertIsNone(app.last_api_ok)
+                self.assertEqual(app.model_requests, 0)
+
+    async def test_model_switch_cancel_preserves_pending_edit_and_secret(self):
+        self.configured_profile()
+        app = self.app([tool("prepare_invoice_update", EDIT)])
+        with patch.dict(os.environ, {"FINANCE_MODEL_PROFILE": "first-ai", "UX_TEST_API_KEY": ""}):
+            async with app.run_test(size=(120, 35)) as pilot:
+                await self.sign_in(app, pilot)
+                await self.send(app, pilot, "把 F002 的用途改成资料打印。")
+                await self.await_state(pilot, lambda: not app.busy and app.agent is not None)
+                agent, pending = app.agent, app.agent.pending_edit
+                self.assertTrue(pending)
+                app.open_settings()
+                await self.await_state(pilot, lambda: isinstance(app.screen, Settings) and bool(app.screen.query("#profile")))
+                app.screen.query_one("#profile", Select).value = "first-ai"
+                app.screen.query_one("#key", Input).value = "synthetic-offline-only"
+                await self.press_button(app, pilot, "#apply-model")
+                await self.await_state(pilot, lambda: isinstance(app.screen, Approval) and app.screen.focused is not None)
+                self.assertEqual(app.screen.focused.id, "cancel")
+                await pilot.press("enter")
+                await self.await_state(pilot, lambda: isinstance(app.screen, Settings))
+                self.assertEqual(app.mode, "mock")
+                self.assertIs(app.agent, agent)
+                self.assertEqual(app.agent.pending_edit, pending)
+                self.assertFalse(os.environ["UX_TEST_API_KEY"])
+                await self.press_button(app, pilot, "#apply-model")
+                await self.await_state(pilot, lambda: isinstance(app.screen, Approval))
+                await pilot.press("tab", "enter")
+                await self.await_state(pilot, lambda: app.mode == "live")
+                self.assertIsNone(app.agent)
+                self.assertFalse(agent.pending_edit)
+                self.assertEqual(os.environ["UX_TEST_API_KEY"], "synthetic-offline-only")
+                # The same effective configuration never requires a new confirmation.
+                self.assertFalse(app.model_changes("live", None))
+                self.assertEqual(self.purpose(), (None, 0))
+
+    async def test_workspace_switch_explains_logout_and_escape_preserves_current_database(self):
+        target = self.directory / "new-workspace.db"
+        import_workspace(FIXTURE, target)
+        app = self.app([])
+        async with app.run_test(size=(90, 26)) as pilot:
+            await self.sign_in(app, pilot)
+            app.open_settings()
+            await self.await_state(pilot, lambda: isinstance(app.screen, Settings))
+            await self.press_button(app, pilot, "#group-data")
+            app.screen.query_one("#db", Input).value = str(target)
+            await self.press_button(app, pilot, "#use-db")
+            await self.await_state(pilot, lambda: isinstance(app.screen, Approval))
+            self.assertIn("重新选择账号", app.screen.body)
+            await pilot.press("escape")
+            await self.await_state(pilot, lambda: isinstance(app.screen, Settings))
+            self.assertEqual(app.db, self.path)
+            self.assertEqual(app.user, "U001")
+            await self.press_button(app, pilot, "#use-db")
+            await self.await_state(pilot, lambda: isinstance(app.screen, Approval))
+            await pilot.press("tab", "enter")
+            await self.await_state(pilot, lambda: app.user is None)
+            self.assertEqual(app.db, target)
+            self.assertIsNone(app.agent)
+            await pilot.press("escape")
+            await self.await_state(pilot, lambda: bool(app.screen.query("#login-user")))
+
+    async def test_navigation_and_cancel_first_approval_fit_each_terminal_size(self):
+        for width, height in ((120, 35), (90, 26), (80, 24)):
+            with self.subTest(size=(width, height)):
+                app = self.app()
+                async with app.run_test(size=(width, height)) as pilot:
+                    await self.sign_in(app, pilot)
+                    rail = app.workspace_widget("#rail")
+                    self.assertFalse(rail.has_class("expanded"))
+                    await pilot.press("f2")
+                    self.assertTrue(rail.has_class("expanded"))
+                    self.assertEqual(str(app.workspace_widget("#go-finance", Button).label), "发票明细")
+                    await pilot.click("#nav")
+                    self.assertFalse(rail.has_class("expanded"))
+                    self.assertLessEqual(app.workspace_widget("#prompt").region.bottom, height)
+                    self.assertGreater(app.workspace_widget("#prompt").region.width, 30)
+                    answers = []
+                    app.push_screen(Approval("确认发票修改", "原值　" + "旧用途" * 55 + "\n新值　资料打印", "确认修改"),
+                                    answers.append)
+                    await self.await_state(pilot, lambda: isinstance(app.screen, Approval) and app.screen.focused is not None)
+                    self.assertEqual(app.screen.focused.id, "cancel")
+                    action = app.screen.query_one("#approve")
+                    self.assertGreater(action.region.width, 0)
+                    self.assertLessEqual(action.region.bottom, height)
+                    await pilot.press("enter")
+                    await self.await_state(pilot, lambda: answers == [False])
 
     async def test_create_and_select_personal_profile_without_leaving_settings(self):
         app = self.app()
