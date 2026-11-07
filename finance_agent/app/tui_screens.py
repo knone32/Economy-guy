@@ -5,6 +5,7 @@ import sqlite3
 
 from rich.text import Text
 from textual import on
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, ContentSwitcher, Input, Label, Select, Static
@@ -12,6 +13,28 @@ from textual.widgets import Button, ContentSwitcher, Input, Label, Select, Stati
 from .cli_workspaces import company_access, import_workspace, missing_migrations, upgrade_workspace, workspace_users
 from .model_config import ProfileError, add_profile, load_profiles, validate_profile, visible_profiles
 from .trace import redact
+
+
+class TextAction(Button):
+    """Terminal-style action, retaining Textual mouse and keyboard semantics."""
+
+    def get_content_width(self, container, viewport):
+        extra = 0 if self.has_class("compact-action") or self.has_class("text-link") else 4
+        return super().get_content_width(container, viewport) + extra
+
+    def render(self):
+        if self.has_class("text-link"):
+            label = Text.assemble(self.label, style="underline")
+        elif self.has_class("compact-action"):
+            label = Text.assemble("›" if self.has_class("current") else "", self.label)
+        elif self.has_class("current"):
+            label = Text.assemble("› ", self.label)
+        else:
+            label = Text.assemble("[ ", self.label, " ]")
+        label.stylize_before(self.rich_style)
+        label.justify = self.styles.text_align
+        label.no_wrap = True
+        return label
 
 
 class Dialog(ModalScreen):
@@ -22,6 +45,16 @@ class Dialog(ModalScreen):
 
 
 class Approval(Dialog):
+    BINDINGS = [Binding("pageup", "scroll_preview('up')", show=False),
+                Binding("pagedown", "scroll_preview('down')", show=False)]
+
+    def action_scroll_preview(self, direction):
+        content = self.query_one("#approval-content", VerticalScroll)
+        if direction == "up":
+            content.scroll_page_up(animate=False)
+        else:
+            content.scroll_page_down(animate=False)
+
     def __init__(self, title, body, action, *, cancel="取消", danger=False):
         super().__init__()
         self.title_text, self.body, self.action_text = title, body, action
@@ -44,8 +77,8 @@ class Approval(Dialog):
             with VerticalScroll(id="approval-content"):
                 yield Static(body, markup=False)
             with Horizontal(classes="dialog-actions"):
-                yield Button(self.cancel_text, id="cancel")
-                yield Button(self.action_text, id="approve", variant="error" if self.danger else "primary")
+                yield TextAction(self.cancel_text, id="cancel")
+                yield TextAction(self.action_text, id="approve", variant="error" if self.danger else "primary")
 
     def on_mount(self):
         self.query_one("#cancel").focus()
@@ -73,9 +106,9 @@ class Choices(Dialog):
     def compose(self):
         with VerticalScroll():
             yield Label(self.title_text, classes="dialog-title")
-            yield Button("返回", id="cancel")
+            yield TextAction("返回", id="cancel")
             for index, (label, value) in enumerate(self.choices):
-                yield Button(Text(redact(label)), id=f"choice-{index}", classes="choice",
+                yield TextAction(Text(redact(label)), id=f"choice-{index}", classes="choice",
                              variant="error" if value in {"quit", "logout"} else "default")
 
     @on(Button.Pressed)
@@ -95,9 +128,9 @@ class Login(Dialog):
             yield Select([], prompt="选择模拟账号", id="login-user")
             yield Static("", id="login-status", classes="field-error", markup=False)
             with Horizontal(classes="dialog-actions"):
-                yield Button("进入对话", id="sign-in", variant="primary", disabled=True)
-                yield Button("选择或导入工作库", id="login-settings")
-                yield Button("退出程序", id="quit", variant="error")
+                yield TextAction("进入对话", id="sign-in", variant="primary", disabled=True)
+                yield TextAction("选择或导入工作库", id="login-settings")
+                yield TextAction("退出程序", id="quit", variant="error")
 
     def refresh_accounts(self):
         users = []
@@ -136,9 +169,10 @@ class Login(Dialog):
 
 
 class Settings(Dialog):
-    def __init__(self, application):
+    def __init__(self, application, *, return_to_task=False):
         super().__init__()
         self.application = application
+        self.return_to_task = return_to_task
         self.profiles = {}
         try:
             self.profiles = {p["profile_name"]: p for p in
@@ -159,7 +193,7 @@ class Settings(Dialog):
             yield Label("工作台设置", classes="dialog-title")
             with Horizontal(id="settings-tabs"):
                 for label, key in self.GROUPS:
-                    yield Button(label, id=f"group-{key}", classes="current" if key == initial else None)
+                    yield TextAction(label, id=f"group-{key}", classes="current" if key == initial else None)
             with ContentSwitcher(initial=f"settings-{initial}", id="settings-groups"):
                 with VerticalScroll(id="settings-account"):
                     yield Label("我的账户", classes="section")
@@ -169,8 +203,8 @@ class Settings(Dialog):
                             yield Static(Text(company["name"] + " · " + ", ".join(
                                 label for key, label in (("read", "可读取"), ("modify", "可修改")) if company[key])))
                         with Horizontal(classes="dialog-actions"):
-                            yield Button("切换账号", id="switch-account")
-                            yield Button("退出登录", id="sign-out", variant="error")
+                            yield TextAction("切换账号", id="switch-account")
+                            yield TextAction("退出登录", id="sign-out", variant="error")
                 with VerticalScroll(id="settings-model"):
                     yield Label("正常使用（真实 AI）", classes="section")
                     yield Static("使用已配置的 AI 服务处理财税问题。发送消息可能产生 API 费用。",
@@ -184,8 +218,8 @@ class Settings(Dialog):
                     yield Input(placeholder="隐藏输入，仅在本次运行使用", password=True, id="key")
                     yield Static("", id="model-feedback", classes="field-hint", markup=False)
                     with Horizontal(classes="dialog-actions"):
-                        yield Button("使用此 AI 配置", id="apply-model", variant="primary")
-                        yield Button("新建个人 AI 配置", id="new-profile", disabled=not app.user)
+                        yield TextAction("使用此 AI 配置", id="apply-model", variant="primary")
+                        yield TextAction("新建个人 AI 配置", id="new-profile", disabled=not app.user)
                 with VerticalScroll(id="settings-data"):
                     yield Label("工作库路径", classes="field-label")
                     yield Input(value=str(app.db), placeholder="已有工作库或新库路径", id="db")
@@ -194,25 +228,28 @@ class Settings(Dialog):
                     yield Input(placeholder="仅导入时填写官方 .xlsx 文件路径", id="excel")
                     yield Static("", id="excel-feedback", classes="field-error", markup=False)
                     with Horizontal(classes="dialog-actions"):
-                        yield Button("切换工作库", id="use-db")
-                        yield Button("校验并导入", id="import-db", variant="primary")
-                        yield Button("升级旧库", id="upgrade-db")
+                        yield TextAction("切换工作库", id="use-db")
+                        yield TextAction("校验并导入", id="import-db", variant="primary")
+                        yield TextAction("升级旧库", id="upgrade-db")
                     scope = app.read_workspace
                     selected = f"{scope[0]} · {scope[1]:04d}-{scope[2]:02d}" if scope else "尚未选择"
                     yield Label("当前只读查询范围", classes="field-label")
                     yield Static(selected + " · 仅用于查询", classes="field-hint", markup=False)
                     if app.user:
-                        yield Button("选择企业和账期", id="settings-scope")
+                        yield TextAction("选择企业和账期", id="settings-scope")
                 with VerticalScroll(id="settings-advanced"):
                     yield Label("开发诊断", classes="section")
                     yield Static("固定脚本仅用于开发和界面联调，无法理解自然语言。结果仅供开发核对。",
                                  classes="field-hint", markup=False)
                     yield Static(app.profile_status(), id="diagnostic-state", classes="field-hint", markup=False)
-                    yield Button("启用固定脚本测试（Mock）", id="use-mock", disabled=not app.user)
-                    yield Button("查看执行记录", id="settings-records", disabled=not app.user)
-                    yield Button("规则与高级命令行管理", id="legacy")
+                    yield TextAction("启用固定脚本测试（Mock）", id="use-mock", disabled=not app.user)
+                    yield TextAction("查看执行记录", id="settings-records", disabled=not app.user)
+                    yield TextAction("规则与高级命令行管理", id="legacy")
             with Horizontal(classes="dialog-actions"):
-                yield Button("关闭", id="close")
+                yield TextAction("返回待办详情" if self.return_to_task else "关闭", id="close")
+
+    def action_close_dialog(self):
+        self.dismiss("return-task" if self.return_to_task else None)
 
     def message(self, text, field="model-feedback"):
         self.query_one("#" + field, Static).update(redact(text))
@@ -220,10 +257,14 @@ class Settings(Dialog):
     @on(Select.Changed, "#profile")
     def profile_changed(self, event):
         item = self.profiles.get(event.value)
-        if item:
+        if item and not self.app.model_changes("live", event.value):
+            self.message(self.app.profile_status(), "profile-state")
+        elif item:
             ready = bool(os.environ.get(item["api_key_env"], "").strip())
             self.query_one("#profile-state", Static).update(
                 f"配置可用 · {redact(item['model'])} · 密钥{'已设置' if ready else '未设置'}。应用后可查看联网状态。")
+        else:
+            self.message("应用时将检查默认配置是否有效。", "profile-state")
 
     def profile_created(self, name):
         if name is None:
@@ -234,7 +275,22 @@ class Settings(Dialog):
         select.value = name
         self.message("个人 Profile 已保存且离线校验通过。可输入 Key，再应用模型设置。")
 
-    def request_model(self, mode, profile, *, key_field=None, secret="", env=None):
+    def request_model(self, mode, profile):
+        selected = None
+        secret = ""
+        if mode == "live":
+            try:
+                selected = self.app.resolve_profile(require_key=False, selection=profile).profile
+            except ProfileError:
+                self.message("没有可用的 AI 配置。请选择有效配置或新建个人 AI 配置。")
+                return
+            key_field = self.query_one("#key", Input)
+            secret = key_field.value.strip()
+            env = selected.api_key_env
+            if secret and ((env != "API_KEY" and not env.endswith("_API_KEY")) or os.environ.get(env)):
+                self.message("请从启动终端管理此密钥。")
+                return
+
         def apply(confirmed):
             if not confirmed:
                 return
@@ -245,7 +301,12 @@ class Settings(Dialog):
             status = self.app.profile_status()
             self.message(status, "profile-state")
             self.message(status, "diagnostic-state")
-            self.message("设置已应用。")
+            if selected:
+                _, title, detail = self.app.model_state()
+                followup = " 返回待办详情后，选择「在对话中继续」。" if self.return_to_task else ""
+                self.message(f"已选择 {selected.profile_name} / {selected.model}。{title}。{detail}{followup}")
+            else:
+                self.message("已启用固定脚本测试。")
         changed = self.app.model_changes(mode, profile)
         if changed and self.app.agent is not None:
             self.app.push_screen(Approval(
@@ -268,7 +329,7 @@ class Settings(Dialog):
             self.app.push_screen(NewUserProfile(), self.profile_created)
             return
         if key == "close":
-            self.dismiss(None)
+            self.action_close_dialog()
             return
         if key == "legacy":
             self.app.push_screen(Approval(
@@ -286,18 +347,8 @@ class Settings(Dialog):
             self.request_model("mock", self.app.profile)
             return
         if key == "apply-model":
-            model = self.query_one("#profile", Select).value
-            item = self.profiles.get(model)
-            key_field = self.query_one("#key", Input)
-            secret = key_field.value.strip()
-            env = item["api_key_env"] if item else None
-            if secret and not item:
-                self.message("请先选择要配置密钥的 AI 服务。")
-                return
-            if secret and ((env != "API_KEY" and not env.endswith("_API_KEY")) or os.environ.get(env)):
-                self.message("请从启动终端管理此密钥。")
-                return
-            self.request_model("live", model if item else None, key_field=key_field, secret=secret, env=env)
+            value = self.query_one("#profile", Select).value
+            self.request_model("live", None if value == Select.BLANK else value)
             return
         db_text = self.query_one("#db", Input).value.strip().strip('"')
         if not db_text:
@@ -354,8 +405,8 @@ class Period(Dialog):
             yield Input(value=value, placeholder="例如 2026-09", id="period")
             yield Static("", id="period-error", classes="field-error", markup=False)
             with Horizontal(classes="dialog-actions"):
-                yield Button("取消", id="cancel")
-                yield Button("使用此账期", id="choose")
+                yield TextAction("取消", id="cancel")
+                yield TextAction("使用此账期", id="choose")
 
     @on(Button.Pressed)
     def pressed(self, event):
@@ -402,8 +453,8 @@ class NewUserProfile(Dialog):
             yield Input(value="DEEPSEEK_API_KEY", placeholder="Key 环境变量名", id="key-env")
             yield Static("", id="key-env-error", classes="field-error", markup=False)
             with Horizontal(classes="dialog-actions"):
-                yield Button("取消", id="cancel")
-                yield Button("离线校验并保存", id="save-profile", variant="primary")
+                yield TextAction("取消", id="cancel")
+                yield TextAction("离线校验并保存", id="save-profile", variant="primary")
 
     @on(Button.Pressed)
     def pressed(self, event):

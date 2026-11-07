@@ -7,7 +7,6 @@ import os
 from pathlib import Path
 import sqlite3
 
-from rich.panel import Panel
 from rich.text import Text
 from textual import on, work
 from textual.app import App
@@ -24,7 +23,7 @@ from .stage2_schema import open_existing
 from .tasks import list_tasks, task_details
 from .trace import redact
 from .tui_intent import edit_turn
-from .tui_screens import Approval, Choices, Login, Settings
+from .tui_screens import Approval, Choices, Login, Settings, TextAction
 
 ROOT = Path(__file__).resolve().parents[1]
 STATUS = {
@@ -85,12 +84,14 @@ class AgentWorkspace(App):
         self.user = None
         self.profile = None
         self.mode = "live"
+        # Table browsing can follow a result; only an explicit UI selection sets the query scope.
         self.company = None
         self.period = None
         self.read_workspace = None
         self.busy = False
         self.supplement = False
         self.task_route = None
+        self.task_focus = None
         self.session_epoch = 0
         self.records = []
         self.model_requests = 0
@@ -101,20 +102,20 @@ class AgentWorkspace(App):
         yield Static("Economy-guy", id="status", markup=False)
         with Horizontal(id="layout"):
             with Vertical(id="rail"):
-                yield Button("菜单", id="nav", tooltip="展开导航 · F2")
+                yield TextAction("菜单", id="nav", classes="compact-action", tooltip="展开导航 · F2")
                 for key, short, label in self.NAV_ITEMS:
                     if key == "account":
                         yield Static("", id="rail-spacer")
-                    yield Button(short, id=key, tooltip=label, classes="current" if key == "go-chat" else None)
+                    yield TextAction(short, id=key, tooltip=label, classes="compact-action current" if key == "go-chat" else "compact-action")
             with ContentSwitcher(initial="chat", id="panes"):
                 with Vertical(id="chat"):
                     yield RichLog(id="chat-log", markup=False, wrap=True)
                     with Horizontal(id="ai-guide"):
                         yield Static("", id="ai-guide-text", markup=False)
-                        yield Button("配置 AI 模型", id="configure-ai", variant="primary")
+                        yield TextAction("配置 AI 模型", id="configure-ai", variant="primary")
                     yield Static("发送消息", id="composer-label", markup=False)
                     yield Static("", id="chat-note", markup=False)
-                    yield Button("补充本次修改", id="supplement")
+                    yield TextAction("补充本次修改", id="supplement")
                     yield Input(placeholder="输入财税问题或修改要求，按 Enter 发送", id="prompt")
                 with Vertical(id="tasks"):
                     yield Static("待办事项", classes="section", markup=False)
@@ -164,13 +165,17 @@ class AgentWorkspace(App):
     def model_changes(self, mode, profile):
         if mode != self.mode:
             return True
+        if mode == "mock":
+            return False
         try:
-            _, default = load_profiles(**self.profile_options)
+            target = self.resolve_profile(require_key=False, selection=profile).profile
+            if self.agent and self.agent.connection:
+                connection = self.agent.connection
+                return (target != connection.profile or
+                        os.environ.get(target.api_key_env, "").strip() != connection.api_key)
+            return target != self.resolve_profile(require_key=False).profile
         except ProfileError:
-            default = None
-        fallback = os.environ.get("FINANCE_MODEL_PROFILE") or default
-        current = self.agent.connection.profile.profile_name if self.agent and self.agent.connection else self.profile
-        return (profile or fallback) != (current or fallback)
+            return profile != self.profile
 
     def set_model(self, mode, profile):
         if self.model_changes(mode, profile):
@@ -178,17 +183,19 @@ class AgentWorkspace(App):
         self.mode, self.profile = mode, profile
         self.update_header()
 
-    def reset_agent(self, *, clear_log):
+    def reset_agent(self, *, clear_log, keep_connection_state=False):
         if self.agent:
             self.agent.cancel_update()
         self.agent = None
+        self.task_focus = None
         self.supplement = False
         self.workspace_widget("#supplement", Button).display = False
         self.session_epoch += 1
         self.records.clear()
         self.model_requests = 0
-        self.last_api_status = ""
-        self.last_api_ok = None
+        if not keep_connection_state:
+            self.last_api_status = ""
+            self.last_api_ok = None
         if clear_log:
             self.workspace_widget("#chat-log", RichLog).clear()
 
@@ -209,6 +216,8 @@ class AgentWorkspace(App):
     def settings_closed(self, destination):
         if not self.user and not isinstance(self.screen, Login):
             self.push_screen(Login(), self.signed_in)
+        elif destination == "return-task" and self.task_route:
+            self.open_task(self.task_route)
         elif destination == "settings-scope":
             self.choose_workspace_scope()
         elif destination == "settings-records":
@@ -217,9 +226,10 @@ class AgentWorkspace(App):
             self.confirm_logout("切换账号" if destination == "switch-account" else "退出登录")
         self.update_header()
 
-    def resolve_profile(self, *, require_key):
+    def resolve_profile(self, *, require_key, selection=...):
         _, default = load_profiles(**self.profile_options)
-        name = self.profile or os.environ.get("FINANCE_MODEL_PROFILE") or default
+        selected = self.profile if selection is ... else selection
+        name = selected or os.environ.get("FINANCE_MODEL_PROFILE") or default
         if not name:
             raise ProfileError("No AI configuration selected")
         return resolve_connection(self.user, name, require_key=require_key, **self.profile_options)
@@ -237,7 +247,7 @@ class AgentWorkspace(App):
         if self.last_api_ok is True:
             return "connected", "真实 AI 已响应", profile.model
         if self.last_api_ok is False:
-            return "failed", "最近连接失败", "请核对网络和 AI 配置，可在执行记录查看详情。"
+            return "failed", "最近模型请求失败", f"{profile.model} · 请核对网络和 AI 配置，详情见执行记录。"
         return "unverified", "连接尚未验证", f"{profile.model} 的密钥已设置。发送消息后才会联网。"
 
     def profile_status(self):
@@ -245,23 +255,43 @@ class AgentWorkspace(App):
         return f"{title} · {detail}"
 
     def update_header(self):
-        company = self.company or "未选择"
-        period = f"{self.period[0]:04d}-{self.period[1]:02d}" if self.period else "未选择"
+        query = "未选择"
+        if self.read_workspace:
+            company, year, month = self.read_workspace
+            query = f"{self.company_name(company)} / {year:04d}-{month:02d}"
+        focus = self.task_focus_label()
         state, title, detail = self.model_state()
-        mode = "固定脚本测试" if state == "mock" else "真实 AI"
-        model_label = title if state == "mock" else f"{mode}  /  {title}"
         self.workspace_widget("#status", Static).update(safe_text(
-            f"Economy-guy  /  财税工作台     比赛模拟数据 · {self.user or '未登录'}\n"
-            f"{company}  ·  {period}     {model_label}"))
+            f"Economy-guy / 财税工作台 · 比赛模拟 · {self.user or '未登录'} · {title}\n"
+            f"当前查询：{query}（只读）\n"
+            f"任务焦点：{focus}"))
         self.workspace_widget("#ai-guide-text", Static).update(safe_text(f"{title}\n{detail}"))
         self.workspace_widget("#ai-guide").display = state in {"unconfigured", "missing-key", "unverified", "failed"}
+
+    def task_focus_label(self):
+        if not self.task_focus:
+            return "无"
+        try:
+            outcome = task_details(self.db, self.user, *self.task_focus)
+        except (OSError, ValueError, sqlite3.Error):
+            return "暂时无法读取"
+        if not outcome["ok"]:
+            return "已不可读取"
+        return self.format_task_focus(outcome["data"])
+
+    def format_task_focus(self, data):
+        task = data["task"]
+        check = data["check"]
+        progress = f"缺用途 {check['count']} 张" if check is not None else "进度不可用"
+        return (f"{self.company_name(task['company_id'])} / {task['year']:04d}-{task['month']:02d} "
+                f"发票用途 · {TASK_STATUS[task['status']]} · {progress}")
 
     def note(self, text):
         self.workspace_widget("#chat-note", Static).update(safe_text(text))
 
     def chat_message(self, role, text):
         log = self.workspace_widget("#chat-log", RichLog)
-        log.write(Text(role, style="bold #9ad8ce"))
+        log.write(Text(role, style="bold #83ddd6"))
         log.write(Text(safe_text(text)))
 
     def ensure_agent(self):
@@ -299,9 +329,13 @@ class AgentWorkspace(App):
         rail = self.workspace_widget("#rail")
         expanded = not rail.has_class("expanded")
         rail.set_class(expanded, "expanded")
-        self.workspace_widget("#nav", Button).label = "收起导航" if expanded else "菜单"
+        nav = self.workspace_widget("#nav", Button)
+        nav.label = "收起导航" if expanded else "菜单"
+        nav.set_class(not expanded, "compact-action")
         for key, short, label in self.NAV_ITEMS:
-            self.workspace_widget("#" + key, Button).label = label if expanded else short
+            action = self.workspace_widget("#" + key, Button)
+            action.label = label if expanded else short
+            action.set_class(not expanded, "compact-action")
 
     def open_settings(self):
         if self.user and not self.busy:
@@ -316,7 +350,7 @@ class AgentWorkspace(App):
                 title, danger=True), lambda yes: self.logout() if yes else None)
 
     def action_account(self):
-        if not self.user:
+        if not self.user or self.screen is not self.screen_stack[0]:
             return
         if self.busy:
             self.note("请等待本轮操作结束。")
@@ -333,8 +367,7 @@ class AgentWorkspace(App):
         elif choice in {"switch", "logout"}:
             self.confirm_logout("切换账号" if choice == "switch" else "退出登录")
         elif choice == "new":
-            self.reset_agent(clear_log=True)
-            self.show("chat")
+            self.request_new_chat()
         elif choice == "quit":
             self.action_quit_safe()
         elif choice == "company":
@@ -349,6 +382,27 @@ class AgentWorkspace(App):
             self.push_screen(Choices(f"我的账户 · {self.user} · 比赛模拟",
                 [(f"{row['name']} · 读取 {'允许' if row['read'] else '拒绝'} · "
                   f"修改 {'允许' if row['modify'] else '拒绝'}", None) for row in rows]))
+
+    def request_new_chat(self):
+        if self.busy or isinstance(self.screen, Approval):
+            self.note("本轮仍在处理或等待确认，请先完成或取消本轮操作。")
+            return
+        prompt = self.workspace_widget("#prompt", Input)
+
+        def start(confirmed):
+            if confirmed is True and not self.busy:
+                self.reset_agent(clear_log=True, keep_connection_state=True)
+                prompt.value = ""
+                self.show("chat")
+                self.note("已开始新对话。可输入问题，按 Enter 发送。")
+
+        if self.agent is not None or prompt.value.strip():
+            self.push_screen(Approval(
+                "开始新对话？",
+                "当前对话内容将不再显示，未提交的修改意图会取消。已保存的待办、财务数据和审计记录不会删除。",
+                "开始新对话", cancel="返回当前对话", danger=True), start)
+        else:
+            start(True)
 
     def action_quit_safe(self):
         if self.busy:
@@ -368,6 +422,8 @@ class AgentWorkspace(App):
     def action_cancel_edit(self):
         if self.agent and not self.busy:
             self.agent.cancel_update()
+            self.task_focus = None
+            self.update_header()
             self.supplement = False
             self.workspace_widget("#supplement", Button).display = False
             self.note("已取消当前未提交操作。")
@@ -457,18 +513,24 @@ class AgentWorkspace(App):
                 self.call_from_thread(self.chat_message, "待办未保存", "候选备注与原始要求不同。请重述待办内容后再试。")
                 return False
             current = proposal.get("current") or {}
-            note = p.get("note") or current.get("context", {}).get("note") or "（无）"
+            old_note = current.get("context", {}).get("note") or "（无）"
+            new_note = p.get("note") or old_note
+            previous = ""
+            if current:
+                previous = (f"原账期　{current['year']:04d}-{current['month']:02d}\n"
+                            f"当前状态　{TASK_STATUS.get(current['status'], '未知')}\n")
+            notes = f"原值　{old_note}\n新值　{new_note}" if p["action"] in {"create", "update", "correct"} else f"备注　{old_note}"
             title = "确认待办"
             name = self.company_name(p["company_id"])
             body = (f"用户　{self.user}\n对象　{name} · {p['year']:04d}-{p['month']:02d} 发票用途\n"
-                    f"备注　{note}\n关联表格　发票明细\n"
+                    f"{previous}{notes}\n关联表格　发票明细\n"
                     f"操作　{dict(create='新建', update='补充', correct='更正', resume='恢复', complete='完成', cancel='取消', wait='等待补充', pause='暂停').get(p['action'], p['action'])}\n"
-                    "业务服务已检查本次操作的权限与冲突，确认后会重新检查。")
+                    "尚未提交。确认后会重新检查权限与冲突。")
         else:
             title = "确认偏好"
             body = (f"用户　{self.user}\n企业　{p['company_id']}\n"
                     f"偏好　{p['key']}\n原值　{(proposal.get('current') or {}).get('value') or '（无）'}\n"
-                    f"拟保存值　{p.get('value') or '（空）'}\n操作　{'删除' if p['action'] == 'delete' else '保存'}")
+                    f"拟保存值　{p.get('value') or '（空）'}\n操作　{'删除' if p['action'] == 'delete' else '保存'}\n尚未提交。")
         danger = p["action"] in {"cancel", "delete"}
         return self.wait_confirmation(title, body, "确认操作" if danger else "确认保存", danger=danger)
 
@@ -543,9 +605,8 @@ class AgentWorkspace(App):
                                  if not line.startswith(("本轮查询：", "本轮检查：")))
         if readable:
             self.chat_message("Agent", readable)
-        log = self.workspace_widget("#chat-log", RichLog)
         for title, text in cards:
-            log.write(Panel(Text(safe_text(text)), title=title, border_style="#36515d", expand=False))
+            self.chat_message(f"业务核验 / {title}", text)
         for detail in verified:
             self.chat_message("业务回执", detail)
         if receipt:
@@ -558,7 +619,16 @@ class AgentWorkspace(App):
         api = response.get("api_counts")
         if api:
             self.model_requests += api["attempts"]
-        self.records.append((status, calls, self.last_api_status))
+        if self.agent.transport and response["execution"]["stop_reason"] in {
+            "API_OR_RESPONSE_ERROR", "INVALID_RESPONSE", "PROTOCOL_ERROR",
+        }:
+            if self.last_api_ok is not False:
+                self.last_api_status = "模型响应或协议校验失败"
+            self.last_api_ok = False
+        observed = self.last_api_status if api and api["attempts"] else ""
+        self.records.append((status, calls, observed))
+        if self.task_focus and self.task_focus[1] not in self.agent.context.scope.get("task_id", []):
+            self.task_focus = None
         for call in calls:
             scope = call.get("scope") or {}
             if self.read_workspace is None and call["status"] in {"SUCCESS", "NO_DATA"} and scope.get("company_id"):
@@ -592,8 +662,7 @@ class AgentWorkspace(App):
     def show(self, page):
         if not self.user:
             return
-        if page != "finance":
-            self.task_route = None
+        self.task_route = None
         self.select_pane(page)
         self.update_header()
         if page == "chat":
@@ -629,7 +698,7 @@ class AgentWorkspace(App):
             for task in outcome["data"] or []:
                 key = f"todo-{len(self.task_links)}"
                 self.task_links[key] = (task["company_id"], task["task_id"])
-                widgets.append(Button(Text(safe_text(
+                widgets.append(TextAction(Text(safe_text(
                     f"{company['name']} · {task['year']:04d}-{task['month']:02d} 发票用途"
                     f" · {TASK_STATUS.get(task['status'], '未知')}")), id=key))
         return widgets or [Static("当前账号没有可查看的待办。可在对话中提出保存缺失用途待办。", markup=False)]
@@ -641,7 +710,7 @@ class AgentWorkspace(App):
 
     def task_detail_widgets(self, route):
         outcome = task_details(self.db, self.user, *route)
-        back = Button("返回待办列表", id="back-tasks")
+        back = TextAction("返回待办列表", id="back-tasks")
         if not outcome["ok"]:
             return [back, Static(status_label(outcome["status"]), markup=False)]
         data = outcome["data"]
@@ -660,8 +729,8 @@ class AgentWorkspace(App):
                        classes="task-fields", markup=False),
                 Static(safe_text(f"{TASK_STATUS[task['status']]} · {permission}\n{progress}"),
                        classes="task-progress", markup=False),
-                Button(Text(safe_text(title)), id="linked-finance", tooltip="打开当前发票明细"),
-                Button("在对话中继续", id="continue-task", variant="primary", disabled=not data["can_execute"]),
+                TextAction(Text(safe_text(title)), id="linked-finance", classes="text-link", tooltip="打开当前发票明细"),
+                TextAction("在对话中继续", id="continue-task", variant="primary", disabled=not data["can_execute"]),
                 classes="task-card",
             ),
         ]
@@ -669,28 +738,51 @@ class AgentWorkspace(App):
     def continue_task(self):
         if self.busy or not self.task_route:
             return
+        route = self.task_route
         try:
-            self.ensure_agent()
-            outcome = self.agent.focus_task(*self.task_route)
+            outcome = task_details(self.db, self.user, *route)
+            if not outcome["ok"] or not outcome["data"]["can_execute"]:
+                self.call_later(self.refresh_pane, "tasks")
+                return
+            try:
+                self.ensure_agent()
+            except ProfileError:
+                self.push_screen(Approval(
+                    "继续与 AI 对话",
+                    "当前待办可以查看，但继续与 AI 对话需要先配置模型。\n" + self.profile_status(),
+                    "配置 AI 模型", cancel="返回待办详情"),
+                    lambda yes: self.push_screen(Settings(self, return_to_task=True), self.settings_closed)
+                    if yes else None)
+                return
+            pending_edit = bool(self.agent.pending_edit)
+            outcome = self.agent.focus_task(*route)
         except (ValueError, OSError, sqlite3.Error):
-            self.show("chat")
-            self.note("无法恢复待办。请核对模型设置和当前工作库。")
+            self.push_screen(Choices("无法恢复待办", [("请核对当前工作库和账号，再重新打开待办。", None)]))
             return
         if not outcome["ok"] or not outcome["data"]["can_execute"]:
             self.call_later(self.refresh_pane, "tasks")
             return
-        data = outcome["data"]
-        task, count = data["task"], data["check"]["count"]
+        check = outcome["data"]["check"]
+        previous_query = self.read_workspace is not None
         self.read_workspace = None
-        self.company = task["company_id"]
-        self.period = task["year"], task["month"]
+        self.company = self.period = None
+        self.task_focus = route
+        self.supplement = False
+        self.workspace_widget("#supplement", Button).display = False
         self.show("chat")
-        hint = "可以询问剩余事项。" if count else "可以明确要求标记完成，保存前仍会确认。"
-        self.chat_message("当前待办", f"已重新核对此待办，当前缺失用途 {count} 张。{hint}")
+        self.note("已进入待办对话，可输入问题继续。")
+        hint = "可以询问剩余事项。" if check["count"] else "可以明确要求标记完成，保存前仍会确认。"
+        scope_note = "原查询范围已取消。" if previous_query else ""
+        edit_note = "未提交的修改意图已取消。" if pending_edit else ""
+        focus = self.format_task_focus(outcome["data"])
+        self.chat_message("当前待办", f"已进入 {focus}。{scope_note}{edit_note}状态已从工作库重新读取。{hint}")
 
     def company_name(self, company):
-        return next((r["name"] for r in company_access(self.db, self.user)
-                     if r["company_id"] == company and r["read"]), company)
+        try:
+            return next((r["name"] for r in company_access(self.db, self.user)
+                         if r["company_id"] == company and r["read"]), company)
+        except (OSError, ValueError, sqlite3.Error):
+            return company
 
     def choose_workspace_scope(self, for_finance=False):
         try:
@@ -718,7 +810,7 @@ class AgentWorkspace(App):
     def finance_widgets(self):
         if self.task_route:
             outcome = task_details(self.db, self.user, *self.task_route)
-            back = Button("返回待办详情", id="back-detail")
+            back = TextAction("返回待办详情", id="back-detail")
             if not outcome["ok"]:
                 return [back, Static(status_label(outcome["status"]), markup=False)]
             data = outcome["data"]
@@ -736,7 +828,7 @@ class AgentWorkspace(App):
                 details = data["problem"]
             header = f"{self.company_name(company)} · {period[0]:04d}-{period[1]:02d}\n{details}\n本账号关联待办　{states}"
         else:
-            back = Button("选择企业和账期", id="choose-finance")
+            back = TextAction("选择企业和账期", id="choose-finance")
             if not self.company or not self.period:
                 return [back, Static("请选择企业和账期查看发票明细。", markup=False)]
             company, period = self.company, self.period
@@ -748,9 +840,10 @@ class AgentWorkspace(App):
         table = DataTable(id="invoice-table", cursor_type="row")
         table.add_columns("发票号", "日期", "价税合计", "用途")
         for index, row in enumerate(invoices):
-            table.add_row(*(Text(safe_text(str(value))) for value in
-                            (row["invoice_no"], row["invoice_date"], row["amount"], row["purpose"] or "未填写")),
-                          key=str(index))
+            table.add_row(Text(safe_text(row["invoice_no"])), Text(safe_text(row["invoice_date"])),
+                          Text(safe_text(str(row["amount"])), style="#91cbff"),
+                          Text(safe_text(row["purpose"]) if row["purpose"] else "未填写",
+                               style="" if row["purpose"] else "#f3cf83"), key=str(index))
         return [back, Static(safe_text(header), markup=False), table,
                 Static("选择一行查看明细。" if invoices else "没有符合条件的发票。",
                        id="invoice-detail", markup=False)]

@@ -13,6 +13,8 @@ from unittest.mock import patch
 
 from textual.widgets import Button, ContentSwitcher, DataTable, Input, Select
 
+import httpx
+
 import main
 from app.agent import Agent, scripted_model
 from app.cli_workspaces import import_workspace
@@ -22,7 +24,7 @@ from app.stage2_schema import open_existing
 from app.tasks import list_tasks, manage_task, task_details
 from app.tui import AgentWorkspace
 from app.tui_intent import edit_turn
-from app.tui_screens import Approval, NewUserProfile, Settings
+from app.tui_screens import Approval, Choices, NewUserProfile, Period, Settings, TextAction
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "example.xlsx"
@@ -199,8 +201,13 @@ class P0Test(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(110, 38)) as pilot:
             await self.sign_in(app, pilot)
             await pilot.press("f3")
-            await pilot.click("#choice-1")
-            await pilot.click("#choice-0")
+            await self.await_state(pilot, lambda: isinstance(app.screen, Choices)
+                                   and app.screen.title_text.startswith("账户"))
+            await self.press_button(app, pilot, "#choice-1")
+            await self.await_state(pilot, lambda: isinstance(app.screen, Choices)
+                                   and app.screen.title_text == "选择可读企业")
+            await self.press_button(app, pilot, "#choice-0")
+            await self.await_state(pilot, lambda: isinstance(app.screen, Period))
             period = app.screen.query_one("#period", Input)
             period.value = "2026-09"
             period.focus()
@@ -214,6 +221,179 @@ class P0Test(unittest.IsolatedAsyncioTestCase):
             await self.await_state(pilot, lambda: not app.busy)
             self.assertEqual(app.records[-1][1][0]["scope"]["company_id"], "C001")
 
+    def saved_task(self):
+        return manage_task(self.path, "U001", "C001", "create", note=CREATE,
+                           intent=ManagementIntent("U001", "task", CREATE, "create"))["data"]["task"]
+
+    async def test_new_chat_is_cancel_first_and_keeps_durable_records(self):
+        task = self.saved_task()
+        app = self.app([tool("prepare_invoice_update", EDIT)])
+        async with app.run_test(size=(80, 24)) as pilot:
+            await self.sign_in(app, pilot)
+            await self.send(app, pilot, "把 F002 的用途改成资料打印。")
+            await self.await_state(pilot, lambda: bool(app.records) and not app.busy)
+            agent, pending = app.agent, app.agent.pending_edit
+            self.assertTrue(pending)
+            log = app.workspace_widget("#chat-log")
+            lines = tuple(log.lines)
+            prompt = app.workspace_widget("#prompt", Input)
+            prompt.value = "尚未发送"
+            await pilot.press("f3")
+            await self.press_button(app, pilot, "#choice-4")
+            await self.await_state(pilot, lambda: isinstance(app.screen, Approval) and app.screen.focused)
+            self.assertEqual(app.screen.title_text, "开始新对话？")
+            self.assertEqual(app.screen.focused.id, "cancel")
+            await pilot.press("enter")
+            await self.await_state(pilot, lambda: not isinstance(app.screen, Approval))
+            self.assertIs(app.agent, agent)
+            self.assertIs(app.agent.pending_edit, pending)
+            self.assertEqual(tuple(log.lines), lines)
+            self.assertEqual(prompt.value, "尚未发送")
+            await pilot.press("f3")
+            await self.press_button(app, pilot, "#choice-4")
+            await self.await_state(pilot, lambda: isinstance(app.screen, Approval) and app.screen.focused)
+            self.assertTrue(await pilot.click("#approve"))
+            await self.await_state(pilot, lambda: app.agent is None)
+            self.assertFalse(agent.pending_edit)
+            self.assertFalse(agent.update_session.confirmations)
+            self.assertEqual((log.lines, prompt.value, app.records), ([], "", []))
+            self.assertEqual(self.purpose(), (None, 0))
+            self.assertEqual(task_details(self.path, "U001", "C001", task["task_id"])["data"]["task"], task)
+
+    async def test_settings_apply_requires_valid_profile_and_observes_transport(self):
+        app = self.app()
+        attempts = []
+        def receive(_transport, request):
+            attempts.append(request.method)
+            if len(attempts) == 1:
+                return httpx.Response(200, json={
+                    "id": "local", "object": "chat.completion", "created": 1, "model": "deepseek-flash",
+                    "choices": [{"index": 0, "finish_reason": "stop",
+                                 "message": {**FINAL, "reasoning_content": ""}}],
+                })
+            if len(attempts) == 2:
+                return httpx.Response(200, json={
+                    "id": "local", "object": "chat.completion", "created": 1, "model": "deepseek-flash",
+                    "choices": [{"index": 0, "finish_reason": "stop",
+                                 "message": {"role": "assistant", "content": "invalid final", "reasoning_content": ""}}],
+                })
+            return httpx.Response(503, json={"error": {"message": "offline transport failure"}})
+
+        with (patch.dict(os.environ, {"FINANCE_MODEL_PROFILE": "", "UX_TEST_API_KEY": ""}),
+              patch.object(httpx.HTTPTransport, "handle_request", new=receive)):
+            async with app.run_test(size=(90, 26)) as pilot:
+                await self.sign_in(app, pilot)
+                await pilot.click("#configure-ai")
+                await self.press_button(app, pilot, "#apply-model")
+                feedback = app.screen.query_one("#model-feedback")
+                self.assertIn("没有可用的 AI 配置", str(feedback.renderable))
+                self.assertIsNone(app.agent)
+                await pilot.press("escape")
+                await self.await_state(pilot, lambda: not isinstance(app.screen, Settings))
+                self.configured_profile()
+                os.environ["FINANCE_MODEL_PROFILE"] = "first-ai"
+                app.open_settings()
+                await self.await_state(pilot, lambda: isinstance(app.screen, Settings) and bool(app.screen.query("#profile")))
+                app.screen.query_one("#profile", Select).value = Select.BLANK
+                await self.press_button(app, pilot, "#apply-model")
+                feedback = app.screen.query_one("#model-feedback")
+                self.assertIn("已选择 first-ai / deepseek-flash", str(feedback.renderable))
+                self.assertEqual(app.model_state()[0], "missing-key")
+                app.screen.query_one("#key", Input).value = "synthetic-offline-only"
+                await self.press_button(app, pilot, "#apply-model")
+                self.assertEqual(app.model_state()[0], "unverified")
+                self.assertEqual(attempts, [])
+                await pilot.press("escape")
+                await self.await_state(pilot, lambda: not isinstance(app.screen, Settings))
+                await self.send(app, pilot, "请说明功能")
+                await self.await_state(pilot, lambda: len(app.records) == 1 and not app.busy)
+                self.assertEqual(app.model_state()[0], "connected", (app.records, attempts))
+                agent = app.agent
+                app.open_settings()
+                await self.press_button(app, pilot, "#apply-model")
+                self.assertIsInstance(app.screen, Settings)
+                self.assertIs(app.agent, agent)
+                self.assertEqual(attempts, ["POST"])
+                await pilot.press("escape")
+                await self.await_state(pilot, lambda: not isinstance(app.screen, Settings))
+                await self.send(app, pilot, "请再说明功能")
+                await self.await_state(pilot, lambda: len(app.records) == 2 and not app.busy)
+                self.assertEqual(app.model_state()[0], "failed")
+                self.assertIn("协议", app.last_api_status)
+                await self.send(app, pilot, "请说明第三项功能")
+                await self.await_state(pilot, lambda: len(app.records) == 3 and not app.busy)
+                self.assertEqual(app.model_state()[0], "failed")
+                self.assertIn("503", app.last_api_status)
+                self.assertEqual(attempts, ["POST", "POST", "POST"])
+                self.assertEqual(self.purpose(), (None, 0))
+
+    async def test_task_detail_without_ai_then_reopens_with_fresh_progress(self):
+        task = self.saved_task()
+        self.configured_profile()
+        app = self.app()
+        with patch.dict(os.environ, {"FINANCE_MODEL_PROFILE": "", "UX_TEST_API_KEY": ""}):
+            async with app.run_test(size=(90, 26)) as pilot:
+                await self.sign_in(app, pilot)
+                app.read_workspace = ("C002", 2026, 9)
+                await pilot.click("#go-tasks")
+                await self.press_button(app, pilot, "#todo-0")
+                await self.await_state(pilot, lambda: bool(app.screen.query("#linked-finance")))
+                fields = str(app.screen.query_one(".task-fields").renderable)
+                self.assertIn(CREATE, fields)
+                self.assertIn("U001", fields)
+                self.assertIn("2026-09", fields)
+                self.assertIn("5 张", str(app.screen.query_one(".task-progress").renderable))
+                await pilot.click("#linked-finance")
+                await self.await_state(pilot, lambda: bool(app.screen.query("#invoice-table")))
+                self.assertEqual(app.screen.query_one("#invoice-table", DataTable).row_count, 10)
+                await self.press_button(app, pilot, "#back-detail")
+                await self.await_state(pilot, lambda: app.workspace_widget("#panes").current == "tasks"
+                                       and bool(app.screen.query("#continue-task")))
+                with closing(open_existing(self.path)) as db, db:
+                    db.execute("UPDATE permissions SET can_modify=0 WHERE user_id='U001' AND company_id='C001'")
+                await self.press_button(app, pilot, "#continue-task")
+                await self.await_state(pilot, lambda: bool(app.screen.query("#continue-task"))
+                                       and app.screen.query_one("#continue-task").disabled)
+                self.assertIn("缺少修改权限", str(app.screen.query_one(".task-progress").renderable))
+                self.assertIsNone(app.agent)
+                with closing(open_existing(self.path)) as db, db:
+                    db.execute("UPDATE permissions SET can_modify=1 WHERE user_id='U001' AND company_id='C001'")
+                await self.press_button(app, pilot, "#back-tasks")
+                await self.press_button(app, pilot, "#todo-0")
+                await self.press_button(app, pilot, "#continue-task")
+                await self.await_state(pilot, lambda: isinstance(app.screen, Approval) and app.screen.focused)
+                self.assertIn("当前待办可以查看", app.screen.body)
+                self.assertIsNone(app.agent)
+                await pilot.press("tab", "enter")
+                await self.await_state(pilot, lambda: isinstance(app.screen, Settings) and bool(app.screen.query("#profile")))
+                app.screen.query_one("#profile", Select).value = "first-ai"
+                app.screen.query_one("#key", Input).value = "synthetic-offline-only"
+                await self.press_button(app, pilot, "#apply-model")
+                self.assertEqual(app.model_state()[0], "unverified")
+                # A separate authorized session commits one invoice while settings is open.
+                other = Agent("U001", self.path, mode="mock", model=scripted_model([tool("prepare_invoice_update", EDIT)]))
+                request = "把甲企业 F002 的用途改成资料打印。"
+                other.ask(request, **edit_turn(request, None))
+                draft, = other.update_session.drafts.values()
+                self.assertEqual(other.commit_update(draft.request_id, draft.fingerprint())["status"], "COMMITTED")
+                await self.press_button(app, pilot, "#close")
+                await self.await_state(pilot, lambda: not isinstance(app.screen, Settings)
+                                       and bool(app.screen.query(".task-progress"))
+                                       and "4 张" in str(app.screen.query_one(".task-progress").renderable))
+                self.assertIsNone(app.task_focus)
+                self.assertEqual(app.read_workspace, ("C002", 2026, 9))
+                await self.press_button(app, pilot, "#continue-task")
+                await self.await_state(pilot, lambda: app.task_focus is not None)
+                self.assertEqual(app.task_focus, ("C001", task["task_id"]))
+                self.assertEqual(app.agent.context.scope["task_id"], [task["task_id"]])
+                self.assertIsNone(app.read_workspace)
+                self.assertFalse(app.agent.update_session.confirmations)
+                status = str(app.workspace_widget("#status").renderable)
+                self.assertIn("当前查询：未选择", status)
+                self.assertIn("任务焦点：甲企业（比赛模拟） / 2026-09", status)
+                self.assertIn("缺用途 4 张", status)
+                self.assertEqual(app.model_requests, 0)
+
     def configured_profile(self, name="first-ai"):
         add_profile(dict(profile_name=name, scope="user", owner_user_id="U001", provider="deepseek",
                          service_account_ref=name, model="deepseek-flash",
@@ -221,7 +401,8 @@ class P0Test(unittest.IsolatedAsyncioTestCase):
                     "U001", template=DEFAULT_TEMPLATE, local=self.local)
 
     async def press_button(self, app, pilot, selector):
-        await self.await_state(pilot, lambda: bool(app.screen.query(selector)))
+        await self.await_state(pilot, lambda: bool(app.screen.query(selector))
+                               and app.screen.query_one(selector).region.width > 0)
         app.screen.query_one(selector, Button).focus()
         await pilot.pause()
         await pilot.press("enter")
@@ -234,7 +415,8 @@ class P0Test(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(app.model_state()[0], "unconfigured")
                 self.assertTrue(app.workspace_widget("#ai-guide").display)
                 await pilot.click("#configure-ai")
-                self.assertIsInstance(app.screen, Settings)
+                await self.await_state(pilot, lambda: isinstance(app.screen, Settings)
+                                       and bool(app.screen.query("#settings-groups")))
                 groups = app.screen.query_one("#settings-groups", ContentSwitcher)
                 await self.await_state(pilot, lambda: groups.current == "settings-model")
                 await pilot.pause()
@@ -337,18 +519,33 @@ class P0Test(unittest.IsolatedAsyncioTestCase):
                     await pilot.press("f2")
                     self.assertTrue(rail.has_class("expanded"))
                     self.assertEqual(str(app.workspace_widget("#go-finance", Button).label), "发票明细")
-                    await pilot.click("#nav")
+                    nav = app.workspace_widget("#nav", TextAction)
+                    self.assertTrue(await pilot.click(nav))
                     self.assertFalse(rail.has_class("expanded"))
+                    self.assertIn("›", app.workspace_widget("#go-chat", TextAction).render().plain)
+                    nav.focus()
+                    await pilot.press("tab", "tab", "enter")
+                    await self.await_state(pilot, lambda: app.workspace_widget("#panes").current == "tasks")
+                    self.assertIn("›", app.workspace_widget("#go-tasks", TextAction).render().plain)
+                    await pilot.click("#go-chat")
+                    await self.await_state(pilot, lambda: app.workspace_widget("#panes").current == "chat"
+                                           and app.workspace_widget("#prompt").region.width > 0)
                     self.assertLessEqual(app.workspace_widget("#prompt").region.bottom, height)
                     self.assertGreater(app.workspace_widget("#prompt").region.width, 30)
                     answers = []
-                    app.push_screen(Approval("确认发票修改", "原值　" + "旧用途" * 55 + "\n新值　资料打印", "确认修改"),
+                    app.push_screen(Approval("确认发票修改", "原值　" + "旧用途\n" * 24 + "新值　资料打印", "确认修改"),
                                     answers.append)
                     await self.await_state(pilot, lambda: isinstance(app.screen, Approval) and app.screen.focused is not None)
                     self.assertEqual(app.screen.focused.id, "cancel")
                     action = app.screen.query_one("#approve")
                     self.assertGreater(action.region.width, 0)
                     self.assertLessEqual(action.region.bottom, height)
+                    content = app.screen.query_one("#approval-content")
+                    await self.await_state(pilot, lambda: content.max_scroll_y > 0)
+                    await pilot.press("pagedown", "pagedown", "pagedown")
+                    await self.await_state(pilot, lambda: content.scroll_y == content.max_scroll_y)
+                    self.assertIn("资料打印", str(content.query_one("Static").renderable))
+                    self.assertEqual(app.screen.focused.id, "cancel")
                     await pilot.press("enter")
                     await self.await_state(pilot, lambda: answers == [False])
 
@@ -477,6 +674,10 @@ class P0Test(unittest.IsolatedAsyncioTestCase):
             await self.await_state(pilot, lambda: isinstance(app.screen, Approval))
             self.assertEqual(app.screen.focused.id, "cancel")
             self.assertTrue(app.busy)
+            before = app.agent
+            app.request_new_chat()
+            self.assertIs(app.agent, before)
+            self.assertEqual(app.screen.title_text, "确认发票修改")
             await pilot.press("enter")
             await self.await_state(pilot, lambda: not app.busy)
             self.assertEqual(self.purpose(), (None, 0))
@@ -525,6 +726,10 @@ class P0Test(unittest.IsolatedAsyncioTestCase):
             await self.send(app, pilot, CREATE)
             await self.await_state(pilot, lambda: isinstance(app.screen, Approval))
             self.assertEqual(app.screen.focused.id, "cancel")
+            self.assertIn("原值　（无）", app.screen.body)
+            self.assertIn(f"新值　{CREATE}", app.screen.body)
+            self.assertIn("尚未提交", app.screen.body)
+            self.assertEqual(list_tasks(self.path, "U001", "C001")["data"], [])
             await pilot.click("#approve")
             await self.await_state(pilot, lambda: not app.busy)
             await pilot.click("#go-tasks")

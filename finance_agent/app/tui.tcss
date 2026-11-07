@@ -1,28 +1,28 @@
-$canvas: #101a22;
-$surface: #182630;
-$raised: #223540;
-$line: #36515d;
-$ink: #e6efef;
-$quiet: #a4b7bd;
-$accent: #9ad8ce;
-$accent-fill: #285953;
-$danger: #f4bfaf;
-$danger-fill: #593933;
+$canvas: #08090b;
+$surface: #101216;
+$raised: #181d24;
+$line: #414852;
+$ink: #e4e6e9;
+$quiet: #a4acb6;
+$accent: #83ddd6;
+$accent-fill: #243442;
+$danger: #f3cf83;
+$link: #91cbff;
 
 Screen { background: $canvas; color: $ink; }
 Label { color: $ink; }
-Button {
-    height: 3; min-width: 8; width: auto; max-width: 100%;
-    padding: 0 1; border: none; background: $raised; color: $ink;
+TextAction {
+    height: 2; min-width: 8; width: auto; max-width: 100%;
+    padding: 0 1; border: none; background: transparent; color: $link;
     text-style: none;
 }
-Button.-primary { background: $accent-fill; color: $ink; text-style: bold; }
-Button.-error { background: $danger-fill; color: $danger; }
-Button:hover { background: $line; }
-Button:focus { background: $line; color: $accent; text-style: bold underline; }
-Button.-primary:focus { background: $accent-fill; color: $accent; }
-Button.-error:focus { background: $danger-fill; color: $danger; }
-Button:disabled { color: $quiet; background: $surface; }
+TextAction.-primary { color: $accent; text-style: bold; }
+TextAction.-error { color: $danger; }
+TextAction:hover { color: $ink; text-style: underline; }
+TextAction.current { color: $accent; text-style: bold; }
+TextAction:focus { background: $accent-fill; color: $ink; text-style: bold underline; }
+TextAction:disabled { color: $quiet; background: transparent; text-style: dim; }
+TextAction.text-link { text-style: underline; }
 Input, SelectCurrent {
     height: 3; background: $canvas; color: $ink; border: round $line;
 }
@@ -36,23 +36,21 @@ SelectOverlay > .option-list--option-highlighted {
 .field-hint { color: $quiet; height: auto; }
 .field-error { color: $danger; height: auto; }
 .dialog-title { color: $accent; text-style: bold; margin-bottom: 1; }
-.dialog-actions { height: 3; margin-top: 1; }
+.dialog-actions { height: 2; margin-top: 1; }
 .dialog-actions Button { margin-right: 1; }
-.choice { width: 100%; text-align: left; margin-bottom: 1; }
+.choice { width: 100%; text-align: left; }
 
-#status { height: 2; padding: 0 1; background: $surface; color: $accent; }
+#status { height: 3; padding: 0 1; background: $canvas; color: $ink; }
 #layout { height: 1fr; }
-#rail { width: 6; height: 1fr; background: $surface; }
+#rail { width: 7; height: 1fr; background: $canvas; border-right: solid $line; }
 #rail.expanded { width: 17; }
-#rail Button { width: 100%; min-width: 4; padding: 0; margin: 0; background: $surface; }
-#rail.expanded Button { padding: 0 1; text-align: left; }
-#rail Button.current { color: $accent; background: $accent-fill; text-style: bold; }
-#rail Button:focus { background: $line; color: $accent; text-style: bold underline; }
+#rail TextAction { width: 100%; min-width: 4; padding: 0; margin: 0; }
+#rail.expanded TextAction { padding: 0 1; text-align: left; }
 #rail-spacer { height: 1fr; }
 #panes { width: 1fr; height: 1fr; }
 #chat { height: 1fr; padding: 0 2; }
 #chat-log { height: 1fr; min-height: 1; scrollbar-size-vertical: 1; padding-top: 1; }
-#ai-guide { height: auto; background: $surface; padding: 0 1; margin-bottom: 1; }
+#ai-guide { height: auto; padding: 0 1; margin-bottom: 1; }
 #ai-guide-text { width: 1fr; height: auto; color: $quiet; }
 #configure-ai { margin-left: 1; }
 #composer-label { height: 1; color: $accent; text-style: bold; }
@@ -67,7 +65,7 @@ SelectOverlay > .option-list--option-highlighted {
 #invoice-table > .datatable--cursor { background: $accent-fill; color: $ink; }
 #invoice-detail { height: auto; min-height: 2; }
 .section { color: $accent; margin-bottom: 1; text-style: bold; }
-.task-card { height: auto; background: $surface; padding: 1; margin: 1 0; }
+.task-card { height: auto; border-left: solid $line; padding: 0 1; margin: 1 0; }
 .task-fields { height: auto; }
 .task-progress { color: $accent; margin-bottom: 1; }
 Footer { background: $surface; color: $quiet; }
@@ -75,14 +73,12 @@ Footer { background: $surface; color: $quiet; }
 Dialog { align: center middle; background: $canvas 75%; }
 Dialog > VerticalScroll, Dialog > Vertical {
     width: 72; max-width: 96%; height: auto; max-height: 94%;
-    background: $surface; border: round $line; padding: 1 2;
+    background: $canvas; border: solid $line; padding: 1 2;
 }
 #approval-content { height: auto; max-height: 56vh; }
 #approval-content Static { height: auto; }
 #settings-shell { width: 76; height: 92%; }
-#settings-tabs { height: 3; margin-bottom: 1; }
+#settings-tabs { height: 2; margin-bottom: 1; }
 #settings-tabs Button { width: 1fr; min-width: 0; padding: 0; }
-#settings-tabs Button.current { background: $accent-fill; color: $accent; text-style: bold; }
-#settings-tabs Button:focus { text-style: bold underline; }
 #settings-groups { height: 1fr; }
 #settings-groups > VerticalScroll { height: 1fr; padding-right: 1; }
