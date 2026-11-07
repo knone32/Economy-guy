@@ -389,7 +389,7 @@ class P0Test(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNone(app.read_workspace)
                 self.assertFalse(app.agent.update_session.confirmations)
                 status = str(app.workspace_widget("#status").renderable)
-                self.assertIn("当前查询：未选择", status)
+                self.assertIn("当前查询企业：未选择", app.workspace_widget("#query-scope", Button).label.plain)
                 self.assertIn("任务焦点：甲企业（比赛模拟） / 2026-09", status)
                 self.assertIn("缺用途 4 张", status)
                 self.assertEqual(app.model_requests, 0)

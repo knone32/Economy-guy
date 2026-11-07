@@ -8,11 +8,12 @@ from textual import on
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, ContentSwitcher, Input, Label, Select, Static
+from textual.widgets import Button, ContentSwitcher, DirectoryTree, Input, Label, Select, Static
 
-from .cli_workspaces import company_access, import_workspace, missing_migrations, upgrade_workspace, workspace_users
+from .cli_workspaces import company_access, import_workspace, missing_migrations, rules_available, upgrade_workspace, workspace_users
 from .model_config import ProfileError, add_profile, load_profiles, validate_profile, visible_profiles
 from .trace import redact
+from .tui_local import recent_workbooks
 
 
 class TextAction(Button):
@@ -117,11 +118,48 @@ class Choices(Dialog):
         self.dismiss(None if key == "cancel" else self.choices[int(key.split("-")[-1])][1])
 
 
+class WorkbookBrowser(Dialog):
+    def __init__(self, start):
+        super().__init__()
+        self.start = start
+
+    def compose(self):
+        with Vertical(id="settings-shell"):
+            yield Label("浏览并打开已有账簿", classes="dialog-title")
+            yield Input(str(self.start), id="browse-folder", placeholder="目录路径，按 Enter 打开")
+            yield DirectoryTree(self.start, id="workbook-tree")
+            yield Static("", id="browse-feedback", markup=False)
+            yield TextAction("返回", id="cancel")
+
+    @on(Input.Submitted)
+    def change_folder(self, event):
+        path = Path(event.value.strip().strip('"')).expanduser()
+        if path.is_dir():
+            self.query_one(DirectoryTree).path = path.resolve()
+        else:
+            self.query_one("#browse-feedback", Static).update("找不到此目录。")
+
+    @on(DirectoryTree.FileSelected)
+    def selected(self, event):
+        if event.path.suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
+            self.dismiss(event.path.resolve())
+        else:
+            self.query_one("#browse-feedback", Static).update("请选择 .db、.sqlite 或 .sqlite3 文件。")
+
+    @on(Button.Pressed, "#cancel")
+    def cancel(self):
+        self.dismiss(None)
+
+
 class Login(Dialog):
+    def __init__(self, *, start_in_picker=False):
+        super().__init__()
+        self.start_in_picker = start_in_picker
+
     def compose(self):
         with VerticalScroll():
             yield Label("Economy-guy  /  财税工作台", classes="dialog-title")
-            yield Static("比赛模拟数据 · SIMULATED_IDENTITY\n选择模拟账号，进入财税工作台。",
+            yield Static("比赛模拟数据 · SIMULATED_IDENTITY\n选择账簿和模拟账号即可开始。使用真实 AI 前，需要配置模型和密钥。",
                          classes="field-hint", markup=False)
             yield Static(str(self.app.db), id="login-db", classes="field-hint", markup=False)
             yield Label("模拟账号", classes="field-label")
@@ -135,20 +173,30 @@ class Login(Dialog):
     def refresh_accounts(self):
         users = []
         message = ""
+        blocked = True
         try:
             users = workspace_users(self.app.db)
             if missing_migrations(self.app.db):
-                message = "当前库需要加法升级。请打开工作库设置。"
+                message = "此账簿来自较早版本，需要更新数据库结构才能使用当前功能。原有发票和流水将保留。"
+            else:
+                blocked = False
+                if not rules_available(self.app.db):
+                    message = "此账簿缺少启用的业务规则。部分检查不可用，请联系规则管理员。"
         except (OSError, ValueError, sqlite3.Error):
             message = "找不到可用工作库。请选择已有库，或从官方 Excel 导入。"
         self.query_one("#login-db", Static).update(str(self.app.db))
         self.query_one("#login-user", Select).set_options(
             [(f"{row['name']}  ·  {row['user_id']}", row["user_id"]) for row in users])
-        self.query_one("#sign-in", Button).disabled = bool(message)
+        self.query_one("#sign-in", Button).disabled = blocked
         self.query_one("#login-status", Static).update(message)
+
+    def open_picker(self):
+        self.app.push_screen(Settings(self.app, workbook_only=True), lambda _: self.refresh_accounts())
 
     def on_mount(self):
         self.refresh_accounts()
+        if self.start_in_picker:
+            self.call_after_refresh(self.open_picker)
 
     def action_close_dialog(self):
         self.app.exit()
@@ -159,7 +207,7 @@ class Login(Dialog):
             case "quit":
                 self.app.exit()
             case "login-settings":
-                self.app.push_screen(Settings(self.app), lambda _: self.refresh_accounts())
+                self.open_picker()
             case "sign-in":
                 user = self.query_one("#login-user", Select).value
                 if user == Select.BLANK:
@@ -169,10 +217,11 @@ class Login(Dialog):
 
 
 class Settings(Dialog):
-    def __init__(self, application, *, return_to_task=False):
+    def __init__(self, application, *, return_to_task=False, workbook_only=False):
         super().__init__()
         self.application = application
         self.return_to_task = return_to_task
+        self.workbook_only = workbook_only
         self.profiles = {}
         try:
             self.profiles = {p["profile_name"]: p for p in
@@ -190,7 +239,7 @@ class Settings(Dialog):
         except ProfileError:
             selected_profile = None
         with Vertical(id="settings-shell"):
-            yield Label("工作台设置", classes="dialog-title")
+            yield Label("选择账簿" if self.workbook_only else "工作台设置", classes="dialog-title")
             with Horizontal(id="settings-tabs"):
                 for label, key in self.GROUPS:
                     yield TextAction(label, id=f"group-{key}", classes="current" if key == initial else None)
@@ -221,16 +270,24 @@ class Settings(Dialog):
                         yield TextAction("使用此 AI 配置", id="apply-model", variant="primary")
                         yield TextAction("新建个人 AI 配置", id="new-profile", disabled=not app.user)
                 with VerticalScroll(id="settings-data"):
-                    yield Label("工作库路径", classes="field-label")
+                    yield Label("打开已有账簿", classes="section")
+                    yield Select([(str(p), p) for p in recent_workbooks(app.recent_path)],
+                                 prompt="最近使用的账簿", id="recent-workbooks")
+                    yield Label("当前账簿路径", classes="field-label")
                     yield Input(value=str(app.db), placeholder="已有工作库或新库路径", id="db")
                     yield Static("", id="db-feedback", classes="field-error", markup=False)
+                    with Horizontal(classes="dialog-actions"):
+                        yield TextAction("打开已有账簿", id="use-db")
+                        yield TextAction("浏览账簿文件", id="browse-db")
+                        yield TextAction("查看升级内容", id="upgrade-db")
+                    if self.workbook_only:
+                        yield Static("选择有效账簿后返回登录。旧账簿可先查看升级内容。", classes="field-hint", markup=False)
+                    yield Label("从 Excel 创建新账簿", classes="section")
                     yield Label("Excel 文件路径", classes="field-label")
                     yield Input(placeholder="仅导入时填写官方 .xlsx 文件路径", id="excel")
+                    yield Input(placeholder="新账簿保存路径，例如 新账簿.sqlite3", id="new-db")
                     yield Static("", id="excel-feedback", classes="field-error", markup=False)
-                    with Horizontal(classes="dialog-actions"):
-                        yield TextAction("切换工作库", id="use-db")
-                        yield TextAction("校验并导入", id="import-db", variant="primary")
-                        yield TextAction("升级旧库", id="upgrade-db")
+                    yield TextAction("校验并创建新账簿", id="import-db", variant="primary")
                     scope = app.read_workspace
                     selected = f"{scope[0]} · {scope[1]:04d}-{scope[2]:02d}" if scope else "尚未选择"
                     yield Label("当前只读查询范围", classes="field-label")
@@ -253,6 +310,41 @@ class Settings(Dialog):
 
     def message(self, text, field="model-feedback"):
         self.query_one("#" + field, Static).update(redact(text))
+
+    @on(Select.Changed, "#recent-workbooks")
+    def recent_selected(self, event):
+        if event.value != Select.BLANK:
+            self.query_one("#db", Input).value = str(event.value)
+
+    def browser_selected(self, path):
+        if path:
+            self.query_one("#db", Input).value = str(path)
+            self.open_workbook(path)
+
+    def open_workbook(self, path):
+        transition = "\n切换工作库将结束当前对话并取消未提交操作。请重新选择账号。" if self.app.user and path != self.app.db else ""
+        try:
+            if path.suffix.lower() not in {".db", ".sqlite", ".sqlite3"}:
+                raise ValueError("请选择 .db、.sqlite 或 .sqlite3 文件。")
+            workspace_users(path)
+            pending = missing_migrations(path)
+        except (OSError, ValueError, sqlite3.Error):
+            self.message("找不到可用账簿。请选择存在的财税账簿文件。", "db-feedback")
+            return
+        if pending:
+            self.app.push_screen(Approval(
+                "查看升级内容",
+                "此账簿来自较早版本，需要更新数据库结构才能使用当前功能。原有发票和流水将保留。\n"
+                "先在账簿目录保存并验证独立备份，再补齐审计、规则、待办、偏好及引用所需结构。"
+                "现有权限和审计保留。缺少的规则需另行管理。\n"
+                f"目标　{path}{transition}", "备份并升级"),
+                lambda yes: self.change_workspace(path, upgrade=True) if yes else None)
+        elif transition:
+            self.app.push_screen(Approval("切换工作库", f"目标　{path}{transition}", "确认切换",
+                                          cancel="保留当前工作库"),
+                                 lambda yes: self.change_workspace(path) if yes else None)
+        else:
+            self.change_workspace(path)
 
     @on(Select.Changed, "#profile")
     def profile_changed(self, event):
@@ -350,43 +442,49 @@ class Settings(Dialog):
             value = self.query_one("#profile", Select).value
             self.request_model("live", None if value == Select.BLANK else value)
             return
+        if key == "browse-db":
+            folder = Path(self.query_one("#db", Input).value.strip().strip('"')).expanduser().parent
+            self.app.push_screen(WorkbookBrowser(folder if folder.is_dir() else Path.cwd()), self.browser_selected)
+            return
+        if key == "import-db":
+            excel = self.query_one("#excel", Input).value.strip().strip('"')
+            target = self.query_one("#new-db", Input).value.strip().strip('"')
+            if not excel or not target:
+                self.message("请填写 Excel 文件和新账簿的保存路径。", "excel-feedback")
+                return
+            path = Path(target).expanduser().resolve()
+            self.app.push_screen(Approval("创建新账簿", f"Excel　{excel}\n新账簿　{path}", "创建"),
+                                 lambda yes: self.change_workspace(path, excel=excel) if yes else None)
+            return
         db_text = self.query_one("#db", Input).value.strip().strip('"')
         if not db_text:
-            self.message("请填写工作库路径。", "db-feedback")
+            self.message("请填写账簿路径。", "db-feedback")
             return
-        path = Path(db_text).expanduser().resolve()
-        transition = "\n切换工作库将结束当前对话并取消未提交操作。请重新选择账号。" if self.app.user and path != self.app.db else ""
-        if key == "use-db":
-            if transition:
-                self.app.push_screen(Approval("切换工作库", f"目标　{path}{transition}", "确认切换",
-                                              cancel="保留当前工作库"),
-                                     lambda yes: self.change_workspace(path) if yes else None)
-            else:
-                self.change_workspace(path)
-        elif key == "upgrade-db":
-            self.app.push_screen(Approval("升级旧库", f"补齐现有库的表和索引。\n{path}{transition}", "升级"),
-                                 lambda yes: self.change_workspace(path, upgrade=True) if yes else None)
-        elif key == "import-db":
-            excel = self.query_one("#excel", Input).value.strip().strip('"')
-            if not excel:
-                self.message("请填写官方 Excel 文件路径。", "excel-feedback")
-                return
-            self.app.push_screen(Approval("导入新工作库", f"Excel　{excel}\n新库　{path}{transition}", "导入"),
-                                 lambda yes: self.change_workspace(path, excel=excel) if yes else None)
+        self.open_workbook(Path(db_text).expanduser().resolve())
 
     def change_workspace(self, path, *, upgrade=False, excel=None):
         try:
             counts = None
+            backup = None
             if excel:
                 if path.suffix.lower() not in {".db", ".sqlite", ".sqlite3"}:
                     raise ValueError("请选择 .db、.sqlite 或 .sqlite3 新库路径。")
                 counts = import_workspace(excel, path)
             elif upgrade:
                 workspace_users(path)
-                upgrade_workspace(path)
+                backup = upgrade_workspace(path, backup=True)
             self.app.set_workspace(path)
-            self.message(f"已导入 {counts['invoices']} 张发票、{counts['bank_transactions']} 条流水。请重新选择账号。"
-                         if counts else "工作库已选定。", "db-feedback")
+            message = (f"已导入 {counts['invoices']} 张发票、{counts['bank_transactions']} 条流水。"
+                       if counts else "账簿已打开。")
+            if backup:
+                message = f"账簿已升级。备份位于 {backup}。"
+            if not rules_available(path):
+                message += " 当前没有启用的业务规则，请联系规则管理员。"
+            if self.workbook_only:
+                self.app.notify(message)
+                self.dismiss(None)
+            else:
+                self.message(message, "db-feedback")
         except (ValueError, FileExistsError) as error:
             self.message(str(error), "excel-feedback" if excel else "db-feedback")
         except (OSError, sqlite3.Error):
@@ -394,34 +492,58 @@ class Settings(Dialog):
 
 
 class Period(Dialog):
-    def __init__(self, period):
+    def __init__(self, period, months=(), *, actual_only=False):
         super().__init__()
         self.period = period
+        self.months = months
+        self.actual_only = actual_only
+
+    def month_options(self, year):
+        return [(f"{ym} · {invoices} 张发票 · {bank} 条流水", ym)
+                for ym, invoices, bank in self.months if ym[:4] == year]
 
     def compose(self):
+        years = list(dict.fromkeys(ym[:4] for ym, _, _ in self.months))
         with VerticalScroll():
-            yield Label("选择账期 · 仅用于只读查询", classes="dialog-title")
-            value = f"{self.period[0]:04d}-{self.period[1]:02d}" if self.period else ""
-            yield Input(value=value, placeholder="例如 2026-09", id="period")
+            yield Label("选择账期", classes="dialog-title")
+            if years:
+                yield Select([(y, y) for y in years], allow_blank=False, value=years[0], id="period-year")
+                yield Select(self.month_options(years[0]), prompt="选择已有月份", id="period-month")
+                yield TextAction("使用选中月份", id="choose-listed", variant="primary")
+            else:
+                yield Static("当前企业没有发票或流水记录。", markup=False)
+            if not self.actual_only:
+                yield Label("输入其他年月", classes="field-label")
+                value = f"{self.period[0]:04d}-{self.period[1]:02d}" if self.period else ""
+                yield Input(value=value, placeholder="例如 2026-09", id="period")
+                yield TextAction("使用输入的账期", id="choose")
             yield Static("", id="period-error", classes="field-error", markup=False)
-            with Horizontal(classes="dialog-actions"):
-                yield TextAction("取消", id="cancel")
-                yield TextAction("使用此账期", id="choose")
+            yield TextAction("取消", id="cancel")
+
+    @on(Select.Changed, "#period-year")
+    def year_changed(self, event):
+        self.query_one("#period-month", Select).set_options(self.month_options(event.value))
 
     @on(Button.Pressed)
     def pressed(self, event):
         if event.button.id == "cancel":
             self.dismiss(None)
+        elif event.button.id == "choose-listed":
+            value = self.query_one("#period-month", Select).value
+            if value == Select.BLANK:
+                self.query_one("#period-error", Static).update("请选择月份。")
+            else:
+                self.accept(value)
         else:
-            self.accept()
+            self.accept(self.query_one("#period", Input).value)
 
     @on(Input.Submitted)
-    def submitted(self):
-        self.accept()
+    def submitted(self, event):
+        self.accept(event.value)
 
-    def accept(self):
+    def accept(self, value):
         from datetime import date
-        value = self.query_one("#period", Input).value
+        value = value.strip()
         try:
             parsed = date.fromisoformat(value + "-01")
             if parsed.isoformat()[:7] != value:

@@ -31,6 +31,22 @@ def _money(cents: int) -> str:
     return f"{sign}{yuan}.{remainder:02d}"
 
 
+def available_periods(connection, user_id, company_id):
+    """Current monthly counts from both authorized business tables."""
+    _authorize(connection, user_id, company_id)
+    rows = connection.execute("""
+        WITH activity AS (
+            SELECT substr(invoice_date,1,7) AS period, count(*) AS invoices, 0 AS bank
+              FROM invoices WHERE company_id=? GROUP BY period
+            UNION ALL
+            SELECT substr(transaction_date,1,7), 0, count(*)
+              FROM bank_transactions WHERE company_id=? GROUP BY 1
+        )
+        SELECT period, sum(invoices), sum(bank) FROM activity GROUP BY period ORDER BY period DESC
+    """, (company_id, company_id))
+    return [tuple(row) for row in rows]
+
+
 def list_invoices(connection, user_id: str, company_id: str, year: int, month: int) -> list[dict]:
     """查询指定企业、年月的发票，结果为空是正常成功结果。"""
     prefix = _check_month(year, month); _authorize(connection, user_id, company_id)

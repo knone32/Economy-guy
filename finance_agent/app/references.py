@@ -1,3 +1,4 @@
+from contextlib import closing
 """展示锚点的单一存储及当前发票重查；不保存业务字段或写入授权。"""
 import json
 import sqlite3
@@ -8,22 +9,24 @@ from .queries import get_invoice
 from .persistence import result
 
 
+REFERENCE_DDL = """
+CREATE TABLE IF NOT EXISTS reference_anchors (
+        anchor_id TEXT PRIMARY KEY, display_id TEXT NOT NULL,
+        user_id TEXT NOT NULL, company_id TEXT NOT NULL,
+        year INTEGER, month INTEGER, source TEXT NOT NULL, keys_json TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(user_id) REFERENCES users(user_id),
+        FOREIGN KEY(company_id) REFERENCES companies(company_id));
+CREATE INDEX IF NOT EXISTS reference_owner ON reference_anchors(user_id,active);
+"""
+
+
 def migrate(path):
     """显式加法迁移；旧库不自动建表，不覆盖业务记录。"""
-    connection = open_existing(path)
-    try:
-        with connection:
-            connection.execute("""CREATE TABLE IF NOT EXISTS reference_anchors (
-                anchor_id TEXT PRIMARY KEY, display_id TEXT NOT NULL,
-                user_id TEXT NOT NULL, company_id TEXT NOT NULL,
-                year INTEGER, month INTEGER, source TEXT NOT NULL, keys_json TEXT NOT NULL,
-                active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY(user_id) REFERENCES users(user_id),
-                FOREIGN KEY(company_id) REFERENCES companies(company_id))""")
-            connection.execute("CREATE INDEX IF NOT EXISTS reference_owner ON reference_anchors(user_id,active)")
-    finally:
-        connection.close()
+    with closing(open_existing(path)) as connection:
+        connection.executescript("BEGIN IMMEDIATE;\n" + REFERENCE_DDL + "COMMIT;")
+
 
 
 def _available(connection):

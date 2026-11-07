@@ -31,9 +31,11 @@ def launch_tui(args):
               "或使用 python main.py home 和原有参数子命令。", file=sys.stderr)
         raise SystemExit(2)
     from app.tui import AgentWorkspace
+    from app.tui_local import settings_path
     log = ROOT / "data" / "logs" / "tui_trace.jsonl"
     log.parent.mkdir(parents=True, exist_ok=True)
-    application = AgentWorkspace(args.db, args.profiles_file, args.profiles_local, trace_path=log)
+    application = AgentWorkspace(args.db, args.profiles_file, args.profiles_local, trace_path=log,
+                                 recent_path=settings_path(), restore_recent=not args.explicit_db)
     if application.run() == "legacy_home":
         from app.cli_home import Home
         home = Home(application.db, args.profiles_file, args.profiles_local, DEFAULT_EXCEL)
@@ -46,7 +48,7 @@ def main() -> None:
     if not check_runtime(dependencies=()):
         raise SystemExit(2)
     parser = argparse.ArgumentParser(description="财税 Agent Harness（无子命令时打开全屏工作台）")
-    parser.add_argument("--db", type=Path, default=DEFAULT_DB, help="SQLite 数据库路径")
+    parser.add_argument("--db", type=Path, help="SQLite 数据库路径")
     from app.model_config import DEFAULT_TEMPLATE,DEFAULT_LOCAL
     parser.add_argument('--profiles-file',type=Path,default=DEFAULT_TEMPLATE,help='无密钥TOML模板')
     parser.add_argument('--profiles-local',type=Path,default=DEFAULT_LOCAL,help='本地新增Profile JSON；不提交Git')
@@ -105,6 +107,8 @@ def main() -> None:
     chat.add_argument("--max-extensions",type=int,default=2,help="至多两次证据驱动续期")
     chat.add_argument("--max-replans",type=int,default=1,help="至多一次显式重规划")
     args = parser.parse_args()
+    args.explicit_db = args.db is not None
+    args.db = args.db or DEFAULT_DB
     dependencies = ()
     if args.command in {None, "tui"}:
         dependencies = ("openpyxl", "openai", "textual")

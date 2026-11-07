@@ -18,11 +18,12 @@ from .agent import Agent
 from .cli_chat import safe_text, turn_tools
 from .cli_workspaces import company_access, invoice_history, missing_migrations, workspace_users
 from .model_config import ProfileError, load_profiles, resolve_connection
-from .queries import list_invoices
+from .queries import available_periods, list_invoices
 from .stage2_schema import open_existing
 from .tasks import list_tasks, task_details
 from .trace import redact
 from .tui_intent import edit_turn
+from .tui_local import remember_workbook, startup_workbook
 from .tui_screens import Approval, Choices, Login, Settings, TextAction
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -74,9 +75,11 @@ class AgentWorkspace(App):
     BINDINGS = [("f2", "navigation", "导航"), ("f3", "account", "账户"),
                 ("f4", "cancel_edit", "取消未提交操作"), ("ctrl+q", "quit_safe", "退出")]
 
-    def __init__(self, db, template, local, *, model=None, trace_path=None):
+    def __init__(self, db, template, local, *, model=None, trace_path=None, recent_path=None, restore_recent=False):
         super().__init__()
         self.db = Path(db).resolve()
+        self.recent_path = recent_path
+        self.restore_recent = restore_recent
         self.profile_options = {"template": template, "local": local}
         self.trace_path = trace_path
         self.model_override = model
@@ -100,6 +103,7 @@ class AgentWorkspace(App):
 
     def compose(self):
         yield Static("Economy-guy", id="status", markup=False)
+        yield TextAction("选择查询企业和账期", id="query-scope", classes="text-link")
         with Horizontal(id="layout"):
             with Vertical(id="rail"):
                 yield TextAction("菜单", id="nav", classes="compact-action", tooltip="展开导航 · F2")
@@ -129,7 +133,8 @@ class AgentWorkspace(App):
         yield Footer()
 
     def on_mount(self):
-        self.push_screen(Login(), self.signed_in)
+        self.db, needs_selection = startup_workbook(self.db, self.recent_path, restore=self.restore_recent)
+        self.push_screen(Login(start_in_picker=needs_selection), self.signed_in)
 
     def signed_in(self, user):
         if not user:
@@ -141,6 +146,10 @@ class AgentWorkspace(App):
             self.push_screen(Login(), self.signed_in)
             return
         self.user = user
+        try:
+            remember_workbook(self.recent_path, self.db)
+        except OSError:
+            self.notify("无法保存最近账簿，当前账簿仍可使用。", severity="warning")
         self.profile = None
         self.reset_agent(clear_log=True)
         self.note("可输入问题，按 Enter 发送。")
@@ -263,8 +272,8 @@ class AgentWorkspace(App):
         state, title, detail = self.model_state()
         self.workspace_widget("#status", Static).update(safe_text(
             f"Economy-guy / 财税工作台 · 比赛模拟 · {self.user or '未登录'} · {title}\n"
-            f"当前查询：{query}（只读）\n"
             f"任务焦点：{focus}"))
+        self.workspace_widget("#query-scope", Button).label = Text(safe_text(f"当前查询企业：{query}（只读）"))
         self.workspace_widget("#ai-guide-text", Static).update(safe_text(f"{title}\n{detail}"))
         self.workspace_widget("#ai-guide").display = state in {"unconfigured", "missing-key", "unverified", "failed"}
 
@@ -437,6 +446,9 @@ class AgentWorkspace(App):
             self.action_navigation()
         elif key == "account":
             self.action_account()
+        elif key == "query-scope":
+            if not self.busy:
+                self.choose_workspace_scope()
         elif key == "configure-ai":
             self.open_settings()
         elif key.startswith("todo-"):
@@ -785,17 +797,39 @@ class AgentWorkspace(App):
             return company
 
     def choose_workspace_scope(self, for_finance=False):
-        try:
-            rows = company_access(self.db, self.user)
-        except (OSError, sqlite3.Error):
-            self.note("无法读取企业权限，请核对工作库。")
-            return
-        self.push_screen(Choices("选择可读企业", [(r["name"], r["company_id"]) for r in rows if r["read"]]),
-                         lambda company: self.pick_period(company, for_finance) if company else None)
+        self.choose_company(lambda company: self.pick_period(company, for_finance) if company else None)
 
-    def pick_period(self, company, for_finance):
+    def choose_company(self, callback, *, modify=False):
+        try:
+            rows = [r for r in company_access(self.db, self.user)
+                    if r["read"] and (not modify or r["modify"])]
+        except (OSError, ValueError, sqlite3.Error):
+            self.push_screen(Choices("无法读取企业权限", [("请核对当前账簿后再试。", None)]))
+            return
+        if not rows:
+            self.push_screen(Choices("没有符合权限的企业", [("请核对当前模拟账号。", None)]))
+            return
+        self.push_screen(Choices("选择可读企业", [
+            (f"{r['name']} · {r['company_id']} · {'可读取、可修改' if r['modify'] else '只读'}", r["company_id"])
+            for r in rows]), callback)
+
+    def select_period(self, company, callback, *, actual_only=False):
+        from .queries import QueryError
         from .tui_screens import Period
 
+        try:
+            with closing(open_existing(self.db, readonly=True)) as db, db:
+                db.execute("BEGIN")
+                months = available_periods(db, self.user, company)
+        except QueryError:
+            self.push_screen(Choices("无法读取账期", [("当前账号没有此企业的读取权限。", None)]))
+            return
+        except (OSError, sqlite3.Error):
+            self.push_screen(Choices("无法读取账期", [("读取账簿出错，请核对文件。", None)]))
+            return
+        self.push_screen(Period(self.period, months, actual_only=actual_only), callback)
+
+    def pick_period(self, company, for_finance):
         def selected(period):
             if period is None:
                 return
@@ -805,7 +839,7 @@ class AgentWorkspace(App):
             if for_finance:
                 self.show("finance")
 
-        self.push_screen(Period(self.period), selected)
+        self.select_period(company, selected)
 
     def finance_widgets(self):
         if self.task_route:

@@ -1,8 +1,10 @@
 """Read-only menu views and atomic publication of newly initialized work databases."""
 from contextlib import closing
+from hashlib import sha256
 import os
+import sqlite3
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 from zipfile import BadZipFile
 
 from openpyxl.utils.exceptions import InvalidFileException
@@ -10,9 +12,9 @@ from openpyxl.utils.exceptions import InvalidFileException
 from .importer import initialize_database
 from .permissions import check_permission
 from .rules import SEED_RULES, import_rules
-from .stage2_schema import migrate as migrate_rules, open_existing
-from .stage3_schema import migrate as migrate_state
-from .references import migrate as migrate_references
+from .stage2_schema import STAGE2_DDL, open_existing
+from .stage3_schema import STAGE3_DDL
+from .references import REFERENCE_DDL
 
 
 MIGRATED_TABLES = {"invoice_audit", "rules", "rule_management_audit", "tasks", "preferences", "reference_anchors"}
@@ -23,18 +25,66 @@ def missing_migrations(path):
         return MIGRATED_TABLES - {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 
 
-def upgrade_workspace(path):
-    """Apply only the existing additive migrations to an explicitly selected database."""
-    migrate_rules(path)
-    migrate_state(path)
-    migrate_references(path)
+BASE_COLUMNS = {
+    "companies": "company_id,name,short_name",
+    "users": "user_id,name",
+    "permissions": "user_id,company_id,can_read,can_modify",
+    "invoices": "company_id,invoice_no,invoice_date,seller_name,item_name,amount_cents,purpose,remark",
+    "bank_transactions": "company_id,transaction_no,transaction_date,direction,amount_cents,counterparty_name,remark",
+}
+
+
+def _snapshot(db, tables):
+    hashes = {}
+    for table in sorted(tables):
+        digest = sha256()
+        for row in db.execute(f'SELECT * FROM "{table}" ORDER BY rowid'):
+            digest.update(repr(tuple(row)).encode("utf-8") + b"\n")
+        hashes[table] = digest.hexdigest()
+    return hashes
+
+
+def upgrade_workspace(path, *, backup=False):
+    """Keep the original transaction intact until the backup and row checks succeed."""
+    path = Path(path)
+    workspace_users(path)
+    ddl = STAGE2_DDL + STAGE3_DDL + REFERENCE_DDL
+    with closing(open_existing(path)) as db, db:
+        db.execute("BEGIN IMMEDIATE")
+        preserved = set(BASE_COLUMNS) | (MIGRATED_TABLES - missing_migrations(path))
+        before = _snapshot(db, preserved)
+        copy = None
+        if backup:
+            with NamedTemporaryFile(prefix=f"{path.stem}-backup-", suffix=".sqlite3", dir=path.parent,
+                                    delete=False) as target:
+                copy = Path(target.name)
+            try:
+                with closing(open_existing(path, readonly=True)) as source, closing(sqlite3.connect(copy)) as dest:
+                    source.backup(dest)
+                    if dest.execute("PRAGMA integrity_check").fetchone()[0] != "ok" or _snapshot(dest, preserved) != before:
+                        raise ValueError("无法验证备份，原账簿未升级。")
+            except Exception:
+                copy.unlink(missing_ok=True)
+                raise
+        for statement in ddl.split(";"):
+            if statement.strip():
+                db.execute(statement)
+        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if MIGRATED_TABLES - tables or _snapshot(db, preserved) != before:
+            raise ValueError("升级验证未通过，原账簿已回滚。")
+    return copy
+
+
+def rules_available(path):
+    with closing(open_existing(path, readonly=True)) as db:
+        return bool(db.execute("SELECT 1 FROM rules WHERE status='ACTIVE' LIMIT 1").fetchone())
 
 
 def workspace_users(path):
     """Validate the base schema without opening a write connection or creating a database."""
     with closing(open_existing(path, readonly=True)) as db:
-        for table in ("companies", "permissions", "invoices", "bank_transactions"):
-            db.execute(f"SELECT * FROM {table} LIMIT 0")
+        for table, columns in BASE_COLUMNS.items():
+            db.execute(f"SELECT {columns} FROM {table} LIMIT 0")
         users = db.execute("SELECT user_id,name FROM users ORDER BY user_id").fetchall()
         if not users:
             raise ValueError("工作库没有模拟用户。请选择含有效企业与用户表的工作库。")
