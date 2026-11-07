@@ -3,7 +3,8 @@ import json
 from pathlib import Path
 from contextlib import closing
 from uuid import uuid4
-from .tool_registry import TOOLS, TEACHING_TOOLS, REGISTRY, handle_tool, tool_result, remaining_work_allowed
+from .tool_registry import (TOOLS, TEACHING_TOOLS, REGISTRY, handle_tool, tool_result,
+                            remaining_work_allowed, validate_arguments)
 from .trace import redact, write_trace, warn_trace_degraded
 from .write_coordination import WriteCoordinator
 from .updates import commit_invoice_update
@@ -176,7 +177,7 @@ class Agent:
         try:
             metadata={'actor':self.user_id,**(self.connection.metadata() if self.connection else {})}
             write_trace(self.trace_path, self.mode, self.trace_id, event, data,metadata=metadata)
-        except OSError:
+        except (OSError, UnicodeEncodeError):
             first_failure = not self.trace_degraded
             self.trace_degraded = True
             self.write_receipt["trace_degraded"] = True
@@ -323,6 +324,9 @@ class Agent:
                 if not isinstance(reply, dict) or reply.get("role") != "assistant":
                     raise ValueError("模型不能伪造消息角色")
                 reply = self.protocol.normalize(reply,bool(turn_tools))
+                wire_reply = self.protocol.wire([reply],bool(turn_tools))[0]
+                # Reject invalid Unicode before saving or forwarding the assistant message.
+                json.dumps(wire_reply, ensure_ascii=False).encode("utf-8")
                 calls = reply.get("tool_calls") or []
                 if not isinstance(calls, list) or any(not isinstance(c, dict) or not isinstance(c.get("id"), str) or not c["id"] or c.get("type") != "function" or not isinstance(c.get("function"), dict) for c in calls):
                     raise ValueError("工具请求结构错误")
@@ -335,7 +339,7 @@ class Agent:
                 self.trace("error", "API请求失败或模型响应结构无效")
                 execution.stop("API_OR_RESPONSE_ERROR")
                 return finish("请求失败：API请求失败或模型响应结构无效，未确认业务成功。")
-            self.trace("model_reply", redact(self.protocol.wire([reply],bool(turn_tools))[0]))
+            self.trace("model_reply", redact(wire_reply))
             self.messages.append(reply)
             if not calls:
                 natural = parse_final(reply.get("content"))
@@ -385,11 +389,11 @@ class Agent:
                         if fn.get('name') in {'manage_task','list_tasks'}:self.context.accept_task(result)
                         if fn.get("name") == "prepare_invoice_update":
                             self.coordinator.record_preparation(result)
-                        try:
-                            args=json.loads(fn.get("arguments"))
-                        except (ValueError,TypeError):
-                            args={}
-                        execution.observe(fn.get("name"),args,result)
+                        if result["status"] == "INVALID_ARGUMENTS":
+                            execution.stop("INVALID_ARGUMENTS")
+                        else:
+                            args = validate_arguments(fn.get("name"), fn.get("arguments"))
+                            execution.observe(fn.get("name"), args, result)
                         stop = bool(execution.stop_reason)
                 if stop and stop_result is None:
                     stop_result = result

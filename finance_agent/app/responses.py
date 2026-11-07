@@ -7,7 +7,8 @@ def parse_final(content):
     """只接收信息/追问信封，不接受模型提供操作成功状态。"""
     try:
         value = json.loads(content)
-    except (TypeError, ValueError):
+        json.dumps(value, ensure_ascii=False).encode("utf-8")
+    except (TypeError, ValueError, RecursionError):
         return None
     if type(value) is not dict or type(value.get("kind")) is not str or value["kind"] not in {"general", "information", "clarification"}:
         return None

@@ -26,7 +26,9 @@ def _invoice_dict(row: sqlite3.Row) -> dict:
 
 
 def _money(cents: int) -> str:
-    return f"{cents // 100}.{cents % 100:02d}"
+    yuan, remainder = divmod(abs(cents), 100)
+    sign = "-" if cents < 0 else ""
+    return f"{sign}{yuan}.{remainder:02d}"
 
 
 def list_invoices(connection, user_id: str, company_id: str, year: int, month: int) -> list[dict]:

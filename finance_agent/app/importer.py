@@ -39,6 +39,13 @@ def _rows_after_header(sheet, required_headers: set[str]):
             break
     if not header_row:
         raise ImportError(f"工作表 {sheet.title} 缺少表头：{sorted(required_headers)}")
+    named_headers = set()
+    for value in headers:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            continue
+        if value in named_headers:
+            raise ImportError(f"工作表 {sheet.title} 第 {header_row} 行存在重复字段：{value!r}")
+        named_headers.add(value)
     mapping = {value: index for index, value in enumerate(headers) if value is not None}
     for values in sheet.iter_rows(min_row=header_row + 1, values_only=True):
         if values[0] is None:

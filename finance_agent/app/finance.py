@@ -1,5 +1,5 @@
 """从当前数据库计算精确金额汇总。"""
-from .queries import QueryError, _authorize, _check_month
+from .queries import QueryError, _authorize, _check_month, _money
 from .queries import list_invoices, list_bank_transactions
 
 
@@ -24,7 +24,7 @@ def _total(connection, user_id: str, company_id: str, year: int, month: int, tab
     if direction:
         sql += " AND direction = ?"; values.append(direction)
     cents = connection.execute(sql, values).fetchone()["cents"]
-    return f"{cents // 100}.{cents % 100:02d}"
+    return _money(cents)
 
 
 def invoice_total(connection, user_id: str, company_id: str, year: int, month: int) -> str:

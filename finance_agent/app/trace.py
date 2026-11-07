@@ -47,6 +47,8 @@ def redact(value):
             if type(parsed) in (dict,list):
                 cleaned=redact(parsed)
                 return value if cleaned==parsed else json.dumps(cleaned,ensure_ascii=False)
+        except RecursionError:
+            return '[REDACTED_UNPARSEABLE_JSON]'
         except (ValueError,TypeError):
             pass
         value=re.sub(r'(?i)(\b(?:set-cookie|cookie)[ \t]*:)[^\r\n]*',r'\1 [REDACTED]',value)

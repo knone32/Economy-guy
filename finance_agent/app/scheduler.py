@@ -95,7 +95,7 @@ class TurnExecution:
         """计数实际进入Handler的调用；重复参数不再执行，跳过项不计实际工具数。"""
         try:
             signature = json.dumps([name,json.loads(raw_arguments)],sort_keys=True,ensure_ascii=False)
-        except (ValueError,TypeError):
+        except (ValueError,TypeError,RecursionError):
             signature = repr((name,raw_arguments))
         if signature in self.seen:
             self.stop("NO_PROGRESS")

@@ -104,8 +104,12 @@ def validate_arguments(name, raw_arguments, partial=False):
                 raise ValueError("JSON字段重复")
             result[key] = value
         return result
-    args = json.loads(raw_arguments,object_pairs_hook=unique_object,
-                      parse_constant=lambda _: (_ for _ in ()).throw(ValueError("非法JSON常量")))
+    try:
+        args = json.loads(raw_arguments,object_pairs_hook=unique_object,
+                          parse_constant=lambda _: (_ for _ in ()).throw(ValueError("非法JSON常量")))
+        json.dumps(args, ensure_ascii=False).encode("utf-8")
+    except (RecursionError, UnicodeEncodeError):
+        raise ValueError("JSON参数嵌套过深或包含无效Unicode") from None
     fields = REGISTRY[name][1]
     if type(args) is not dict or not set(args)<=set(fields) or (not partial and set(args)!=set(fields)):
         raise ValueError("缺失或多余参数")
