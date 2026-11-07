@@ -1,23 +1,35 @@
 param([string]$Python = "python")
 $ErrorActionPreference = "Stop"
-$projectPath = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$pythonPath = (Get-Command $Python -CommandType Application).Source
+$repoPath = (Resolve-Path (Join-Path $PSScriptRoot "../..")).Path
 $cleanPath = Join-Path ([System.IO.Path]::GetTempPath()) ("finance-clean-" + [guid]::NewGuid().ToString("N"))
-New-Item -ItemType Directory -Path $cleanPath | Out-Null
-foreach ($folder in @("app", "tests", "examples")) {
-    $destination = Join-Path $cleanPath $folder
-    New-Item -ItemType Directory -Path $destination | Out-Null
-    Get-ChildItem -LiteralPath (Join-Path $projectPath $folder) -Filter "*.py" -File |
-        Copy-Item -Destination $destination
+$trackedFiles = git -C $repoPath -c core.quotepath=false ls-files
+if ($LASTEXITCODE -ne 0 -or -not $trackedFiles) {
+    throw "Run this check from a Git checkout with tracked source files."
 }
-Copy-Item -LiteralPath (Join-Path $projectPath "tests\fixtures") -Destination (Join-Path $cleanPath "tests\fixtures") -Recurse
-Copy-Item -LiteralPath (Join-Path $projectPath "main.py") -Destination $cleanPath
-Write-Output "Clean test directory: $cleanPath"
-Push-Location $cleanPath
+New-Item -ItemType Directory -Path $cleanPath | Out-Null
+foreach ($file in $trackedFiles) {
+    $source = Join-Path $repoPath $file
+    $destination = Join-Path $cleanPath $file
+    New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
+    Copy-Item -LiteralPath $source -Destination $destination
+}
+Write-Output "Clean source directory: $cleanPath"
+# Ignore developer-specific imports and fixture overrides. Keep the copy for diagnosis.
+$priorPythonPath = $env:PYTHONPATH
+$priorFixture = $env:FINANCE_TEST_EXCEL
+$priorUtf8 = $env:PYTHONUTF8
+$env:PYTHONPATH = $null
+$env:FINANCE_TEST_EXCEL = $null
+$env:PYTHONUTF8 = "1"
+Push-Location (Join-Path $cleanPath "finance_agent")
 try {
-    & $Python -m unittest discover -s tests -v
+    & $pythonPath -m unittest discover -s tests -q
     $testExitCode = $LASTEXITCODE
 } finally {
     Pop-Location
+    $env:PYTHONPATH = $priorPythonPath
+    $env:FINANCE_TEST_EXCEL = $priorFixture
+    $env:PYTHONUTF8 = $priorUtf8
 }
-# 保留临时副本供失败诊断，不删除用户资料。
 exit $testExitCode

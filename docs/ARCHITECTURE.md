@@ -1,10 +1,12 @@
-# 当前实际架构 Stage 3C
+# 当前实际架构 · P0.5
 
 本文件记录实际实现；ARCHITECTURE_CONTRACTS.md仍是目标契约。代码位于finance_agent/，只有app.agent.Agent.ask一个模型循环。
 
 | 模块 | 实际职责与状态所有者 |
 | --- | --- |
-| main.py | argparse、模拟用户、关联连续修改、最终确认交互；不计算业务金额 |
+| main.py | 默认启动 Textual 工作台，保留 argparse 子命令与兼容菜单；不计算业务金额 |
+| app/tui.py、tui_screens.py | 账簿初始化与选择、模拟登录、业务导航、工作台会话与可信确认交互 |
+| app/session_store.py | 本地独立 SQLite 保存账号与账簿范围内的可见聊天、处理状态、恢复线索和个人表达偏好 |
 | app/agent.py | 模型调用/有界循环/消息配对；保留Agent与handle_tool兼容Facade；持有当前会话消息 |
 | app/model_config.py | Global/User Profile可信本地管理、可见性与完整连接选择；ModelConnection冻结私有凭据，不写业务SQLite |
 | app/model_transport.py | 单连接SDK传输、4P-C协议及真实usage/延迟；不拥有任务/权限/业务事实 |
@@ -25,7 +27,7 @@
 | app/finance.py、queries.py、permissions.py | 精确统计、当前数据库读取、授权 |
 | app/database.py、stage2_schema.py、importer.py | SQLite与加法迁移、安全首次种子导入 |
 
-依赖方向：CLI → Agent → ContextBuilder / Registry / WriteCoordinator / TurnExecution → 业务服务 → SQLite。Registry校验计划工具/范围/权限，TurnExecution只接收执行结果与授权回调，不执行业务。ContextBuilder只调用任务、偏好和引用服务读取/维护相应来源，不接管它们的状态。Trace和回复解析无业务权力。业务层不得反向导入context/scheduler等运行层；标准库AST测试检查显式导入，无完整动态依赖平台。
+依赖方向：TUI / CLI → Agent → ContextBuilder / Registry / WriteCoordinator / TurnExecution → 业务服务 → SQLite。Registry校验计划工具/范围/权限，TurnExecution只接收执行结果与授权回调，不执行业务。ContextBuilder只调用任务、偏好和引用服务读取/维护相应来源，不接管它们的状态。Trace和回复解析无业务权力。业务层不得反向导入context/scheduler等运行层；标准库AST测试检查显式导入，无完整动态依赖平台。
 
 4P-D：Agent.ask为唯一入口，活动guard后进入原有_ask单循环。CLI通过model_config解析完整连接，Agent/Transport共用冻结ModelConnection和协议；可信switch_model只在安全轮次边界替换新Agent，保留可重查业务范围与SQLite长期状态，不搬原始模型历史/许可。实际链路见flows/models-profiles.md；没有多Agent、自动路由或模型配置SQLite表。
 
@@ -33,7 +35,7 @@
 
 上下文：Agent.messages保留用户、真实模型响应及实际工具结果，模型请求前由ContextBuilder.build选择完整近期轮次。最终模型JSON只保留一次；程序收尾消息使用name=harness_output。context_data提供带来源及范围的任务/偏好/锚点数据，reference_data为本轮重新鉴权的引用重查；harness_history是source=trusted_cli、historical=true的历史回执投影，保留event_id/turn_id/request_id。它们均为assistant数据，不进入user/system角色、不编造Tool Call，也不授予权限。模型不能自行设置name。当前值须重查SQLite。
 
-已实现Stage 0–2加固、Stage 3A任务/偏好、Stage 3B轻量Context/展示引用解析及Stage 3C最小单轮计划/分块预算。未实现通用调度引擎、完整历史检索/摘要、GUI。静态检查和Mock不能证明真实理解或抵抗所有Prompt注入。
+当前工作台在 Stage 0–3 的业务底座上提供 Textual 导航和 P0.5 会话恢复。用户打开同一账簿并用同一模拟账号进入后，可恢复可见历史和有范围的只读线索。工作台创建新 Agent，旧轮草稿、确认、私有模型消息和计划不恢复。当前金额、任务进度和权限仍以业务 SQLite 为准。运行入口与证据见[交付首页](../README.md)和[P0.5 验收](delivery/P0-5-FINAL.md)。静态检查和 Mock 不能证明真实理解或抵抗所有 Prompt 注入。
 
 执行能力：生产Schema与实际执行许可分别检查。Agent保存初始能力集，调用时再与当前Schema取交集传给Handler；Handler默认仅允许生产工具，Python可信内部调用需显式能力集。教学add/旧汇总不能仅凭内部REGISTRY存在而在生产执行。每次读写仍独立鉴权。
 
@@ -53,7 +55,7 @@ Stage 3A：Task Manager限于tasks.py的一个缺失用途任务类型、单用�
 
 Stage 3确认补丁及4P-A：actor/domain/action不授权模型保存具体内容。普通自然语言由Agent持有无写权限的ManagementProposals，Registry经字段/权限/范围预检形成ManagementCandidate，业务服务仅can_propose预览。可信CLI确认具体内容后，confirm_management才建立ManagementTurn/Intent与一次性Approval；服务新事务再次校验用户/企业、参数指纹与旧值。显式/task、/preference保留原动作约束，也必须确认。取消、跨轮、身份变化或内容/目标错配不写库；直接argparse管理参数仍为可信输入，兼容直接业务API。发票Prepare/Commit、Context、Scheduler实现均未改。真实调用链见flows/tasks-preferences.md。
 
-恢复走list_tasks/manage_task(resume)，读取自己的持久记录并重新check_missing_purpose；偏好get/list作为数据，不提升为system。Stage 3B按唯一企业及明确年月选择未完成任务和该企业显式偏好；重启可恢复必要展示锚点，不自动恢复历史聊天、旧草稿/确认。独立子进程恢复测试见tests/test_stage3a.py和test_stage3b.py，调用链见flows/tasks-preferences.md和flows/context-reference.md。
+恢复走list_tasks/manage_task(resume)，读取自己的持久记录并重新check_missing_purpose；偏好get/list作为数据，不提升为system。Stage 3B按唯一企业及明确年月选择未完成任务和该企业显式偏好；重启可恢复必要展示锚点，旧草稿和确认不恢复。P0.5 工作台另由 Session Store 提供可见历史恢复。独立子进程恢复测试见tests/test_stage3a.py和test_stage3b.py，调用链见flows/tasks-preferences.md和flows/context-reference.md。
 
 Stage 3B限长单位为ensure_ascii=False序列化消息的字符数（默认48000，可配置，不是token估算；工具Schema另计）。固定system和本轮用户/完整工具交换为必需部分，超限停止；附加数据和历史轮次按预算选择/整段丢弃，无摘要模型。Trace记录来源、范围、字符数、遗漏及裁剪原因，并记录最终实际model_input。Agent.messages保留会话记录，模型请求不会无限拼接它。
 

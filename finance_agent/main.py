@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parent
-DEFAULT_EXCEL = ROOT.parent / "赛题二：财税Harness初赛材料包-v1.1.0 2" / "02_示例数据.xlsx"
+DEFAULT_EXCEL = ROOT / "tests" / "fixtures" / "example.xlsx"
 DEFAULT_DB = ROOT / "data" / "finance.db"
 
 
@@ -70,7 +70,9 @@ def main() -> None:
     for key in ('provider','service-account-ref','model','base-url','api-key-env'):
         profiles.add_argument('--'+key)
     profiles.add_argument('--protocol',choices=('auto','standard','deepseek-thinking'),default='auto')
-    init = sub.add_parser("init", help="安全首次导入，拒绝覆盖已有数据库"); init.add_argument("--excel", type=Path, default=DEFAULT_EXCEL)
+    init = sub.add_parser("init", help="安全首次导入，拒绝覆盖已有数据库")
+    init.add_argument("--excel", type=Path, default=DEFAULT_EXCEL,
+                      help="只读 Excel 来源，默认使用仓库已有的虚构测试夹具")
     for name in ("invoices", "bank", "summary"):
         command = sub.add_parser(name); command.add_argument("--user", required=True); command.add_argument("--company", required=True); command.add_argument("--year", type=int, required=True); command.add_argument("--month", type=int, required=True)
     sub.add_parser("test", help="运行自动化测试")
