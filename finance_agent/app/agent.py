@@ -7,7 +7,7 @@ from .tool_registry import TOOLS, TEACHING_TOOLS, REGISTRY, handle_tool, tool_re
 from .trace import redact, write_trace, warn_trace_degraded
 from .write_coordination import WriteCoordinator
 from .updates import commit_invoice_update
-from .responses import parse_final, render_information, render_clarification, explicit_scope, render_stopped
+from .responses import parse_final, render_information, render_clarification, render_stopped
 from .persistence import ManagementIntent, ManagementTurn, ManagementProposals
 from .context import ContextBuilder, ContextLimitError, reference_hint
 from .scheduler import BudgetPolicy, TurnExecution
@@ -202,7 +202,8 @@ class Agent:
         new=Agent(self.user_id,self.db_path,self.model,self.mode,self.trace_path,self.max_requests,self.max_tools,
             self.teaching,self.context.max_chars,self.budget_policy.block_requests,self.budget_policy.max_extensions,
             self.budget_policy.max_replans,self.management_confirmation,connection)
-        scope={k:v for k,v in self.context.scope.items() if k in {'company_id','year','month'}}
+        new.context.references_blocked = self.context.references_blocked
+        scope={k:v for k,v in self.context.scope.items() if k in {'company_id','year','month','periods'}}
         if scope.get('company_id'):
             with closing(sqlite3.connect(Path(self.db_path).resolve().as_uri()+'?mode=ro',uri=True)) as c:
                 c.row_factory=sqlite3.Row
@@ -246,9 +247,7 @@ class Agent:
         if reference and reference["ok"]:
             self.context.accept_reference(reference['evidence'])
             read_results.append(("resolve_invoice_reference",reference))
-            for key in ("company_id","invoice_no","year","month"):
-                expected_scope[key] = [reference["evidence"]["scope"][key]]
-            self.context.scope.update({key:value for key,value in expected_scope.items() if key!="invoice_no"})
+            expected_scope = dict(self.context.scope)
             reference_context = {**reference_hint(text),"scope":expected_scope,
                                  "anchor_id":reference["evidence"]["reference"]["anchor_id"]}
             self.trace("reference.resolved",reference)

@@ -79,6 +79,7 @@ def _candidates(connection, user_id, scope=None, anchor_id="",authorized_only=Tr
     scope = scope or {}
     return [row for row in rows if all(key not in scope or row[key] in scope[key]
             for key in ("company_id","year","month")) and
+            ("periods" not in scope or (row["year"], row["month"]) in scope["periods"]) and
             (not authorized_only or check_permission(connection,user_id,row["company_id"],"read").allowed)]
 
 
@@ -129,9 +130,13 @@ def resolve_reference(path, user_id, ordinal, scope=None, anchor_id=""):
             return result("NOT_FOUND",evidence=evidence,error="已展示对象当前不存在，请重新列出")
         evidence["scope"].update(year=int(current["invoice_date"][:4]),month=int(current["invoice_date"][5:7]))
         # 日期发生变化也不把旧列表月份冒充当前月份。
-        expected = {"year":[row["year"]],"month":[row["month"]],**scope}
-        if any(key in expected and expected[key] != [None] and value not in expected[key]
-               for key,value in evidence["scope"].items()):
+        current_scope = evidence["scope"]
+        current_period = (current_scope["year"], current_scope["month"])
+        anchor_changed = any(row[key] is not None and current_scope[key] != row[key]
+                             for key in ("year", "month"))
+        scope_changed = any(key in scope and value not in scope[key]
+                            for key, value in current_scope.items())
+        if anchor_changed or scope_changed or ("periods" in scope and current_period not in scope["periods"]):
             return result("SCOPE_MISMATCH",evidence=evidence,error="当前对象已不在引用范围，请重新列出")
         return result("SUCCESS",current,evidence)
     except sqlite3.Error:

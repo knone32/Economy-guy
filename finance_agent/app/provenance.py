@@ -29,6 +29,12 @@ def validate_scope(proof,user_id,name,args,partial=False):
     missing=[key for key in required if (key in args or not partial) and
              (not proof.values.get(key) or proof.sources.get(key) not in SOURCES)]
     conflicts=[key for key in required if key in args and key not in missing and args[key] not in proof.values[key]]
+    if 'year' in required and 'year' in args and 'month' in args and not missing:
+        periods = proof.values.get('periods')
+        if not periods or proof.sources.get('periods') not in SOURCES:
+            missing = ['year', 'month']
+        elif (args['year'], args['month']) not in periods:
+            conflicts = list(dict.fromkeys([*conflicts, 'year', 'month']))
     if conflicts:
         return {'status':'SCOPE_MISMATCH','error':'参数与可信范围不一致','evidence':{'conflicting_fields':conflicts,'scope':args,'provenance':proof.metadata()}}
     if missing:

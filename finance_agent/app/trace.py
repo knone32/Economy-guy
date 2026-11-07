@@ -49,6 +49,7 @@ def redact(value):
                 return value if cleaned==parsed else json.dumps(cleaned,ensure_ascii=False)
         except (ValueError,TypeError):
             pass
+        value=re.sub(r'(?i)(\b(?:set-cookie|cookie)[ \t]*:)[^\r\n]*',r'\1 [REDACTED]',value)
         value=re.sub(r'https?://[^\s\"\'<>]+',_url,value)
         value=re.sub(r'(?i)\b(?:authorization|proxy-authorization)\s*[:=]\s*[^\r\n,;]+','Authorization: [REDACTED]',value)
         value=re.sub(r'(?i)\b(?:reasoning_content|reasoning|thinking|chain_of_thought)\s*[:=]\s*("(?:\\.|[^"\\])*"|\'[^\']*\'|[^\r\n;]+)','reasoning_content=[PRIVATE_PROTOCOL_HIDDEN]',value)

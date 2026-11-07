@@ -3,10 +3,10 @@ import json
 import re
 import sqlite3
 from .references import reference_catalog, invalidate_references, resolve_reference, record_display
-from .responses import explicit_scope
+from .responses import explicit_scope, scope_mismatch
 from .tasks import list_tasks
 from .preferences import manage_preference
-from .provenance import ScopeProof
+from .provenance import SOURCES, ScopeProof
 
 
 class ContextLimitError(ValueError):
@@ -71,6 +71,9 @@ class ContextBuilder:
             except sqlite3.Error:
                 self.diagnostics.append("references_unavailable")
         conflict = any(key in previous and not set(values).issubset(previous[key]) for key,values in explicit.items())
+        date_fields = {"year", "month"}
+        if "periods" in previous and "periods" in explicit:
+            conflict = conflict or explicit["periods"] != previous["periods"]
         if conflict or reset:
             # 范围槽位独立更正；旧对象/引用失效，不丢失其他已明确槽位。
             self.scope = {} if reset else {key:value for key,value in previous.items()
@@ -85,12 +88,19 @@ class ContextBuilder:
                 # 不能确认失效时也不能继续解析旧锚点。
                 self.diagnostics.append("reference_invalidation_failed")
                 self.references_blocked = True
+        if date_fields.intersection(explicit) or not date_fields.issubset(self.scope):
+            self.scope.pop("periods", None)
+            self.sources.pop("periods", None)
         self.scope.update(explicit)
         self.sources.update({key:'user_current' for key in explicit})
+        if len(date_fields.intersection(explicit)) == 1 and all(
+                len(self.scope.get(key, [])) == 1 and self.sources.get(key) in SOURCES for key in date_fields):
+            self.scope["periods"] = [(self.scope["year"][0], self.scope["month"][0])]
+            self.sources["periods"] = "user_current"
         task_ids=re.findall(r'(?<![a-fA-F0-9])[a-fA-F0-9]{32}(?![a-fA-F0-9])',text)
         if task_ids:self.scope['task_id']=task_ids;self.sources['task_id']='user_current'
         if re.search(r'本月|今年|去年|上个月|下个月|上月|下月|最近',text) and not ('year' in explicit and 'month' in explicit):
-            for key in ('year','month'):
+            for key in ('year','month','periods'):
                 self.scope.pop(key,None);self.sources.pop(key,None)
         if reference_hint(text) and "invoice_no" not in explicit:
             self.scope.pop("invoice_no",None)
@@ -105,6 +115,8 @@ class ContextBuilder:
         """仅在真实引用解析成功后绑定来源。"""
         for key,value in evidence['scope'].items():
             self.scope[key]=[value];self.sources[key]='trusted_reference'
+        self.scope["periods"] = [(evidence["scope"]["year"], evidence["scope"]["month"])]
+        self.sources["periods"] = "trusted_reference"
 
     def accept_task(self,outcome):
         """重新验证归属的实际任务范围，不恢复写入确认。"""
@@ -116,10 +128,15 @@ class ContextBuilder:
         if outcome['status']=='SUCCESS' and task and task.get('user_id')==self.user_id:
             # 仅查询任务列表不能把模型挑选的任务年月洗成查询许可。
             if not outcome.get('evidence',{}).get('management_confirmation') and task['task_id'] not in self.scope.get('task_id',[]):return
-            if any(key in self.sources and task[key] not in self.scope.get(key,[]) for key in ('company_id','year','month')):return
+            trusted = {key: self.scope[key] for key in self.sources if key in self.scope}
+            if scope_mismatch(trusted, task):
+                return
             for key in ('company_id','year','month'):
                 if key not in self.sources:
                     self.scope[key]=[task[key]];self.sources[key]='current_sqlite'
+            if "periods" not in trusted:
+                self.scope["periods"] = [(task["year"], task["month"])]
+                self.sources["periods"] = "current_sqlite"
 
     def resolve(self,text):
         """引用先由Harness对照可信锚点解析，不让模型编造业务键。"""
@@ -178,7 +195,7 @@ class ContextBuilder:
                 data["origins"]["tasks"] = "sqlite.tasks/list_tasks"
                 data["tasks"] = [{key:task[key] for key in ("task_id","company_id","year","month","status","context")}
                     for task in (tasks.get("data") or []) if task["status"] in {"ACTIVE","WAITING_USER","PAUSED"}
-                    and all(key not in self.scope or task[key] in self.scope[key] for key in ("year","month"))]
+                    and not scope_mismatch(self.scope, task)]
                 preferences = manage_preference(self.db_path,self.user_id,company,"list")
                 data["origins"]["preferences"] = "sqlite.preferences/manage_preference(list)"
                 data["preferences"] = [{"company_id":row["company_id"],"key":row["preference_key"],"value":row["value"]}

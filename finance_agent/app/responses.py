@@ -28,26 +28,44 @@ def explicit_scope(text, include_update_aliases=False):
     if include_update_aliases:
         # 官方初赛明确简称；仅写入目标使用，不泛化为自然语言指代解析。
         companies += [company for alias,company in (("甲企业","C001"),("乙企业","C002")) if alias in text]
-    periods = re.findall(r"(?<!\d)(\d{4})\s*(?:年|[-/])\s*(1[0-2]|0?[1-9])(?:月|(?=\D|$))",text)
+    names = {'一':1,'二':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9,'十':10,'十一':11,'十二':12}
+    month_number = r"1[0-2]|0?[1-9]"
+    month_literal = month_number + r"|十一|十二|[一二三四五六七八九十]"
+    date_pattern = re.compile(
+        rf"(?<!\d)(\d{{4}})\s*(?:年(?:\s*的)?\s*({month_literal})\s*月|[-/]\s*({month_number})(?!\d))"
+    )
+    periods = set()
+    for year, chinese, numeric in date_pattern.findall(text):
+        month = chinese or numeric
+        periods.add((int(year), int(month) if month.isdigit() else names[month]))
     result = {}
     if companies:
         result["company_id"] = sorted({value.upper() for value in companies})
     if invoices:
         result["invoice_no"] = sorted({value.upper() for value in invoices})
+    # 完整字面量保留配对，独立槽位只用于唯一补齐或追问。
+    remaining = date_pattern.sub(" ", text)
+    years = {int(y) for y in re.findall(r"(?<!\d)(\d{4})\s*年", remaining)}
+    months = {int(m) if m.isdigit() else names[m]
+              for m in re.findall(rf"(?<![\d一二三四五六七八九十])({month_literal})\s*月", remaining)}
+    if not periods and len(years) == len(months) == 1:
+        periods.add((next(iter(years)), next(iter(months))))
     if periods:
-        result["year"] = sorted({int(year) for year, month in periods})
-        result["month"] = sorted({int(month) for year, month in periods})
-    # 独立年月可同句或跨轮补齐，不以系统日期补年份。
-    years=re.findall(r'(?<!\d)(\d{4})\s*年',text)
-    names={'一':1,'二':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9,'十':10,'十一':11,'十二':12}
-    months=re.findall(r'(?<![\d一二三四五六七八九十])(1[0-2]|0?[1-9]|十一|十二|[一二三四五六七八九十])\s*月',text)
-    if years:result['year']=sorted({int(y) for y in years})
-    if months:result['month']=sorted({int(m) if m.isdigit() else names[m] for m in months})
+        result["periods"] = sorted(periods)
+    years.update(year for year, month in periods)
+    months.update(month for year, month in periods)
+    if years:
+        result["year"] = sorted(years)
+    if months:
+        result["month"] = sorted(months)
     return result
 
 
 def scope_mismatch(expected, actual):
     """只比较双方都有明确字段的范围，不猜测中文别名或跨轮指代。"""
+    if "periods" in expected and "year" in actual and "month" in actual:
+        if (actual["year"], actual["month"]) not in expected["periods"]:
+            return True
     return any(key in actual and actual[key] not in values for key,values in expected.items())
 
 
