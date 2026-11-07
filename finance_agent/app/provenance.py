@@ -25,12 +25,16 @@ def validate_scope(proof,user_id,name,args,partial=False):
     if not isinstance(proof,ScopeProof) or proof.actor!=user_id:
         return {'status':'DENIED','error':'可信范围身份不一致','evidence':{}}
     accepted_sources = SOURCES
-    if name in MONTHLY and proof.read_workspace:
-        proof = ScopeProof(proof.actor, {**proof.values, **proof.read_workspace},
-                           {**proof.sources, **dict.fromkeys(proof.read_workspace, "workspace_read")})
+    directory = name == 'list_invoice_directory'
+    filtered = directory and args.get('year', 0) != 0 and args.get('month', 0) != 0
+    if (name in MONTHLY or directory) and proof.read_workspace:
+        workspace = proof.read_workspace if not directory or filtered else {
+            'company_id': proof.read_workspace['company_id']}
+        proof = ScopeProof(proof.actor, {**proof.values, **workspace},
+                           {**proof.sources, **dict.fromkeys(workspace, "workspace_read")})
         accepted_sources = SOURCES | {"workspace_read"}
     required=['company_id']
-    if name in MONTHLY or (name=='manage_task' and args.get('action') in {'create','correct'}):required+=['year','month']
+    if name in MONTHLY or filtered or (name=='manage_task' and args.get('action') in {'create','correct'}):required+=['year','month']
     if name in {'get_invoice','prepare_invoice_update'}:required+=['invoice_no']
     missing=[key for key in required if (key in args or not partial) and
              (not proof.values.get(key) or proof.sources.get(key) not in accepted_sources)]

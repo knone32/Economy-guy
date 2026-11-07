@@ -221,6 +221,82 @@ class P0Test(unittest.IsolatedAsyncioTestCase):
             await self.await_state(pilot, lambda: not app.busy)
             self.assertEqual(app.records[-1][1][0]["scope"]["company_id"], "C001")
 
+    async def test_agent_invoice_directory_detail_and_back(self):
+        directory = tool("list_invoice_directory", {"company_id": "C001", "year": 0, "month": 0, "page": 1})
+        detail = tool("get_invoice", {"company_id": "C001", "invoice_no": "F002"})
+        app = self.app([directory, FINAL, detail, FINAL])
+        async with app.run_test(size=(80, 24)) as pilot:
+            await self.sign_in(app, pilot)
+            app.read_workspace = ("C001", 2026, 8)
+            await self.send(app, pilot, "列出甲企业目前所有发票。")
+            await self.await_state(pilot, lambda: bool(app.records) and not app.busy)
+            self.assertEqual(app.chat_invoice_route, ("C001", 0, 0, 1))
+            self.assertEqual(app.records[-1][1][0]["status"], "SUCCESS")
+            await self.press_button(app, pilot, "#chat-invoices")
+            await self.await_state(pilot, lambda: bool(app.screen.query("#invoice-table")))
+            table = app.screen.query_one("#invoice-table", DataTable)
+            self.assertEqual(table.row_count, 10)
+            await self.press_button(app, pilot, "#invoice-next")
+            await self.await_state(pilot, lambda: any(row["invoice_no"] == "F002" for row in app.invoice_rows))
+            await self.await_state(pilot, lambda: bool(app.screen.query("#invoice-table")))
+            table = app.screen.query_one("#invoice-table", DataTable)
+            row = next(i for i, row in enumerate(app.invoice_rows) if row["invoice_no"] == "F002")
+            table.move_cursor(row=row)
+            table.focus()
+            await pilot.press("enter")
+            await self.await_state(pilot, lambda: isinstance(app.screen, Choices))
+            self.assertIn("开票日期", app.screen.choices[0][0])
+            self.assertIn("F002", app.screen.choices[0][0])
+            await pilot.press("escape")
+            await self.await_state(pilot, lambda: bool(app.screen.query("#invoice-table")))
+            self.assertIs(app.screen.query_one("#invoice-table"), table)
+            await self.press_button(app, pilot, "#go-chat")
+            await self.send(app, pilot, "告诉我甲企业 F002 的发票详情。")
+            await self.await_state(pilot, lambda: len(app.records) == 2 and not app.busy)
+            self.assertEqual(app.records[-1][1][0]["status"], "SUCCESS")
+            log = app.workspace_widget("#chat-log")
+            displayed = "\n".join(line.text for line in log.lines)
+            for field in ("发票编号", "F002", "开票日期", "销售方", "项目", "价税合计", "用途", "备注"):
+                self.assertIn(field, displayed)
+
+    async def test_direct_task_confirms_and_rechecks_actor(self):
+        app = self.app()
+        async with app.run_test(size=(90, 26)) as pilot:
+            await self.sign_in(app, pilot, "U002")
+            await self.press_button(app, pilot, "#go-tasks")
+            await self.press_button(app, pilot, "#new-task")
+            await self.await_state(pilot, lambda: isinstance(app.screen, Choices))
+            self.assertIn("没有符合权限", app.screen.title_text)
+            await pilot.press("escape")
+            app.logout()
+            await self.await_state(pilot, lambda: bool(app.screen.query("#login-user")))
+            await self.sign_in(app, pilot, "U001")
+            await self.press_button(app, pilot, "#go-tasks")
+            for approve in (False, True):
+                await self.press_button(app, pilot, "#new-task")
+                await self.press_button(app, pilot, "#choice-0")
+                await self.await_state(pilot, lambda: bool(app.screen.query("#period-month")))
+                app.screen.query_one("#period-month", Select).value = "2026-09"
+                await self.press_button(app, pilot, "#choose-listed")
+                await self.await_state(pilot, lambda: bool(app.screen.query("#task-note")))
+                app.screen.query_one("#task-note", Input).value = CREATE
+                await self.press_button(app, pilot, "#review-task")
+                await self.await_state(pilot, lambda: isinstance(app.screen, Approval) and app.screen.focused)
+                self.assertEqual(app.screen.focused.id, "cancel")
+                self.assertIn("当前缺失用途 5 张", app.screen.body)
+                self.assertEqual(list_tasks(self.path, "U001", "C001")["data"], [])
+                if approve:
+                    await pilot.press("tab", "enter")
+                else:
+                    await pilot.press("escape")
+                await self.await_state(pilot, lambda: not isinstance(app.screen, Approval))
+            await self.await_state(pilot, lambda: bool(app.screen.query("#linked-finance")))
+            task, = list_tasks(self.path, "U001", "C001")["data"]
+            self.assertEqual(task["context"]["note"], CREATE)
+            self.assertEqual(list_tasks(self.path, "U002", "C001")["data"], [])
+            self.assertEqual(self.purpose(), (None, 0))
+            self.assertIsNone(app.agent)
+
     def saved_task(self):
         return manage_task(self.path, "U001", "C001", "create", note=CREATE,
                            intent=ManagementIntent("U001", "task", CREATE, "create"))["data"]["task"]

@@ -20,6 +20,7 @@ from .provenance import MONTHLY, validate_scope
 MONTH = {"company_id": "string", "year": "integer", "month": "integer"}
 REGISTRY = {
     "list_invoices": (queries.list_invoices, MONTH),
+    "list_invoice_directory": (queries.invoice_directory, {**MONTH, "page": "integer"}),
     "get_invoice": (queries.get_invoice, {"company_id": "string", "invoice_no": "string"}),
     "list_bank_transactions": (queries.list_bank_transactions, MONTH),
     "invoice_total": (finance.invoice_total, MONTH),
@@ -44,12 +45,13 @@ TOOLS = [{"type": "function", "function": {"name": name,
          for name, (_, fields) in REGISTRY.items()]
 TEACHING_TOOLS = TOOLS
 TOOLS = [tool for tool in TOOLS if tool["function"]["name"] in {
-    "get_finance_summary", "list_invoices", "get_invoice", "list_bank_transactions",
+    "get_finance_summary", "list_invoices", "list_invoice_directory", "get_invoice", "list_bank_transactions",
     "check_missing_purpose", "get_applicable_rules", "prepare_invoice_update",
     "list_tasks", "manage_task", "manage_preference", "resolve_invoice_reference", "set_schedule"}]
 DESCRIPTIONS = {
     "get_finance_summary":"发票和银行收支综合查询首选：一次返回指定企业年月的价税合计/张数、收入/支出总额/分别条数和R001版本；补充月份后沿用原综合目标。无记录明确返回零，无需额外计划。",
-    "list_invoices":"列出指定企业年月的当前发票；返回顺序按日期及发票号。",
+    "list_invoices":"查询指定企业月份的发票明细；大列表优先使用分页目录。",
+    "list_invoice_directory":"分页列出企业发票目录，返回真实总数；每页10条，page从1开始。全企业目录使用year=0、month=0，无需追问月份。用户明确选择年月时提供完整配对。",
     "get_invoice":"企业编号和发票号联合定位当前发票，不猜测模糊指代。",
     "list_bank_transactions":"查询指定企业年月的银行流水，只读，不推断发票已付款。",
     "check_missing_purpose":"按唯一有效RuleDecision检查2026年9月必填用途缺失；备注不代替用途。",
@@ -62,7 +64,7 @@ DESCRIPTIONS = {
     "set_schedule":"仅真正多步依赖时提出本轮粗计划；不是长期任务或授权。再次调用为一次显式重规划，不创造进展或预算。简单查询直接调用业务工具。",
 }
 PARAMETERS = {"company_id":"企业编号，例如C001；不能凭空猜测。", "year":"明确的业务年份。",
-              "month":"业务月份，1到12。", "invoice_no":"与企业共同确定发票的精确编号。",
+              "month":"业务月份，1到12。", "page":"目录页码，从1开始。", "invoice_no":"与企业共同确定发票的精确编号。",
               "field":"只允许purpose或remark。", "new_value":"用户明确的新内容，空字符串表示清空。",
               "rule_type":"amount、purpose或bank。", "business_date":"YYYY-MM-DD业务日期。",
               "action":"该管理工具支持的操作名称。", "task_id":"已有任务ID；create使用空字符串。",
@@ -75,6 +77,8 @@ for tool in TOOLS:
     tool["function"]["description"] = DESCRIPTIONS[tool["function"]["name"]]
     for key, schema in tool["function"]["parameters"]["properties"].items():
         schema["description"] = PARAMETERS[key]
+        if tool["function"]["name"] == "list_invoice_directory" and key in {"year", "month"}:
+            schema["description"] += " 不筛选账期时，年份和月份都传0。"
 for tool in TOOLS:
     if tool["function"]["name"] == "prepare_invoice_update":
         tool["function"]["parameters"]["properties"]["field"]["enum"] = ["purpose", "remark"]
@@ -267,7 +271,8 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
                         else:
                             target[key] = expected_scope[key]
             return prepare_invoice_update(db_path, update_session, **args, expected_scope=target)
-        if "month" in args:
+        unfiltered = name == "list_invoice_directory" and (args["year"], args["month"]) == (0, 0)
+        if "month" in args and not unfiltered:
             queries._check_month(args["year"], args["month"])
         path = Path(db_path).resolve()
         connection = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
@@ -292,7 +297,13 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
                 if business_date.isoformat() != args["business_date"]:
                     raise ValueError("business_date必须为严格YYYY-MM-DD日期")
                 actual_scope = {**args,"year":business_date.year,"month":business_date.month}
-            if name in MONTHLY and provenance and provenance.read_workspace:
+            if name == "list_invoice_directory":
+                if unfiltered and expected_scope and {"year", "month", "periods"} & expected_scope.keys():
+                    return tool_result("SCOPE_MISMATCH", error="请求限定了账期，不能查询全企业目录。")
+                actual_scope = {"company_id": args["company_id"]}
+                if not unfiltered:
+                    actual_scope.update(year=args["year"], month=args["month"])
+            if (name in MONTHLY or (name == "list_invoice_directory" and not unfiltered)) and provenance and provenance.read_workspace:
                 expected_scope = {**(expected_scope or {}), **provenance.read_workspace}
             if expected_scope and scope_mismatch(expected_scope, actual_scope):
                 return tool_result("SCOPE_MISMATCH", evidence={"scope":actual_scope,"requested_scope":expected_scope,"source":"request_validation"},
@@ -368,7 +379,9 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
                         direction = "收入" if name == "bank_income_total" else "支出"
                         rows = [r for r in rows if r["direction"] == direction]
                     empty = not rows
-            evidence = {"source": "current_sqlite", "scope": args}
+            evidence = {"source": "current_sqlite", "scope": actual_scope}
+            if name == "list_invoice_directory":
+                return tool_result("SUCCESS" if data["rows"] else "NO_DATA", data, evidence)
             if name in {'list_invoices','list_bank_transactions'}:
                 # 与明细同一已鉴权快照，复用现有金额服务；渲染按工具范围选取，不跨企业拼加。
                 evidence['finance_summary']=finance.get_finance_summary(connection,user_id,**args)

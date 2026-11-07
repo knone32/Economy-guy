@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from app.cli_workspaces import BASE_COLUMNS, _snapshot, missing_migrations, rules_available, upgrade_workspace, workspace_users
 from app.importer import initialize_database
-from app.queries import QueryError, available_periods
+from app.queries import QueryError, available_periods, invoice_directory
 from app.stage2_schema import open_existing
 from app.tui_local import recent_workbooks, remember_workbook, startup_workbook
 
@@ -71,3 +71,23 @@ class FinalWorkbookTests(unittest.TestCase):
             db.execute("DELETE FROM invoices WHERE company_id='C001'")
             db.execute("DELETE FROM bank_transactions WHERE company_id='C001'")
             self.assertEqual(available_periods(db, "U001", "C001"), [])
+
+
+    def test_directory_paginates_stably_and_reauthorizes(self):
+        with closing(open_existing(self.db)) as db, db:
+            db.execute("""INSERT INTO invoices SELECT company_id,'F000', '2025-01-01',seller_name,
+                        item_name,amount_cents,purpose,remark FROM invoices
+                        WHERE company_id='C001' AND invoice_no='F002'""")
+            first = invoice_directory(db, "U001", "C001", 0, 0, 1)
+            second = invoice_directory(db, "U001", "C001", 0, 0, 2)
+            self.assertEqual((first["total"], second["total"]), (21, 21))
+            self.assertEqual(first["rows"][0]["invoice_no"], "F000")
+            third = invoice_directory(db, "U001", "C001", 0, 0, 3)
+            combined = first["rows"] + second["rows"] + third["rows"]
+            self.assertEqual(len(combined), first["total"])
+            keys = [(row["invoice_date"], row["invoice_no"]) for row in combined]
+            self.assertEqual(keys, sorted(set(keys)))
+            self.assertEqual(invoice_directory(db, "U001", "C001", 2026, 9, 1)["total"], 10)
+            self.assertEqual(invoice_directory(db, "U001", "C001", 2024, 9, 1)["rows"], [])
+            with self.assertRaises(QueryError):
+                invoice_directory(db, "U002", "C002", 0, 0, 1)

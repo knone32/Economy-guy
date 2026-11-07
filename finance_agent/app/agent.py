@@ -23,7 +23,7 @@ SYSTEM = """你是财税助手。甲企业=C001，乙企业=C002。需要业务�
 用户只补充企业或年月时，应继续最近未完成的查询目标，不能把原目标缩减成明细。
 context_data的prior_query_tools只是历史查询类型线索：当前轮仅更正范围时可延续查询目标，不能继承旧金额、范围或修改许可。
 发票与银行收支的综合概览使用get_finance_summary，一次取得价税合计/数量、收入/支出/条数及R001；
-list_invoices/list_bank_transactions用于需要逐条明细时，不用明细代替用户要求的完整汇总。
+list_invoice_directory用于企业发票目录（所有发票无需月份），每次只返回一页；get_invoice用于已明确企业和发票号的详情。list_invoices/list_bank_transactions用于指定月份明细。不要用明细代替完整汇总。
 仅用户明确本次修改目标、purpose/remark与新内容时可调用prepare_invoice_update。模糊目标先追问，不猜用途。
 Prepare只是草稿；等待可信CLI确认，不能声称已保存。禁止调用Commit或自行确认。
 工具 status=NO_DATA 表示无记录，金额为0.00；DENIED/INVALID_ARGUMENTS/ERROR不能当作零或成功。金额单位元。
@@ -291,6 +291,14 @@ class Agent:
             reference_context = {**reference_hint(text),"scope":expected_scope,
                                  "anchor_id":reference["evidence"]["reference"]["anchor_id"]}
             self.trace("reference.resolved",reference)
+        from .responses import explicit_scope
+        import re
+        explicit = explicit_scope(text, include_update_aliases=True)
+        has_dates = bool({"year", "month", "periods"} & explicit.keys()) or bool(
+            re.search(r"今年|去年|明年|本月|上月|下月|上个月|下个月|最近|近[一二三四五六七八九十0-9]+", text))
+        all_invoices = not reference and not has_dates and bool(
+            re.search(r"(?:所有|全部|全量|完整)的?发票|发票(?:的)?(?:完整目录|全部目录)", text))
+        exact_invoice = not reference and not has_dates and {"company_id", "invoice_no"} <= explicit.keys()
         read_workspace = self._workspace_read_scope(read_workspace, text) if not (allow_prepare or management or reference) else None
         # 动作由可信CLI命令指定；模型不能把只读意图变成创建/删除。
         if management in {'task','preference'} and management_action:
@@ -426,8 +434,15 @@ class Agent:
                         result = tool_result(blocked,error="重复调用无进展或工具预算达到上限，未再次执行")
                         stop = True
                     else:
+                        tool_scope = expected_scope
+                        if ((fn.get("name") == "list_invoice_directory" and all_invoices) or
+                                (fn.get("name") == "get_invoice" and exact_invoice)):
+                            tool_scope = {key: values for key, values in expected_scope.items()
+                                          if key not in {"year", "month", "periods"}}
+                        elif fn.get("name") == "list_invoice_directory":
+                            tool_scope = {**self.context.scope, **(read_workspace or {}), **expected_scope}
                         result = handle_tool(fn.get("name"), fn.get("arguments"), self.user_id, self.db_path, self.update_session,
-                                             allowed_tools=permitted, expected_scope=expected_scope, management_intent=management_intent,
+                                             allowed_tools=permitted, expected_scope=tool_scope, management_intent=management_intent,
                                              reference_context=reference_context,execution=execution,
                                              management_confirmation=confirm_proposal if self.management_confirmation else None,
                                              management_proposals=self.management_proposals if management is None else None,

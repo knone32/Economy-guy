@@ -85,3 +85,5 @@ Dialog > VerticalScroll, Dialog > Vertical {
 
 #query-scope { height: 1; text-align: left; }
 #workbook-tree { height: 1fr; }
+
+#chat-invoices { text-align: left; }

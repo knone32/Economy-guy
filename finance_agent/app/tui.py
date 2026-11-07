@@ -18,13 +18,15 @@ from .agent import Agent
 from .cli_chat import safe_text, turn_tools
 from .cli_workspaces import company_access, invoice_history, missing_migrations, workspace_users
 from .model_config import ProfileError, load_profiles, resolve_connection
-from .queries import available_periods, list_invoices
+from .persistence import ManagementIntent, ManagementTurn, confirm_management
+from .queries import QueryError, available_periods, get_invoice, invoice_directory
+from .rules import RuleError, check_missing_purpose
 from .stage2_schema import open_existing
-from .tasks import list_tasks, task_details
+from .tasks import list_tasks, manage_task, task_details
 from .trace import redact
 from .tui_intent import edit_turn
 from .tui_local import remember_workbook, startup_workbook
-from .tui_screens import Approval, Choices, Login, Settings, TextAction
+from .tui_screens import Approval, Choices, Login, Settings, TaskNote, TextAction
 
 ROOT = Path(__file__).resolve().parents[1]
 STATUS = {
@@ -95,6 +97,9 @@ class AgentWorkspace(App):
         self.supplement = False
         self.task_route = None
         self.task_focus = None
+        self.invoice_route = None
+        self.chat_invoice_route = None
+        self.invoice_page = 1
         self.session_epoch = 0
         self.records = []
         self.model_requests = 0
@@ -117,6 +122,7 @@ class AgentWorkspace(App):
                     with Horizontal(id="ai-guide"):
                         yield Static("", id="ai-guide-text", markup=False)
                         yield TextAction("配置 AI 模型", id="configure-ai", variant="primary")
+                    yield TextAction("查看本轮发票目录", id="chat-invoices", classes="text-link")
                     yield Static("发送消息", id="composer-label", markup=False)
                     yield Static("", id="chat-note", markup=False)
                     yield TextAction("补充本次修改", id="supplement")
@@ -133,6 +139,7 @@ class AgentWorkspace(App):
         yield Footer()
 
     def on_mount(self):
+        self.workspace_widget("#chat-invoices").display = False
         self.db, needs_selection = startup_workbook(self.db, self.recent_path, restore=self.restore_recent)
         self.push_screen(Login(start_in_picker=needs_selection), self.signed_in)
 
@@ -197,6 +204,8 @@ class AgentWorkspace(App):
             self.agent.cancel_update()
         self.agent = None
         self.task_focus = None
+        self.chat_invoice_route = None
+        self.workspace_widget("#chat-invoices").display = False
         self.supplement = False
         self.workspace_widget("#supplement", Button).display = False
         self.session_epoch += 1
@@ -212,6 +221,7 @@ class AgentWorkspace(App):
         self.reset_agent(clear_log=True)
         self.user, self.profile, self.company, self.period, self.task_route = None, None, None, None, None
         self.read_workspace = None
+        self.invoice_route = None
         self.workspace_widget("#prompt", Input).value = ""
         self.task_links = {}
         self.invoice_rows = []
@@ -449,6 +459,10 @@ class AgentWorkspace(App):
         elif key == "query-scope":
             if not self.busy:
                 self.choose_workspace_scope()
+        elif key == "chat-invoices" and self.chat_invoice_route:
+            self.show_invoice_directory(*self.chat_invoice_route)
+        elif key == "new-task" and not self.busy:
+            self.new_task()
         elif key == "configure-ai":
             self.open_settings()
         elif key.startswith("todo-"):
@@ -458,12 +472,19 @@ class AgentWorkspace(App):
         elif key == "back-tasks":
             self.show("tasks")
         elif key == "linked-finance":
+            self.invoice_route = None
+            self.invoice_page = 1
             self.select_pane("finance")
             self.call_later(self.refresh_pane, "finance")
         elif key == "back-detail" and self.task_route:
             self.open_task(self.task_route)
         elif key == "choose-finance":
             self.choose_workspace_scope(for_finance=True)
+        elif key == "choose-finance-company":
+            self.choose_company(lambda company: self.show_invoice_directory(company, 0, 0) if company else None)
+        elif key in {"invoice-prev", "invoice-next"}:
+            self.invoice_page += 1 if key == "invoice-next" else -1
+            self.call_later(self.refresh_pane, "finance")
         elif key == "continue-task":
             self.continue_task()
         elif key == "supplement":
@@ -581,7 +602,12 @@ class AgentWorkspace(App):
                 if call is not None and outcome["status"] in {"SUCCESS", "NO_DATA"}:
                     card = self.business_card(call["tool"], outcome.get("data"), evidence)
                     if card:
-                        cards.append(card)
+                        scope = evidence.get("scope", {})
+                        route = None
+                        if call["tool"] in {"list_invoice_directory", "list_invoices", "get_invoice"}:
+                            route = (scope["company_id"], scope.get("year", 0), scope.get("month", 0),
+                                     outcome["data"]["page"] if call["tool"] == "list_invoice_directory" else 1)
+                        cards.append((*card, route))
                 if outcome["status"] == "SUCCESS" and evidence.get("management_confirmation"):
                     verified.append("已按本次确认保存，业务库记录可重新查看。")
             self.call_from_thread(self.finish_turn, answer, calls, receipt, verified, cards)
@@ -592,15 +618,35 @@ class AgentWorkspace(App):
 
     @staticmethod
     def business_card(tool, data, evidence):
-        if evidence.get("source") != "current_sqlite" or not isinstance(data, dict):
+        if evidence.get("source") != "current_sqlite":
+            return None
+        if tool == "list_invoices" and isinstance(data, list):
+            return ("发票目录", f"本账期共 {len(data)} 张\n" + AgentWorkspace.invoice_lines(data[:10]))
+        if not isinstance(data, dict):
             return None
         if tool == "get_finance_summary":
             return ("账期合计", "\n".join(
                 f"{label}　¥{data[key + '_total']} · {data[key + '_count']} 条"
                 for label, key in (("发票价税合计", "invoice"), ("银行收入", "bank_income"), ("银行支出", "bank_expense"))))
+        if tool == "get_invoice" and data:
+            return ("发票详情", AgentWorkspace.invoice_text(data))
+        if tool == "list_invoice_directory":
+            rows = data["rows"]
+            header = f"共 {data['total']} 张 · 第 {data['page']} 页 · 每页 {data['page_size']} 张"
+            return ("发票目录", header + "\n" + AgentWorkspace.invoice_lines(rows))
         if tool == "check_missing_purpose":
             return ("用途检查", f"当前缺失用途 {data['count']} 张")
         return None
+
+    @staticmethod
+    def invoice_lines(rows):
+        return "\n".join(f"{row['invoice_date']}　{row['invoice_no']}　¥{row['amount']}" for row in rows) or "本页没有发票。"
+
+    @staticmethod
+    def invoice_text(row):
+        return (f"发票编号　{row['invoice_no']}\n开票日期　{row['invoice_date']}\n"
+                f"销售方　{row['seller_name']}\n项目　{row['item_name']}\n价税合计　¥{row['amount']}\n"
+                f"用途　{row['purpose'] or '未填写'}\n备注　{row['remark'] or '（无）'}")
 
     def finish_turn(self, answer, calls, receipt, verified, cards):
         response = self.agent.last_response
@@ -617,8 +663,12 @@ class AgentWorkspace(App):
                                  if not line.startswith(("本轮查询：", "本轮检查：")))
         if readable:
             self.chat_message("Agent", readable)
-        for title, text in cards:
+        self.chat_invoice_route = None
+        for title, text, route in cards:
             self.chat_message(f"业务核验 / {title}", text)
+            if route:
+                self.chat_invoice_route = route
+        self.workspace_widget("#chat-invoices").display = self.chat_invoice_route is not None
         for detail in verified:
             self.chat_message("业务回执", detail)
         if receipt:
@@ -675,6 +725,9 @@ class AgentWorkspace(App):
         if not self.user:
             return
         self.task_route = None
+        if page == "finance":
+            self.invoice_route = None
+            self.invoice_page = 1
         self.select_pane(page)
         self.update_header()
         if page == "chat":
@@ -702,7 +755,7 @@ class AgentWorkspace(App):
         self.task_links = {}
         if self.task_route:
             return self.task_detail_widgets(self.task_route)
-        widgets = []
+        widgets = [TextAction("新建待办", id="new-task", variant="primary")]
         for company in company_access(self.db, self.user):
             if not company["read"]:
                 continue
@@ -713,7 +766,70 @@ class AgentWorkspace(App):
                 widgets.append(TextAction(Text(safe_text(
                     f"{company['name']} · {task['year']:04d}-{task['month']:02d} 发票用途"
                     f" · {TASK_STATUS.get(task['status'], '未知')}")), id=key))
-        return widgets or [Static("当前账号没有可查看的待办。可在对话中提出保存缺失用途待办。", markup=False)]
+        if len(widgets) == 1:
+            widgets.append(Static("当前账号没有可查看的待办。", markup=False))
+        return widgets
+
+    def new_task(self):
+        self.choose_company(lambda company: self.select_period(
+            company, lambda period: self.task_note(company, period) if period else None,
+            actual_only=True) if company else None, modify=True)
+
+    def task_feedback(self, message):
+        self.push_screen(Choices(message, []))
+
+    def task_note(self, company, period):
+        try:
+            with closing(open_existing(self.db, readonly=True)) as db, db:
+                db.execute("BEGIN")
+                check = check_missing_purpose(db, self.user, company, *period)
+        except (OSError, ValueError, sqlite3.Error, RuleError):
+            self.task_feedback("无法核对用途，请检查当前账簿、权限和适用规则。")
+            return
+        if not check["count"]:
+            self.task_feedback("该账期没有待补用途的发票。")
+            return
+        title = f"{self.company_name(company)}（{company}） · {period[0]:04d}-{period[1]:02d}"
+        progress = f"当前缺失用途 {check['count']} 张"
+        self.push_screen(TaskNote(title, progress),
+                         lambda note: self.preview_task(company, period, title, progress, note) if note else None)
+
+    def preview_task(self, company, period, title, progress, note):
+        actor, path, epoch = self.user, self.db, self.session_epoch
+        intent = ManagementIntent(actor, "task", note, "create", turn=ManagementTurn(actor))
+        params = {"company_id": company, "action": "create", "year": period[0], "month": period[1], "note": note}
+        try:
+            outcome = manage_task(path, actor, **params, intent=intent)
+        except (OSError, ValueError, sqlite3.Error):
+            self.task_feedback("无法核对待办，请检查账簿。")
+            return
+        if outcome["status"] != "WAITING_CONFIRMATION":
+            self.task_feedback(outcome["error"] or status_label(outcome["status"]))
+            return
+
+        def save(yes):
+            try:
+                if yes is not True or self.busy or (self.user, self.db, self.session_epoch) != (actor, path, epoch):
+                    return
+                approved = confirm_management(intent, outcome["data"])
+                saved = manage_task(path, actor, **params, intent=approved)
+                if saved["status"] != "SUCCESS":
+                    self.task_feedback(saved["error"] or status_label(saved["status"]))
+                    return
+                route = (company, saved["data"]["task"]["task_id"])
+                verified = task_details(path, actor, *route)
+                self.open_task(route)
+                if verified["ok"]:
+                    self.notify("待办已保存，并从账簿重新读取。")
+                else:
+                    self.notify("已保存，当前无法回读。请检查待办列表。", severity="warning")
+            except (OSError, ValueError, sqlite3.Error):
+                self.task_feedback("暂时无法核对保存结果，请先查看待办列表。")
+            finally:
+                intent.turn.active = False
+
+        self.push_screen(Approval("确认新建待办", f"用户　{actor}\n对象　{title}\n"
+                                  f"备注　{note}\n{progress}\n尚未提交。", "确认保存"), save)
 
     def open_task(self, route):
         self.task_route = route
@@ -841,64 +957,77 @@ class AgentWorkspace(App):
 
         self.select_period(company, selected)
 
+    def show_invoice_directory(self, company, year, month, page=1):
+        self.task_route = None
+        self.invoice_route = (company, year, month)
+        self.invoice_page = page
+        self.select_pane("finance")
+        self.call_later(self.refresh_pane, "finance")
+
     def finance_widgets(self):
+        actions = [
+            TextAction("按企业查看全部", id="choose-finance-company"),
+            TextAction("按企业和账期查看", id="choose-finance"),
+        ]
+        detail = ""
         if self.task_route:
             outcome = task_details(self.db, self.user, *self.task_route)
-            back = TextAction("返回待办详情", id="back-detail")
+            actions = [TextAction("返回待办详情", id="back-detail")]
             if not outcome["ok"]:
-                return [back, Static(status_label(outcome["status"]), markup=False)]
-            data = outcome["data"]
-            task = data["task"]
-            company, period = task["company_id"], (task["year"], task["month"])
-            invoices = data["invoices"]
-            check = data["check"]
-            related = list_tasks(self.db, self.user, company)["data"] or []
-            related = [t for t in related if (t["year"], t["month"]) == period]
-            states = "、".join(TASK_STATUS[t["status"]] for t in related) or "无"
-            if check is not None:
+                return [*actions, Static(status_label(outcome["status"]), markup=False)]
+            task, check = outcome["data"]["task"], outcome["data"]["check"]
+            company, year, month = task["company_id"], task["year"], task["month"]
+            if check:
                 rule = check["rule"]
-                details = f"当前缺失用途 {check['count']} 张 · {rule['rule_id']} v{rule['version']}"
+                detail = f" · 当前缺失用途 {check['count']} 张 · {rule['rule_id']} v{rule['version']}"
             else:
-                details = data["problem"]
-            header = f"{self.company_name(company)} · {period[0]:04d}-{period[1]:02d}\n{details}\n本账号关联待办　{states}"
+                detail = f" · {outcome['data']['problem']}"
+        elif self.invoice_route:
+            company, year, month = self.invoice_route
+        elif self.company:
+            company, (year, month) = self.company, self.period or (0, 0)
         else:
-            back = TextAction("选择企业和账期", id="choose-finance")
-            if not self.company or not self.period:
-                return [back, Static("请选择企业和账期查看发票明细。", markup=False)]
-            company, period = self.company, self.period
-            with closing(open_existing(self.db, readonly=True)) as db:
+            return [*actions, Static("请选择企业查看发票目录。", markup=False)]
+        try:
+            with closing(open_existing(self.db, readonly=True)) as db, db:
                 db.execute("BEGIN")
-                invoices = list_invoices(db, self.user, company, *period)
-            header = f"{self.company_name(company)} · {period[0]:04d}-{period[1]:02d} 发票明细"
-        self.invoice_rows = invoices
+                data = invoice_directory(db, self.user, company, year, month, self.invoice_page)
+        except QueryError:
+            return [*actions, Static("当前账号没有读取该企业发票的权限。", markup=False)]
+        self.invoice_rows = data["rows"]
         table = DataTable(id="invoice-table", cursor_type="row")
-        table.add_columns("发票号", "日期", "价税合计", "用途")
-        for index, row in enumerate(invoices):
-            table.add_row(Text(safe_text(row["invoice_no"])), Text(safe_text(row["invoice_date"])),
-                          Text(safe_text(str(row["amount"])), style="#91cbff"),
-                          Text(safe_text(row["purpose"]) if row["purpose"] else "未填写",
-                               style="" if row["purpose"] else "#f3cf83"), key=str(index))
-        return [back, Static(safe_text(header), markup=False), table,
-                Static("选择一行查看明细。" if invoices else "没有符合条件的发票。",
-                       id="invoice-detail", markup=False)]
+        table.add_columns("日期", "发票号（查看）", "价税合计", "用途")
+        for index, row in enumerate(self.invoice_rows):
+            table.add_row(Text(safe_text(row["invoice_date"])), Text(safe_text(row["invoice_no"]), style="#91cbff underline"),
+                          Text(row["amount"], style="#91cbff"),
+                          Text("已填写" if row["has_purpose"] else "未填写",
+                               style="" if row["has_purpose"] else "#f3cf83"), key=str(index))
+        period = f"{year:04d}-{month:02d}" if year else "全部账期"
+        pages = max(1, (data["total"] + data["page_size"] - 1) // data["page_size"])
+        page = Horizontal(TextAction("上一页", id="invoice-prev", disabled=self.invoice_page <= 1),
+                          TextAction("下一页", id="invoice-next", disabled=self.invoice_page >= pages),
+                          classes="dialog-actions")
+        return [Horizontal(*actions, classes="dialog-actions"),
+                Static(safe_text(f"{self.company_name(company)} · {period} · 共 {data['total']} 张"
+                                 f" · {self.invoice_page}/{pages} 页{detail}"), markup=False), table, page,
+                Static("选择发票编号查看详情。" if self.invoice_rows else "本页没有发票。", markup=False)]
 
     @on(DataTable.RowSelected, "#invoice-table")
     def invoice_selected(self, event):
         index = int(event.row_key.value)
-        if not self.user or index >= len(self.invoice_rows):
+        if not self.user or not 0 <= index < len(self.invoice_rows):
             return
         row = self.invoice_rows[index]
-        from .queries import get_invoice
         try:
-            with closing(open_existing(self.db, readonly=True)) as db:
+            with closing(open_existing(self.db, readonly=True)) as db, db:
+                db.execute("BEGIN")
                 current = get_invoice(db, self.user, row["company_id"], row["invoice_no"])
         except (ValueError, OSError, sqlite3.Error):
             current = None
-        details = "记录已不可读取。请刷新企业与账期。"
         if current:
-            details = (f"销售方　{current['seller_name']}\n项目　{current['item_name']}\n"
-                       f"用途　{current['purpose'] or '未填写'}\n备注　{current['remark'] or '（无）'}")
-        self.workspace_widget("#invoice-detail", Static).update(safe_text(details))
+            self.push_screen(Choices("发票详情", [(self.invoice_text(current), None)]))
+        else:
+            self.task_feedback("此发票当前不可读取。请返回目录刷新。")
 
     def record_widgets(self):
         items = [Static(f"本次对话的真实模型请求尝试　{self.model_requests}", markup=False)] if self.model_requests else []

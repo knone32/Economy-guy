@@ -109,8 +109,11 @@ class Choices(Dialog):
             yield Label(self.title_text, classes="dialog-title")
             yield TextAction("返回", id="cancel")
             for index, (label, value) in enumerate(self.choices):
-                yield TextAction(Text(redact(label)), id=f"choice-{index}", classes="choice",
-                             variant="error" if value in {"quit", "logout"} else "default")
+                if value is None:
+                    yield Static(Text(redact(label)), classes="field-hint")
+                else:
+                    yield TextAction(Text(redact(label)), id=f"choice-{index}", classes="choice",
+                                     variant="error" if value in {"quit", "logout"} else "default")
 
     @on(Button.Pressed)
     def pressed(self, event):
@@ -552,6 +555,37 @@ class Period(Dialog):
             self.query_one("#period-error", Static).update("请输入明确年月，例如 2026-09。")
             return
         self.dismiss((parsed.year, parsed.month))
+
+
+class TaskNote(Dialog):
+    def __init__(self, title, progress):
+        super().__init__()
+        self.title_text, self.progress = title, progress
+
+    def compose(self):
+        with Vertical():
+            yield Label("新建发票用途待办", classes="dialog-title")
+            yield Static(Text(redact(f"{self.title_text}\n{self.progress}")))
+            yield Input(placeholder="填写后续处理备注", id="task-note", max_length=500)
+            yield Static("", id="task-note-error", markup=False)
+            with Horizontal(classes="dialog-actions"):
+                yield TextAction("取消", id="cancel")
+                yield TextAction("核对待办", id="review-task", variant="primary")
+
+    @on(Button.Pressed)
+    def pressed(self, event):
+        if event.button.id == "cancel":
+            self.dismiss(None)
+        else:
+            self.review()
+
+    @on(Input.Submitted)
+    def review(self):
+        note = self.query_one("#task-note", Input).value.strip()
+        if note:
+            self.dismiss(note)
+        else:
+            self.query_one("#task-note-error", Static).update("请填写简短备注。")
 
 
 class NewUserProfile(Dialog):

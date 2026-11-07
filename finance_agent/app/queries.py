@@ -47,6 +47,31 @@ def available_periods(connection, user_id, company_id):
     return [tuple(row) for row in rows]
 
 
+INVOICE_PAGE_SIZE = 10
+
+
+def invoice_directory(connection, user_id, company_id, year, month, page):
+    """A stable, bounded invoice directory with a count from the same transaction."""
+    _authorize(connection, user_id, company_id)
+    if type(page) is not int or not 1 <= page <= 2_147_483_647:
+        raise QueryError("页码超出范围")
+    filters = "company_id = ?"
+    values = [company_id]
+    if (year, month) != (0, 0):
+        filters += " AND invoice_date LIKE ?"
+        values.append(_check_month(year, month) + "%")
+    total = connection.execute(f"SELECT count(*) FROM invoices WHERE {filters}", values).fetchone()[0]
+    rows = connection.execute(
+        f"""SELECT invoice_no, invoice_date, amount_cents, purpose
+              FROM invoices WHERE {filters} ORDER BY invoice_date, invoice_no LIMIT ? OFFSET ?""",
+        [*values, INVOICE_PAGE_SIZE, (page - 1) * INVOICE_PAGE_SIZE],
+    )
+    return {"total": total, "page": page, "page_size": INVOICE_PAGE_SIZE,
+            "rows": [{"company_id": company_id, "invoice_no": row["invoice_no"],
+                      "invoice_date": row["invoice_date"], "amount": _money(row["amount_cents"]),
+                      "has_purpose": bool((row["purpose"] or "").strip())} for row in rows]}
+
+
 def list_invoices(connection, user_id: str, company_id: str, year: int, month: int) -> list[dict]:
     """查询指定企业、年月的发票，结果为空是正常成功结果。"""
     prefix = _check_month(year, month); _authorize(connection, user_id, company_id)
