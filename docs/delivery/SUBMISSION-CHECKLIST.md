@@ -18,11 +18,12 @@
 | 历史 DeepSeek A/B/C | [SEC-B4](../verification/security/S4-SEC-B4.md)，被测 `e834bbb961030c0671d788bc629026031078f743`。A/B/C 均为 PARTIAL，分别保留追问、重复回执和任务下一步展示限制。[S4-BR](../verification/stage4/S4-BR.md)，被测 `bde7ec7bb7ca5f2a2460faade82e817b4302d6ef`，增量 B2、预置任务 C5 和偏好回读通过，A 自然收尾仍为 PARTIAL。 |
 | P0.5 DeepSeek 查询焦点、连续多轮、重启和偏好 | [P0.5 真体验收](P0-5-FINAL.md)，运行于 `769a4e7cae8b91e41ba802267e78240a121bf608`，生产实现为 `b7b57ea19742c026921c42a14c337a6c9c70660d`。17 次真实请求，L1–L3 PASS，L4 PARTIAL。偏好保存、回读和恢复输入已核实，简洁表现未达该次测试阈值。 |
 | Submission-R2 真实 DeepSeek | [R2 实测报告](SUBMISSION-R2.md)与[一页讲解](SUBMISSION-R2-EXPLAINED.md)。A、B（模拟确认）及 D 取得证据。C 持久化、重启与当前进度通过，C5 单轮完成情况说明仍为 PARTIAL。 |
+| 会计试用修复 | [UX-Fix](UX-FIX.md)。冻结回归与 Pilot 通过。DeepSeek 确认精确 F002 读取和目录完整展示，目录最终信封及待办真实保存仍未通过。 |
 
 ## 已实现但待最终验收
 
 - [ ] 复核 C5 在同一答复中说明 F002 已补齐及剩余 4 张，单独见证真人确认。R2 已用真实模型、隔离账簿和 Textual Pilot 执行 A/B/C。
-- [ ] Windows Terminal 实机检查启动、中文显示、键鼠与确认弹窗。Textual Pilot 与脚本验证分别保留。
+- [ ] 用户亲自在 Windows Terminal 复验 UX-Fix 的 F002 详情、两页目录和待办确认。重点复核合法最终回复及保留原始备注的真实待办保存。Textual Pilot 与脚本验证分别保留。
 - [ ] 获取官方授权的评审环境后预检 Qwen3.8-Max 的工具调用及回复协议。现有 DeepSeek 结果仅覆盖各自的被测版本与场景。
 - [ ] 录制最终演示并核对实际展示范围、运行命令、截图与证据摘要。时长及格式按最终平台说明准备。
 
