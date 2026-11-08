@@ -23,7 +23,7 @@ $py = ".\.venv\Scripts\python.exe"
 ## 配置模型或离线演示
 
 - **先看 A/B/C**。在同一 PowerShell 窗口运行 `& $py scripts/demo_stepper.py --mode mock --scenario all`。用 Enter 或空格逐步查看查询、确认修改和跨进程恢复待办。演示使用独立虚构库及模拟确认。[交互演示说明](docs/delivery/INTERACTIVE_DEMO.md)
-- **体验自然语言**。在工作台点击「配置 AI 模型」，选择已授权的 Profile，或新建个人配置，填入服务商、模型、HTTPS 端点和密钥环境变量名。密钥可由该环境变量提供，也可在界面隐藏输入。Windows 支持选择系统凭据管理器保存。仓库模板为空，配置检查本身不调用 API。发送真实 AI 消息才联网。[工作台指南](docs/delivery/P0-AGENT-WORKSPACE.md)
+- **体验自然语言**。在工作台点击「配置 AI 模型」，从「我的 AI」打开已有配置的详情并选用，或点击「＋ 新建 AI 配置」填写服务商和模型 ID。密钥在新建表单或配置详情的独立页面中隐藏输入，也可由高级设置引用的环境变量提供。Windows 可使用系统凭据管理器保存。仓库模板为空，配置检查本身不调用 API。发送真实 AI 消息才联网。[工作台指南](docs/delivery/P0-AGENT-WORKSPACE.md)
 
 ## 架构与安全
 
