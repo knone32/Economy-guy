@@ -10,6 +10,20 @@ from .tasks import task_details
 from .updates import inspect_request
 
 
+QUERY_TOOLS = {"get_finance_summary", "list_invoices", "list_invoice_directory", "check_missing_purpose",
+               "get_invoice", "resolve_invoice_reference", "list_bank_transactions", "get_applicable_rules"}
+
+
+def query_scopes(calls):
+    scopes = {}
+    for call in calls:
+        scope = call.get("scope") or {}
+        if (call["tool"] in QUERY_TOOLS and call["status"] in {"SUCCESS", "NO_DATA"}
+                and scope.get("company_id")):
+            scopes[(scope["company_id"], scope.get("year"), scope.get("month"))] = None
+    return tuple(scopes)
+
+
 class ConversationUI:
     def close_conversation(self):
         if self.conversation:
@@ -67,6 +81,9 @@ class ConversationUI:
                     self.chat_message("会话状态", message)
                 if turn["state"] != "COMPLETED" or turn["seq"] <= history["boundary"]:
                     continue
+                scopes = query_scopes(turn["calls"])
+                if scopes:
+                    self.query_focus = scopes
                 if turn["trace"]:
                     self.resume_displays.append(turn["trace"])
                 if turn["hint"] and turn["request"]:

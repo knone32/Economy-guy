@@ -1,4 +1,5 @@
-"""Local TUI preferences. This file holds only recent workbook paths."""
+"""Local TUI preferences, separate from profiles and the business database."""
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
@@ -28,13 +29,36 @@ def recent_workbooks(path):
 def remember_workbook(settings, workbook):
     if settings is None:
         return
-    settings.parent.mkdir(parents=True, exist_ok=True)
     paths = [workbook, *(p for p in recent_workbooks(settings) if p != workbook)]
+    _write_json(settings, [str(p) for p in paths[:8]])
+
+
+def profile_choice_path(settings, actor, workbook_identity):
+    key = sha256(f"{actor}/{workbook_identity}".encode()).hexdigest()
+    return settings.with_name(f"ai-choice-{key}.json")
+
+
+def read_profile_choice(path):
+    try:
+        name = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("Invalid saved AI choice")
+    return name
+
+
+def remember_profile_choice(path, name):
+    _write_json(path, name)
+
+
+def _write_json(settings, value):
+    settings.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
     try:
         with NamedTemporaryFile(dir=settings.parent, encoding="utf-8", mode="w", delete=False) as f:
             temporary = Path(f.name)
-            json.dump([str(p) for p in paths[:8]], f, ensure_ascii=False)
+            json.dump(value, f, ensure_ascii=False)
         temporary.replace(settings)
     finally:
         if temporary:

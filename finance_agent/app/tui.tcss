@@ -40,7 +40,7 @@ SelectOverlay > .option-list--option-highlighted {
 .dialog-actions Button { margin-right: 1; }
 .choice { width: 100%; text-align: left; }
 
-#status { height: 2; padding: 0 1; background: $canvas; color: $ink; }
+#status { height: 3; padding: 0 1; background: $canvas; color: $ink; }
 #layout { height: 1fr; }
 #rail { width: 11; height: 1fr; background: $canvas; border-right: solid $line; }
 #rail TextAction { width: 100%; min-width: 4; padding: 0; margin: 0; }

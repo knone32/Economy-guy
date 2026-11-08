@@ -653,7 +653,7 @@ class ProfileDetails(Dialog):
                 except ProfileError as error:
                     self.feedback(str(error))
                     return
-                app.set_model("live", p.profile_name)
+                app.set_model("live", p.profile_name, remember=True)
                 self.dismiss(f"已选择 {p.profile_name} / {p.model}。{app.profile_status()}")
             approve_connection(self, app.model_changes("live", p.profile_name), use)
         elif action == "forget-key":
@@ -835,7 +835,7 @@ class NewUserProfile(Dialog):
             if key is not None:
                 key.value = ""
             if not self.previous or active_edit:
-                app.set_model("live", name, force=changed)
+                app.set_model("live", name, force=changed, remember=self.previous is None)
                 feedback += " " + app.profile_status()
             self.dismiss(f"已保存 {name}。{feedback}".strip())
 

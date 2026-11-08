@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 import sqlite3
 
+from rich.panel import Panel
 from rich.text import Text
 from textual import on, work
 from textual.app import App
@@ -23,16 +24,18 @@ from .persistence import ManagementIntent, ManagementTurn, confirm_management
 from .queries import QueryError, available_periods, get_invoice, invoice_directory
 from .responses import needs_progress_evidence, render_scope, scope_key, verified_task_progress
 from .rules import RuleError, check_missing_purpose
+from .session_store import workbook_identity
 from .stage2_schema import open_existing
 from .tasks import list_tasks, manage_task, task_details
 from .trace import redact
 from .tui_intent import edit_turn
-from .tui_local import remember_workbook, startup_workbook
-from .tui_sessions import ConversationUI
+from .tui_local import profile_choice_path, read_profile_choice, remember_profile_choice, remember_workbook, startup_workbook
+from .tui_sessions import ConversationUI, query_scopes
 from .tui_screens import Approval, Choices, Login, Settings, TaskNote, TextAction
 from .win_vault import CredentialError, profile_target
 
 ROOT = Path(__file__).resolve().parents[1]
+CHAT_WIDTH = 62  # Fits the 80-column layout, including rail, padding and scrollbar.
 STATUS = {
     "ANSWERED": "本轮回复完成", "COMPLETED": "本轮处理完成", "SUCCESS": "执行成功",
     "NO_DATA": "没有符合条件的记录", "NO_CHANGE": "当前无需变更",
@@ -110,11 +113,13 @@ class AgentWorkspace(ConversationUI, App):
         self.agent = None
         self.user = None
         self.profile = None
+        self.profile_restore_error = False
         self.mode = "live"
         # Table browsing can follow a result; only an explicit UI selection sets the query scope.
         self.company = None
         self.period = None
         self.read_workspace = None
+        self.query_focus = ()
         self.busy = False
         self.supplement = False
         self.task_route = None
@@ -139,7 +144,7 @@ class AgentWorkspace(ConversationUI, App):
                     yield TextAction(label, id=key, classes="current" if key == "go-chat" else None)
             with ContentSwitcher(initial="chat", id="panes"):
                 with Vertical(id="chat"):
-                    yield RichLog(id="chat-log", markup=False, wrap=True)
+                    yield RichLog(id="chat-log", markup=False, wrap=True, min_width=1)
                     with Horizontal(id="ai-guide"):
                         yield Static("", id="ai-guide-text", markup=False)
                         yield TextAction("配置 AI 模型", id="configure-ai", variant="primary")
@@ -181,7 +186,9 @@ class AgentWorkspace(ConversationUI, App):
         self.profile = None
         self.reset_agent(clear_log=True)
         self.note("可输入问题，按 Enter 发送。")
-        if not self.open_conversation():
+        opened = self.open_conversation()
+        self.restore_profile_choice()
+        if not opened:
             self.chat_message("工作台", "可直接查询、提出修改、保存待办。发票和待办变更会弹出确认。"
                           "\n例如：把甲企业 F002 的用途改成资料打印。")
         self.show("chat")
@@ -218,7 +225,7 @@ class AgentWorkspace(ConversationUI, App):
         except ProfileError:
             return bool(self.agent and self.agent.connection) or profile != self.profile
 
-    def set_model(self, mode, profile, *, force=False):
+    def set_model(self, mode, profile, *, force=False, remember=False):
         if force or self.model_changes(mode, profile):
             had_agent = self.agent is not None
             self.reset_agent(clear_log=False)
@@ -232,13 +239,40 @@ class AgentWorkspace(ConversationUI, App):
                         self.notify("无法保存上下文分界。请先检查会话存储。", severity="warning")
                 self.chat_message("会话分界", message)
         self.mode, self.profile = mode, profile
+        if mode == "live" and profile:
+            self.profile_restore_error = False
+            if remember and self.recent_path is not None:
+                try:
+                    remember_profile_choice(self.profile_choice_file(), profile)
+                except (OSError, ValueError, sqlite3.Error):
+                    self.notify("AI 已选用，但无法记住本次选择。下次登录需重新选择。", severity="warning")
         self.update_header()
+
+    def profile_choice_file(self):
+        identity = self.conversation.identity if self.conversation else workbook_identity(self.db)
+        return profile_choice_path(self.recent_path, self.user, identity)
+
+    def restore_profile_choice(self):
+        self.profile_restore_error = False
+        if self.recent_path is None:
+            return
+        try:
+            path = self.profile_choice_file()
+        except (OSError, ValueError, sqlite3.Error):
+            return
+        try:
+            self.profile = read_profile_choice(path)
+        except (OSError, ValueError):
+            self.profile_restore_error = True
+        if (self.profile or self.profile_restore_error) and self.model_override is None:
+            self.mode = "live"
 
     def reset_agent(self, *, clear_log):
         if self.agent and self.agent.workbook_available():
             self.agent.cancel_update()
         self.agent = None
         self.task_focus = None
+        self.query_focus = ()
         self.chat_invoice_route = None
         self.workspace_widget("#chat-invoices").display = False
         self.supplement = False
@@ -255,6 +289,7 @@ class AgentWorkspace(ConversationUI, App):
         self.reset_agent(clear_log=True)
         self.close_conversation()
         self.session_keys.clear()
+        self.profile_restore_error = False
         self.user, self.profile, self.company, self.period, self.task_route = None, None, None, None, None
         self.read_workspace = None
         self.invoice_route = None
@@ -285,6 +320,8 @@ class AgentWorkspace(ConversationUI, App):
         self.update_header()
 
     def resolve_profile(self, *, require_key, selection=...):
+        if self.profile_restore_error and selection in (..., None):
+            raise ProfileError("无法读取上次选用的 AI，请重新选择。")
         _, default = load_profiles(**self.profile_options)
         selected = self.profile if selection is ... else selection
         name = selected or os.environ.get("FINANCE_MODEL_PROFILE") or default
@@ -353,7 +390,9 @@ class AgentWorkspace(ConversationUI, App):
             return "mock", "固定脚本测试（开发诊断）", "使用固定示例联调界面。"
         try:
             profile = self.resolve_profile(require_key=False).profile
-        except ProfileError:
+        except ProfileError as error:
+            if self.profile or self.profile_restore_error:
+                return "unconfigured", "上次选用的 AI 不可用", f"{error}。请从「我的 AI」重新选择。"
             return "unconfigured", "尚未配置 AI", "选择现有 AI 配置或新建一个。"
         key = self.current_key(profile)
         if not key:
@@ -375,16 +414,35 @@ class AgentWorkspace(ConversationUI, App):
         return f"{title} · {detail}"
 
     def update_header(self):
-        query = "未选择"
-        if self.read_workspace:
-            company, year, month = self.read_workspace
-            query = f"{self.company_name(company)} / {year:04d}-{month:02d}"
+        names = {}
+        if self.user and (self.read_workspace or self.query_focus):
+            try:
+                names = {row["company_id"]: row["name"] for row in company_access(self.db, self.user) if row["read"]}
+            except (OSError, ValueError, sqlite3.Error):
+                pass
+
+        def label(scope):
+            company, year, month = scope
+            if company not in names:
+                return "已不可读取"
+            period = f"{year:04d}-{month:02d}" if year is not None and month is not None else "未限定账期"
+            return f"{names[company]} / {period}"
+
+        query = label(self.read_workspace) if self.read_workspace else "未选择"
+        if len(self.query_focus) == 1:
+            recent = label(self.query_focus[0])
+        elif self.query_focus:
+            readable = sum(company in names for company, _, _ in self.query_focus)
+            recent = f"{readable} 个可读范围" if readable else "已不可读取"
+        else:
+            recent = "无"
         focus = self.task_focus_label()
         state, title, detail = self.model_state()
         self.workspace_widget("#status", Static).update(safe_text(
             f"Economy-guy / 财税工作台 · 比赛模拟 · {self.user or '未登录'} · {title}\n"
-            f"任务焦点：{focus}"))
-        self.workspace_widget("#query-scope", Button).label = Text(safe_text(f"当前查询企业：{query}（只读）"))
+            f"最近可信查询焦点：{recent}\n"
+            f"当前待办 · 任务焦点：{focus}"))
+        self.workspace_widget("#query-scope", Button).label = Text(safe_text(f"预选只读范围 · 当前查询企业：{query}"))
         self.workspace_widget("#ai-guide-text", Static).update(safe_text(f"{title}\n{detail}"))
         self.workspace_widget("#ai-guide").display = state in {"unconfigured", "missing-key", "unverified", "failed"}
 
@@ -411,9 +469,14 @@ class AgentWorkspace(ConversationUI, App):
 
     def chat_message(self, role, text):
         log = self.workspace_widget("#chat-log", RichLog)
-        log.write(Text(role, style="bold #83ddd6"))
         clean = self.storage_text(text)
-        log.write(Text(clean))
+        if role.startswith("业务核验 / ") or role in {"业务回执", "发票回执", "当前待办", "待办回执", "待办未保存"}:
+            log.write(Panel(Text(clean), title=Text(role), title_align="left", border_style="#83ddd6",
+                            width=CHAT_WIDTH, padding=(0, 1)))
+        else:
+            color = "#91cbff" if role == "你" else "#83ddd6"
+            line = Text.assemble("\n", (role, f"bold {color}"), "\n", clean)
+            log.write(line, width=min(CHAT_WIDTH, log.scrollable_content_region.width) or None)
         if self.turn_seq is not None and role != "你":
             self.turn_display.append((role,clean))
 
@@ -825,19 +888,24 @@ class AgentWorkspace(ConversationUI, App):
                 else:
                     continue
             group = groups.setdefault(scope_key(evidence), (evidence, []))
-            group[1].append(card)
+            item = (data, card)
+            if item not in group[1]:
+                group[1].append(item)
             if tool == "list_bank_transactions" and "amount_rule" in evidence and "finance_summary" in evidence:
                 amount_basis = {**evidence, "rule": evidence["amount_rule"]}
                 totals = evidence["finance_summary"]
                 amount_group = groups.setdefault(scope_key(amount_basis), (amount_basis, []))
-                amount_group[1].append(("银行收支合计", f"收入 ¥{totals['bank_income_total']}，支出 ¥{totals['bank_expense_total']}。"))
+                card = ("银行收支合计", f"收入 ¥{totals['bank_income_total']}，支出 ¥{totals['bank_expense_total']}。")
+                item = (totals, card)
+                if item not in amount_group[1]:
+                    amount_group[1].append(item)
             if outcome["status"] == "SUCCESS" and tool in {"list_invoice_directory", "list_invoices", "get_invoice"}:
                 scope = evidence["scope"]
                 page = data["page"] if tool == "list_invoice_directory" else 1
                 self.chat_invoice_route = (scope["company_id"], scope.get("year", 0), scope.get("month", 0), page)
         for evidence, cards in groups.values():
             self.chat_message("查询与处理结果", render_scope(evidence, conversational=True))
-            for title, text in cards:
+            for _, (title, text) in cards:
                 self.chat_message(f"业务核验 / {title}", text)
         return bool(groups)
 
@@ -846,6 +914,10 @@ class AgentWorkspace(ConversationUI, App):
         stop = response["execution"]["stop_reason"]
         status = receipt["status"] if receipt else stop
         results = response["tool_results"]
+        scopes = query_scopes({"tool": name, "status": result["status"], "scope": result["evidence"].get("scope")}
+                              for name, result in results if result["evidence"].get("source") == "current_sqlite")
+        if scopes:
+            self.query_focus = scopes
         self.chat_invoice_route = None
         shown = self.show_turn_results(results)
         self.workspace_widget("#chat-invoices").display = self.chat_invoice_route is not None
