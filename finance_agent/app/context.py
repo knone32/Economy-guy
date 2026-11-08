@@ -141,10 +141,14 @@ class ContextBuilder:
                 self.scope["periods"] = [(task["year"], task["month"])]
                 self.sources["periods"] = "current_sqlite"
 
-    def resolve(self,text):
+    def resolve(self, text, *, explicit=None):
         """引用先由Harness对照可信锚点解析，不让模型编造业务键。"""
         hint = reference_hint(text)
         if hint is None:
+            return None
+        if (explicit and len(explicit.get("company_id", [])) == len(explicit.get("invoice_no", [])) == 1
+                and hint["ordinal"] is None and not hint["anchor_id"]
+                and "这张" in text and not any(word in text for word in ("那张", "那一张"))):
             return None
         if self.references_blocked:
             return {"ok":False,"status":"AMBIGUOUS","data":None,"evidence":{},"error":"旧引用未能安全失效，请明确目标"}

@@ -1,8 +1,10 @@
 """Presentation adapter for local TUI sessions and read-only restoration."""
+import json
 import sqlite3
 
 from .cli_chat import safe_text
 from .cli_workspaces import company_access
+from .responses import render_reference_error
 from .session_store import SessionBusyError, SessionStore
 from .tasks import task_details
 from .updates import inspect_request
@@ -45,6 +47,14 @@ class ConversationUI:
                 if turn["request"]:
                     self.chat_message("你", turn["request"])
                 for role, body in turn["display"]:
+                    # Older builds persisted the resolver envelope in visible history.
+                    prefix = "请明确引用对象："
+                    if role == "Agent" and body.startswith(prefix):
+                        try:
+                            status = json.loads(body[len(prefix):]).get("status")
+                        except (ValueError, AttributeError):
+                            status = None
+                        body = render_reference_error(status if isinstance(status, str) else None)
                     self.chat_message(role, body)
                 if turn["state"] == "INTERRUPTED":
                     self.chat_message("会话状态", "上次处理被中断。请重新提出查询。")

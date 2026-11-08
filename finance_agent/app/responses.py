@@ -70,7 +70,15 @@ def scope_mismatch(expected, actual):
     return any(key in actual and actual[key] not in values for key,values in expected.items())
 
 
-def render_scope(evidence):
+def scope_key(evidence):
+    scope = evidence.get("scope", {})
+    rule = evidence.get("rule") or {}
+    period = (scope["year"], scope["month"]) if "year" in scope and "month" in scope else scope.get("business_date")
+    return (scope.get("company_id"), period, evidence.get("source"),
+            rule.get("rule_id") or rule.get("id"), rule.get("version"), rule.get("name"), evidence.get("rule_status"))
+
+
+def render_scope(evidence, *, conversational=False):
     scope = evidence.get("scope",{})
     company = scope.get("company_id","未限定")
     if "year" in scope and "month" in scope:
@@ -79,10 +87,32 @@ def render_scope(evidence):
         period = scope.get("business_date","未按年月限定")
     rule = evidence.get("rule")
     rule_text = f"{rule.get('rule_id',rule.get('id',''))} {rule['name']} v{rule['version']}" if rule else evidence.get("rule_status","不适用（无财税规则判定）")
+    if conversational:
+        heading = f"企业 {company}" if "company_id" in scope else ""
+        if "year" in scope and "month" in scope:
+            heading += f" {scope['year']} 年 {scope['month']} 月"
+        elif "business_date" in scope:
+            heading += f" {scope['business_date']}"
+        source = {"current_sqlite": "按工作账簿当前记录", "local_display_preference": "按本地显示设置"}.get(
+            evidence.get("source"), "按本轮核验记录")
+        basis = ""
+        if rule:
+            rule_id = rule.get("rule_id") or rule.get("id", "")
+            basis = f"，依据 {rule_id} v{rule['version']} {rule['name']}"
+        return f"{heading.strip()}（{source}{basis}）" if heading.strip() else source + basis
     return f"实际查询范围：企业 {company}；年月 {period}；来源 {evidence.get('source','未知')}；规则 {rule_text}。"
 
 
-def _verified_task_progress(results):
+def render_reference_error(status):
+    return {
+        "DENIED": "当前账号没有读取权限，请切换到有权限的账簿账号。",
+        "NOT_FOUND": "先前展示的发票已找不到，请刷新发票列表后再选。",
+        "SCOPE_MISMATCH": "先前展示的发票已不在当前范围，请重新查询或明确企业和发票编号。",
+        "ERROR": "当前无法读取工作账簿，请检查账簿后重试。",
+    }.get(status, "我还不能确定你指的是哪张发票，请提供企业名称和发票编号，或者从发票列表中选择。")
+
+
+def verified_task_progress(results):
     """仅合并本轮唯一匹配的已鉴权任务读取与用途检查。"""
     reads = []
     checks = []
@@ -113,18 +143,36 @@ def _verified_task_progress(results):
     return {"status": "SUCCESS", "data": {"task": tasks[0], "check": check}, "evidence": evidence}
 
 
+def needs_progress_evidence(results):
+    return (any(name == "check_missing_purpose" for name, _ in results)
+            and any(outcome["status"] in {"SUCCESS", "NO_DATA"} and
+                    (name == "list_tasks" or (name == "manage_task" and
+                     outcome.get("evidence", {}).get("operation", {}).get("action") in {None, "show"}))
+                    for name, outcome in results)
+            and not any(name == "manage_task" and outcome.get("evidence", {}).get("management_confirmation")
+                        for name, outcome in results))
+
+
 def render_information(results):
-    """只从本轮实际只读工具结果生成信息答复，不转述模型自由成功声明。"""
+    """保留执行摘要，从本轮真实证据按结构化范围合并说明。"""
     parts = []
+    scopes = set()
+
+    def add_scope(evidence):
+        key = scope_key(evidence)
+        if key not in scopes:
+            scopes.add(key)
+            parts.append(render_scope(evidence))
+
     for name, outcome in results:
         if name=='manage_preference' and outcome['status']=='NOT_FOUND':
-            parts.append(render_scope(outcome.get('evidence',{})))
+            add_scope(outcome.get('evidence', {}))
             parts.append('当前用户企业范围内没有该偏好（NOT_FOUND）；此查询未保存或修改任何内容。')
             continue
         if outcome["status"] not in {"SUCCESS", "NO_DATA", "NO_CHANGE"}:
             continue
         data = outcome["data"]
-        parts.append(render_scope(outcome.get("evidence",{})))
+        add_scope(outcome.get("evidence", {}))
         if name == "get_finance_summary":
             parts.append(f"本轮查询：发票价税合计 {data['invoice_total']} 元（{data['invoice_count']}张）；"
                          f"银行收入 {data['bank_income_total']} 元（{data['bank_income_count']}条）；"
@@ -142,16 +190,16 @@ def render_information(results):
             if totals and name=='list_bank_transactions' and 'amount_rule' in outcome['evidence']:
                 parts.append(f"本轮银行收入 {totals['bank_income_total']} 元（{totals['bank_income_count']}条）；"
                              f"银行支出 {totals['bank_expense_total']} 元（{totals['bank_expense_count']}条）。")
-                parts.append(render_scope({**outcome['evidence'],'rule':outcome['evidence']['amount_rule']}))
+                add_scope({**outcome['evidence'], 'rule': outcome['evidence']['amount_rule']})
         if outcome["status"] == "NO_DATA":
             parts.append("没有匹配记录；这不是权限拒绝。")
         if outcome["status"] == "NO_CHANGE":
             parts.append("未发生更改：" + (outcome.get("error") or "当前状态无需改变"))
-    progress = _verified_task_progress(results)
+    progress = verified_task_progress(results)
     if progress:
-        parts.append(render_task_progress(progress))
-    elif any(name == "check_missing_purpose" for name, _ in results) and any(
-            name in {"list_tasks", "manage_task"} for name, _ in results):
+        add_scope(progress["evidence"])
+        parts.append(render_task_progress(progress, include_scope=False))
+    elif needs_progress_evidence(results):
         parts.append("本轮无法核实同一任务与缺失用途的完整进度，请明确待办范围后核对。")
     receipt=preference_receipt(results)
     if receipt:parts.append(receipt)
@@ -203,12 +251,13 @@ def render_stopped(results, stop_reason):
             +'\n未完成/拒绝项：'+json.dumps(failures,ensure_ascii=False))
 
 
-def render_task_progress(outcome):
+def render_task_progress(outcome, *, include_scope=True):
     """从当前任务检查证据展示剩余事项，不宣告任务完成或写入新值。"""
     if outcome['status']!='SUCCESS':
         return '当前任务进度：'+outcome['status']+'；'+(outcome.get('error') or '无法核实剩余事项')
     task,check=outcome['data']['task'],outcome['data']['check']
-    return (render_scope(outcome['evidence'])+f"\n任务 {task['task_id']} 状态仍为 {task['status']}；当前剩余 {check['count']} 张必填用途缺失。"
+    scope = render_scope(outcome["evidence"]) + "\n" if include_scope else ""
+    return (scope+f"任务 {task['task_id']} 状态仍为 {task['status']}；当前剩余 {check['count']} 张必填用途缺失。"
             +'\n当前剩余对象：'+json.dumps(check['missing_invoices'],ensure_ascii=False)
             +'\n下一步：核对剩余对象并明确提供用途，经Prepare、可信确认和Commit逐张保存；全部补齐后仍须单独核对并确认任务完成。')
 

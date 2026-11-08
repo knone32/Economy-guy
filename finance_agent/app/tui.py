@@ -21,6 +21,7 @@ from .cli_workspaces import company_access, invoice_history, missing_migrations,
 from .model_config import ModelConnection, ProfileError, load_profiles, resolve_connection
 from .persistence import ManagementIntent, ManagementTurn, confirm_management
 from .queries import QueryError, available_periods, get_invoice, invoice_directory
+from .responses import needs_progress_evidence, render_scope, scope_key, verified_task_progress
 from .rules import RuleError, check_missing_purpose
 from .stage2_schema import open_existing
 from .tasks import list_tasks, manage_task, task_details
@@ -38,7 +39,10 @@ STATUS = {
     "WAITING_USER": "等待补充", "AMBIGUOUS": "请补充范围", "WAITING_CONFIRMATION": "等待确认",
     "COMMITTED": "已成功保存并核验", "CURRENT_VALUE_MATCHES": "当前值已相同",
     "DENIED": "权限不足", "ERROR": "本轮执行失败", "SCOPE_MISMATCH": "请求范围不一致", "CANCELLED": "已取消",
-    "UNKNOWN_OUTCOME": "提交结果未知，请查看执行记录", "MODEL_LIMIT": "本轮处理达到上限",
+    "UNKNOWN_OUTCOME": "提交结果未知，请先查看执行记录再决定是否重试", "MODEL_LIMIT": "本轮处理达到上限",
+    "TOOL_LIMIT": "本轮查询次数达到上限，请缩小范围后继续",
+    "CONTEXT_LIMIT": "本轮内容太多，请缩小范围后继续",
+    "INVALID_ARGUMENTS": "本轮未能确认查询或操作条件，请补充具体对象与范围",
     "CONFLICT": "当前状态有变化，请重新核对", "NOT_FOUND": "没有找到目标",
     "API_OR_RESPONSE_ERROR": "模型连接或响应失败，请检查设置与执行记录",
     "INVALID_RESPONSE": "模型回复格式无效，请重新描述",
@@ -694,7 +698,7 @@ class AgentWorkspace(ConversationUI, App):
         offset = len(agent.messages)
         receipt = None
         try:
-            answer = agent.ask(message, read_workspace=read_workspace, **args)
+            agent.ask(message, read_workspace=read_workspace, **args)
             if agent.update_session.drafts:
                 draft, = agent.update_session.drafts.values()
                 fields = asdict(draft)
@@ -711,7 +715,7 @@ class AgentWorkspace(ConversationUI, App):
                 if receipt is None:
                     receipt = agent.cancel_update()
             calls = turn_tools(agent.messages[offset:])
-            verified, cards = [], []
+            verified = []
             call_by_id = {call["id"]: call for call in calls}
             for item in agent.messages[offset:]:
                 if item["role"] != "tool":
@@ -722,22 +726,15 @@ class AgentWorkspace(ConversationUI, App):
                 call = call_by_id.get(item["tool_call_id"])
                 if call is not None and isinstance(rule, dict):
                     call["rule"] = (rule.get("rule_id") or rule.get("id"), rule.get("version"))
-                if call is not None and outcome["status"] in {"SUCCESS", "NO_DATA"}:
-                    card = self.business_card(call["tool"], outcome.get("data"), evidence)
-                    if card:
-                        scope = evidence.get("scope", {})
-                        route = None
-                        if call["tool"] in {"list_invoice_directory", "list_invoices", "get_invoice"}:
-                            route = (scope["company_id"], scope.get("year", 0), scope.get("month", 0),
-                                     outcome["data"]["page"] if call["tool"] == "list_invoice_directory" else 1)
-                        cards.append((*card, route))
-                if outcome["status"] == "SUCCESS" and evidence.get("management_confirmation"):
+                if call is not None:
+                    call["source"] = evidence.get("source")
+                if outcome["status"] == "SUCCESS" and evidence.get("management_confirmation") and (not call or call["tool"] != "manage_task"):
                     if "preference_readback_verified" in evidence:
                         verified.append("偏好已保存并回读。" if evidence["preference_readback_verified"] else
                                         "偏好已提交，当前值尚未核实，请打开偏好设置。")
                     else:
                         verified.append("已按本次确认保存，业务库记录可重新查看。")
-            self.call_from_thread(self.finish_turn, answer, calls, receipt, verified, cards,
+            self.call_from_thread(self.finish_turn, calls, receipt, verified,
                                   not args.get("allow_prepare") and not args.get("continue_edit"))
         except Exception:
             if agent.workbook_available():
@@ -750,23 +747,39 @@ class AgentWorkspace(ConversationUI, App):
         if evidence.get("source") != "current_sqlite":
             return None
         if tool == "list_invoices" and isinstance(data, list):
-            return ("发票目录", f"本账期共 {len(data)} 张\n" + AgentWorkspace.invoice_lines(data[:10]))
+            return ("发票目录", f"本账期共 {len(data)} 张\n" + AgentWorkspace.invoice_lines(data))
+        if tool == "list_tasks" and isinstance(data, list):
+            return ("待办", "\n".join(f"{row['year']} 年 {row['month']} 月用途补充待办，{TASK_STATUS.get(row['status'], '状态待核对')}"
+                                      for row in data) or "当前没有待办。")
+        if tool == "list_bank_transactions" and isinstance(data, list):
+            return ("银行流水", "\n".join(f"{row['transaction_date']}　{row['direction']} ¥{row['amount']}"
+                                          for row in data) or "没有符合条件的银行流水。")
         if not isinstance(data, dict):
             return None
         if tool == "get_finance_summary":
             return ("账期合计", "\n".join(
-                f"{label}　¥{data[key + '_total']} · {data[key + '_count']} 条"
-                for label, key in (("发票价税合计", "invoice"), ("银行收入", "bank_income"), ("银行支出", "bank_expense"))))
-        if tool == "get_invoice" and data:
+                f"{label} ¥{data[key + '_total']}（{data[key + '_count']} {unit}）"
+                for label, key, unit in (("发票价税合计", "invoice", "张"), ("银行收入", "bank_income", "条"),
+                                         ("银行支出", "bank_expense", "条"))))
+        if tool in {"get_invoice", "resolve_invoice_reference"} and data:
             return ("发票详情", AgentWorkspace.invoice_text(data))
         if tool == "list_invoice_directory":
             rows = data["rows"]
             header = f"共 {data['total']} 张 · 第 {data['page']} 页 · 每页 {data['page_size']} 张"
             return ("发票目录", header + "\n" + AgentWorkspace.invoice_lines(rows))
         if tool == "check_missing_purpose":
-            rule = data["rule"]
-            return ("用途检查", f"当前缺失用途 {data['count']} 张 · {rule['rule_id']} v{rule['version']}\n"
+            return ("用途检查", f"目前有 {data['count']} 张发票未填写必填用途。\n"
                     + "\n".join(f"{r['invoice_date']}　{r['invoice_no']}" for r in data["missing_invoices"]))
+        if tool == "manage_task" and "task" in data:
+            task = data["task"]
+            state = TASK_STATUS.get(task["status"], "状态待核对")
+            if evidence.get("management_confirmation"):
+                action = "已创建" if evidence.get("operation", {}).get("action") == "create" else "已保存"
+                next_step = "，后续可在待办中继续处理" if task["status"] == "ACTIVE" else ""
+                return ("待办回执", f"{action}用途补充待办，{state}{next_step}。")
+            return ("待办", f"{task['year']} 年 {task['month']} 月用途补充待办，{state}。")
+        if tool == "get_applicable_rules":
+            return ("适用规则", data["content"])
         return None
 
     @staticmethod
@@ -779,36 +792,71 @@ class AgentWorkspace(ConversationUI, App):
                 f"销售方　{row['seller_name']}\n项目　{row['item_name']}\n价税合计　¥{row['amount']}\n"
                 f"用途　{row['purpose'] or '未填写'}\n备注　{row['remark'] or '（无）'}")
 
-    def finish_turn(self, answer, calls, receipt, verified, cards, read_only=True):
+    def show_turn_results(self, results):
+        groups = {}
+        for tool, outcome in results:
+            if outcome["status"] not in {"SUCCESS", "NO_DATA", "NO_CHANGE"}:
+                continue
+            evidence = outcome["evidence"]
+            data = outcome["data"]
+            card = self.business_card(tool, data, evidence)
+            if card is None:
+                if outcome["status"] == "NO_DATA":
+                    card = ("查询结果", "没有符合条件的记录。")
+                elif outcome["status"] == "NO_CHANGE":
+                    card = ("处理结果", outcome["error"] or "当前无需变更。")
+                else:
+                    continue
+            group = groups.setdefault(scope_key(evidence), (evidence, []))
+            group[1].append(card)
+            if tool == "list_bank_transactions" and "amount_rule" in evidence and "finance_summary" in evidence:
+                amount_basis = {**evidence, "rule": evidence["amount_rule"]}
+                totals = evidence["finance_summary"]
+                amount_group = groups.setdefault(scope_key(amount_basis), (amount_basis, []))
+                amount_group[1].append(("银行收支合计", f"收入 ¥{totals['bank_income_total']}，支出 ¥{totals['bank_expense_total']}。"))
+            if outcome["status"] == "SUCCESS" and tool in {"list_invoice_directory", "list_invoices", "get_invoice"}:
+                scope = evidence["scope"]
+                page = data["page"] if tool == "list_invoice_directory" else 1
+                self.chat_invoice_route = (scope["company_id"], scope.get("year", 0), scope.get("month", 0), page)
+        for evidence, cards in groups.values():
+            self.chat_message("查询与处理结果", render_scope(evidence, conversational=True))
+            for title, text in cards:
+                self.chat_message(f"业务核验 / {title}", text)
+        return bool(groups)
+
+    def finish_turn(self, calls, receipt, verified, read_only=True):
         response = self.agent.last_response
-        status = receipt["status"] if receipt else response["execution"]["stop_reason"]
-        # Keep raw wire JSON and internal anchors in execution evidence rather than chat.
-        readable = "\n".join(line for line in answer.splitlines()
-                             if not line.startswith(("已展示引用列表 anchor:", "缺失明细（业务数据）：",
-                                                     "持久化管理结果", "当前剩余对象：",
-                                                     "本轮查询结果（业务数据")))
-        if readable.startswith("请求已安全停止") or readable.startswith("已达到本轮预算"):
-            readable = status_label(status)
-        if cards:
-            readable = "\n".join(line for line in readable.splitlines()
-                                 if not line.startswith(("本轮查询：", "本轮检查：")))
-        if readable:
-            self.chat_message("Agent", readable)
+        stop = response["execution"]["stop_reason"]
+        status = receipt["status"] if receipt else stop
+        results = response["tool_results"]
         self.chat_invoice_route = None
-        for title, text, route in cards:
-            self.chat_message(f"业务核验 / {title}", text)
-            if route:
-                self.chat_invoice_route = route
+        shown = self.show_turn_results(results)
         self.workspace_widget("#chat-invoices").display = self.chat_invoice_route is not None
+        notice = response["chat_notice"]
+        if notice:
+            self.chat_message("Agent", notice)
+        elif stop not in {"ANSWERED", "COMPLETED", "TASK_FINISHED", "WAITING_CONFIRMATION"}:
+            self.chat_message("Agent", status_label(stop))
+        elif response["operation_receipt"]["status"] == "CURRENT_VALUE_MATCHES":
+            self.chat_message("发票回执", "当前发票值已经符合要求，本轮无需再次保存。")
+        elif not (shown or verified or receipt):
+            self.chat_message("Agent", "本轮没有可核实的业务结果。请补充查询对象或查看执行记录。")
+        progress = verified_task_progress(results)
+        if progress:
+            self.chat_message("当前待办", "已重新核对待办与缺项。请逐张补充用途，全部补齐后再确认完成。")
+        elif needs_progress_evidence(results):
+            self.chat_message("当前待办", "暂时无法将本轮检查与唯一待办对应，请打开待办详情核对。")
         for detail in verified:
             self.chat_message("业务回执", detail)
         if receipt:
             self.chat_message("发票回执", receipt["message"])
             if receipt.get("task_progress"):
-                from .responses import render_task_progress
-                progress = render_task_progress(receipt["task_progress"])
-                self.chat_message("当前待办", "\n".join(line for line in progress.splitlines()
-                                                  if not line.startswith("当前剩余对象：")))
+                progress = receipt["task_progress"]
+                if progress["status"] == "SUCCESS":
+                    count = progress["data"]["check"]["count"]
+                    self.chat_message("当前待办", f"已重新核对当前待办，剩余 {count} 张发票待补用途。")
+                else:
+                    self.chat_message("当前待办", "本次修改结果见发票回执。请打开待办详情重新核对进度。")
         api = response.get("api_counts")
         if api:
             self.model_requests += api["attempts"]
@@ -1183,6 +1231,8 @@ class AgentWorkspace(ConversationUI, App):
                 rule_id, version = call.get("rule", (None, None))
                 rule = f" · {rule_id} v{version}" if rule_id and version else ""
                 lines.append(f"{call['tool']} · {status_label(call['status'])} · {where}{rule} · {call['id']}")
+                if call.get("source"):
+                    lines.append(f"  来源 {call['source']}")
                 if call.get("error"):
                     lines.append(f"  {call['error']}")
             items.append(Static(safe_text("\n".join(lines)), markup=False))

@@ -8,7 +8,7 @@ from .tool_registry import (TOOLS, TEACHING_TOOLS, REGISTRY, handle_tool, tool_r
 from .trace import redact, write_trace, warn_trace_degraded
 from .write_coordination import WriteCoordinator
 from .updates import commit_invoice_update
-from .responses import parse_final, render_information, render_clarification, render_stopped
+from .responses import explicit_scope, parse_final, render_information, render_clarification, render_reference_error, render_stopped
 from .persistence import ManagementIntent, ManagementTurn, ManagementProposals
 from .context import ContextBuilder, ContextLimitError, reference_hint
 from .scheduler import BudgetPolicy, TurnExecution
@@ -296,7 +296,8 @@ class Agent:
         self.execution = execution = TurnExecution(self.budget_policy,self.trace)
         read_results = []
         expected_scope = self.context.begin(text,len(self.messages)-1,reset=management=="task")
-        reference = self.context.resolve(text)
+        explicit = explicit_scope(text, include_update_aliases=True)
+        reference = self.context.resolve(text, explicit=explicit)
         reference_context = None
         if reference and reference["ok"]:
             self.context.accept_reference(reference['evidence'])
@@ -306,14 +307,13 @@ class Agent:
                                  "anchor_id":reference["evidence"]["reference"]["anchor_id"],
                                  "display_ids":self.context.display_ids}
             self.trace("reference.resolved",reference)
-        from .responses import explicit_scope
         import re
-        explicit = explicit_scope(text, include_update_aliases=True)
         has_dates = bool({"year", "month", "periods"} & explicit.keys()) or bool(
             re.search(r"今年|去年|明年|本月|上月|下月|上个月|下个月|最近|近[一二三四五六七八九十0-9]+", text))
         all_invoices = not reference and not has_dates and bool(
             re.search(r"(?:所有|全部|全量|完整)的?发票|发票(?:的)?(?:完整目录|全部目录)", text))
-        exact_invoice = not reference and not has_dates and {"company_id", "invoice_no"} <= explicit.keys()
+        exact_invoice = (not reference and not has_dates and
+                         len(explicit.get("company_id", [])) == len(explicit.get("invoice_no", [])) == 1)
         read_workspace = self._workspace_read_scope(read_workspace, text) if not (allow_prepare or management or reference) else None
         # 动作由可信CLI命令指定；模型不能把只读意图变成创建/删除。
         if management in {'task','preference'} and management_action:
@@ -333,7 +333,9 @@ class Agent:
         execution.can_continue = lambda steps:remaining_work_allowed(self.db_path,self.user_id,steps,self.update_session,management_intent,
             self.allowed_tools & {tool["function"]["name"] for tool in turn_tools},
             proposals=self.management_proposals if management is None else None)
-        def finish(text, store=True, category="operation_result"):
+        def finish(text, store=True, category="operation_result", *, chat_notice=None):
+            if chat_notice is None and category in {"clarification", "general_unverified"}:
+                chat_notice = text
             self.coordinator.assess_current_match(read_results)
             if not execution.stop_reason:
                 execution.stop("WAITING_USER" if category=="clarification" else "MODEL_FINISHED_WITH_PENDING_WORK" if execution.schedule else "ANSWERED")
@@ -354,6 +356,8 @@ class Agent:
             if self.write_receipt['status']=='CURRENT_VALUE_MATCHES':text+='\n'+self.write_receipt['message']
             self.last_response = {"source":"runtime_output", "category":category, "text":text, "operation_receipt":self.write_receipt, "trace_degraded":self.trace_degraded,"execution":execution.snapshot()}
             api={key:self.transport.counts()[key]-api_before[key] for key in api_before} if api_before is not None else None
+            self.last_response["chat_notice"] = chat_notice
+            self.last_response["tool_results"] = tuple(read_results)
             self.last_response['api_counts']=api
             if store:
                 self.messages.append({"role": "assistant", "name":"harness_output", "content": text})
@@ -363,7 +367,8 @@ class Agent:
         if reference and not reference["ok"]:
             self.trace("reference.unresolved",reference)
             execution.stop(reference["status"])
-            return finish("请明确引用对象："+json.dumps(reference,ensure_ascii=False),category="clarification")
+            return finish("请明确引用对象："+json.dumps(reference,ensure_ascii=False), category="clarification",
+                          chat_notice=render_reference_error(reference["status"]))
         for index in range(self.max_requests):
             try:
                 context = self.model_messages(reference, read_workspace)

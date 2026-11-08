@@ -382,6 +382,8 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
                         outcome["evidence"]["preference_readback_verified"] = verified
                 if outcome["ok"] or (name=='manage_preference' and args['action']=='get' and outcome['status']=='NOT_FOUND'):
                     if name=='manage_preference':outcome['evidence']['operation']={'action':args['action'],'key':args['key']}
+                    elif name == "manage_task":
+                        outcome["evidence"]["operation"] = {"action": args["action"]}
                     outcome["evidence"].setdefault("scope",{"company_id":args["company_id"]})
                     outcome["evidence"].setdefault("source","current_sqlite")
                     check = outcome["evidence"].get("check")
