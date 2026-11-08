@@ -20,15 +20,16 @@ from app.tui import AgentWorkspace
 from app.tui_screens import Approval
 from app.win_vault import CredentialError, WindowsVault, profile_target
 from tests.closure_approval import facts
-from textual.widgets import DataTable, Input, Select
+from textual.widgets import Button, DataTable, Input, Select
 
-ROOT = evidence.ROOT / "artifacts" / "p0_final_live"
+ROOT = evidence.ROOT / "artifacts" / "submission_r2"
 URL = "https://api.deepseek.com"
 MODEL = "deepseek-flash"
 ACTOR = "U001"
 VALUE = "资料打印"
 EDIT = "把甲企业 F002 的用途改成资料打印。"
-PHASES = {"A": "A", "B": "B", "C12": "C", "C34": "C", "C5": "C", "D": "D"}
+PHASES = {"A": "A", "A3": "A", "B": "B", "C12": "C", "C34": "C", "C5": "C", "D": "D"}
+WORKBOOKS = {**PHASES, "D23": "D"}
 LIMIT = 30
 PROTOCOL_ERRORS = {"API_OR_RESPONSE_ERROR", "PROTOCOL_ERROR", "INVALID_RESPONSE"}
 # Micro-yuan, using official peak Flash rates and treating all input as cache misses.
@@ -70,7 +71,8 @@ def connection(args, require_key=True):
 
 
 def changes(before, after):
-    return {name for name in before if before[name] != after[name]} - {"reference_anchors"}
+    return {name for name in before.keys() | after.keys() if before.get(name) != after.get(name)} - {
+        "reference_anchors", "workspace_identity"}
 
 
 def valid_commit(before, after, draft):
@@ -99,10 +101,11 @@ def require(condition, reason):
 class Run:
     def __init__(self, folder, phase, args):
         self.folder, self.phase = folder, phase
-        self.db = folder / f"{PHASES[phase]}.sqlite"
+        self.db = folder / f"{WORKBOOKS[phase]}.sqlite"
         self.trace = folder / f"{phase}.jsonl"
         self.budget = folder / "budget.sqlite"
-        self.app = AgentWorkspace(self.db, args.profiles_file, args.profiles_local, trace_path=self.trace)
+        self.app = AgentWorkspace(self.db, args.profiles_file, args.profiles_local, trace_path=self.trace,
+                                  session_path=folder / f"{phase if phase == 'A3' else WORKBOOKS[phase]}-sessions.sqlite")
         self.profile = args.profile
         self.case = phase
         self.monthly_sql = []
@@ -144,26 +147,31 @@ class Run:
                 if re.search(r"\bFROM\s+(invoices|bank_transactions)\b", sql, re.I):
                     company = re.search(r"\bcompany_id\s*=\s*'(C\d+)'", sql, re.I)
                     month = re.search(r"\b(?:invoice_date|transaction_date)\s+LIKE\s+'(\d{4}-\d{2})%'", sql, re.I)
-                    if month and self.case in {"A1", "A2"}:
+                    if month and self.case in {"A1", "A2", "A3"}:
                         self.monthly_sql.append((company[1] if company else None, month[1]))
             db.set_trace_callback(observe)
         return db
 
-    async def wait(self, pilot, condition):
-        async with asyncio.timeout(200):
-            while not condition():
-                await pilot.pause(0.05)
+    async def wait(self, pilot, condition, *, seconds=15):
+        try:
+            async with asyncio.timeout(seconds):
+                while not condition():
+                    await pilot.pause(0.05)
+        except TimeoutError as error:
+            raise CheckFailed(f"Pilot timed out at check line {condition.__code__.co_firstlineno}") from error
 
     async def send(self, pilot, case, text, *, approval=None):
         self.case = case
+        before = evidence.snapshot(self.db)
         record_start = len(self.app.records)
         field = self.app.workspace_widget("#prompt", Input)
+        await self.wait(pilot, lambda: field.region.width > 0 and not field.disabled)
         field.value = text
         field.focus()
-        await pilot.pause()
+        await self.wait(pilot, lambda: self.app.focused is field)
         await pilot.press("enter")
         await self.wait(pilot, lambda: not field.value)
-        await self.wait(pilot, lambda: not self.app.busy or isinstance(self.app.screen, Approval))
+        await self.wait(pilot, lambda: not self.app.busy or isinstance(self.app.screen, Approval), seconds=200)
         draft = None
         if isinstance(self.app.screen, Approval):
             modal = self.app.screen
@@ -173,19 +181,23 @@ class Run:
             if approval == "确认发票修改":
                 candidates = list(self.app.agent.update_session.drafts.values())
                 draft = candidates[0] if len(candidates) == 1 else None
-                okay = (okay and draft is not None and
+                okay = (okay and draft is not None and "F002" in modal.body and VALUE in modal.body
+                        and str(draft.old_value or "空") in modal.body and
                         (draft.actor, draft.company_id, draft.invoice_no, draft.field, draft.new_value) ==
                         (ACTOR, "C001", "F002", "purpose", VALUE))
             if not okay:
                 await pilot.press("escape")
                 await self.wait(pilot, lambda: not self.app.busy)
                 raise CheckFailed("Unexpected confirmation preview; cancelled")
+            require(not changes(before, evidence.snapshot(self.db)), "Unexpected business write before confirmation")
             await pilot.click("#approve")
-            await self.wait(pilot, lambda: not self.app.busy)
+            await self.wait(pilot, lambda: not self.app.busy, seconds=200)
         elif approval:
             self.note_turn(case, record_start)
             raise CheckFailed("No expected confirmation modal")
         self.note_turn(case, record_start)
+        if approval:
+            self.steps[-1]["confirmation"] = "SIMULATED_CONFIRMATION"
         return draft
 
     def note_turn(self, case, record_start):
@@ -195,7 +207,9 @@ class Run:
         response = self.app.agent.last_response or {}
         self.steps.append({"step": case, "status": status, "tools": calls,
                            "execution": response.get("execution"), "api": api,
-                           "clarification": response.get("category") == "clarification"})
+                           "clarification": response.get("category") == "clarification",
+                           "answer": response.get("text"),
+                           "receipt_status": (self.app.agent.write_receipt or {}).get("status")})
         if status in PROTOCOL_ERRORS or response.get("execution", {}).get("stop_reason") in PROTOCOL_ERRORS or self.halt:
             self.halt = True
             raise CheckFailed("Transport or protocol failure; further dispatch stopped")
@@ -219,12 +233,42 @@ class Run:
                 and not changes(before, evidence.snapshot(self.db)), "A2 tool, displayed totals or side effects differ")
         return "PASS" if natural and step["status"] in {"ANSWERED", "COMPLETED"} else "PARTIAL"
 
+    async def selected_query(self, pilot):
+        before = evidence.snapshot(self.db)
+        await pilot.click("#query-scope")
+        await self.wait(pilot, lambda: bool(self.app.screen.query("#choice-0"))
+                        and self.app.screen.query_one("#choice-0").region.width > 0)
+        self.app.screen.query_one("#choice-0", Button).focus()
+        await pilot.pause()
+        await pilot.press("enter")
+        await self.wait(pilot, lambda: bool(self.app.screen.query("#period"))
+                        and self.app.screen.query_one("#period").region.width > 0)
+        period = self.app.screen.query_one("#period", Input)
+        period.value = "2026-09"
+        period.focus()
+        await pilot.pause()
+        await pilot.press("enter")
+        await self.wait(pilot, lambda: self.app.read_workspace == ("C001", 2026, 9))
+        await self.send(pilot, "A3", "查一下当前企业的发票和银行收支。")
+        step = self.steps[-1]
+        require(not step["clarification"] and self.monthly_sql and
+                all(x == ("C001", "2026-09") for x in self.monthly_sql)
+                and any(c.get("rule") == ("R001", "1.0") and c["status"] == "SUCCESS" for c in step["tools"])
+                and all(token in step["answer"] for token in ("9622.06", "13000.50", "7180.74"))
+                and not changes(before, evidence.snapshot(self.db)), "A3 preselected scope or displayed totals differ")
+        return "PASS" if step["status"] in {"ANSWERED", "COMPLETED"} else "PARTIAL"
+
     async def invoice(self, pilot, step):
         before = evidence.snapshot(self.db)
         draft = await self.send(pilot, step, EDIT, approval="确认发票修改")
         require(draft is not None and self.app.agent.write_receipt["status"] == "COMMITTED"
                 and self.app.agent.write_receipt["readback_verified"]
                 and valid_commit(before, evidence.snapshot(self.db), draft), "Commit, audit or readback mismatch")
+
+    async def invoice_guards(self, pilot):
+        before = evidence.snapshot(self.db)
+        await self.send(pilot, "B2", EDIT)
+        require(not changes(before, evidence.snapshot(self.db)), "B2 repeat wrote business data")
 
     async def task(self, pilot):
         before = evidence.snapshot(self.db)
@@ -253,24 +297,34 @@ class Run:
             require(second["pid"] != os.getpid(), "C5 did not restart in a new process")
         before = evidence.snapshot(self.db)
         require(self.app.agent is None, "Old Agent was restored")
-        await pilot.click("#go-tasks")
-        await self.wait(pilot, lambda: bool(self.app.workspace_widget("#task-body").query("#todo-0")))
-        await pilot.click("#todo-0")
-        await self.wait(pilot, lambda: bool(self.app.workspace_widget("#task-body").query("#linked-finance")))
-        await pilot.click("#linked-finance")
+        await self.press(pilot, "#go-tasks")
+        await self.press(pilot, "#todo-0")
+        await self.press(pilot, "#linked-finance")
         await self.wait(pilot, lambda: bool(self.app.workspace_widget("#finance-body").query("#invoice-table")))
         require(self.app.workspace_widget("#invoice-table", DataTable).row_count == 10
                 and any(t["task_id"] == task_id and t["status"] == "ACTIVE" for t in before["tasks"])
                 and len(facts(self.db)["missing"]) == count, "Restored task, invoices or missing count mismatch")
-        await pilot.click("#back-detail")
-        await self.wait(pilot, lambda: bool(self.app.workspace_widget("#task-body").query("#continue-task")))
-        await pilot.click("#continue-task")
+        await self.press(pilot, "#back-detail")
+        await self.press(pilot, "#continue-task")
         await self.wait(pilot, lambda: self.app.agent is not None)
         require(self.app.agent.context.scope.get("task_id") == [task_id]
                 and not self.app.agent.update_session.drafts and not self.app.agent.update_session.confirmations
                 and not changes(before, evidence.snapshot(self.db)), "Restored focus or permission boundary differs")
-        self.steps.append({"step": "C3" if count == 5 else "C5", "task_id": task_id, "missing": count,
+        require(not any("reasoning_content" in message or message.get("tool_calls")
+                        for message in self.app.agent.messages), "Old model protocol messages restored")
+        self.steps.append({"step": "C3" if count == 5 else "C5-restore", "task_id": task_id, "missing": count,
                            "status": "ACTIVE", "requests_before_restore": self.app.model_requests})
+
+    async def missing(self, pilot, case, count, prompt):
+        before = evidence.snapshot(self.db)
+        await self.send(pilot, case, prompt)
+        step = self.steps[-1]
+        require(len(facts(self.db)["missing"]) == count
+                and any(c["tool"] == "check_missing_purpose" and c["status"] == "SUCCESS"
+                        and c.get("scope") == {"company_id": "C001", "year": 2026, "month": 9}
+                        and c.get("rule") == ("R002", "2.0") for c in step["tools"])
+                and re.search(rf"(?<![0-9]){count}\s*张", step["answer"] or "")
+                and not changes(before, evidence.snapshot(self.db)), f"{case} missing-use tool, result or scope differs")
 
     async def directory(self, pilot):
         before = evidence.snapshot(self.db)
@@ -278,7 +332,9 @@ class Run:
         calls = self.steps[-1]["tools"]
         require(any(c["tool"] == "list_invoice_directory" and c["status"] == "SUCCESS"
                     and c["scope"] == {"company_id": "C001"} for c in calls), "D1 did not use the company directory")
-        require(self.app.chat_invoice_route == ("C001", 0, 0, 1), "D1 did not present the first directory page")
+        route = self.app.chat_invoice_route
+        require(route is not None and route[:3] == ("C001", 0, 0), "D1 did not present the company directory")
+        page = route[-1]
         link = self.app.workspace_widget("#chat-invoices")
         await self.wait(pilot, lambda: link.display and link.region.width > 0 and link.region.height > 0)
         link.focus()
@@ -289,10 +345,15 @@ class Run:
         expected = sorted((row["invoice_date"], row["invoice_no"])
                           for row in before["invoices"] if row["company_id"] == "C001")
         shown = "".join(line.text for line in self.app.workspace_widget("#chat-log").lines)
-        require(actual == expected[:10] and f"共 {len(expected)} 张" in shown,
+        start = (page - 1) * 10
+        require(len(expected) == 20 and actual == expected[start:start + 10] and f"共 {len(expected)} 张" in shown,
                 "D1 displayed directory differs from independent SQL")
         await pilot.click("#go-chat")
         await self.wait(pilot, lambda: self.app.workspace_widget("#prompt").region.width > 0)
+        require(not changes(before, evidence.snapshot(self.db)), "D1 read-only boundary differs")
+
+    async def invoice_detail(self, pilot):
+        before = evidence.snapshot(self.db)
         await self.send(pilot, "D2", "告诉我甲企业 F002 的发票详情。")
         calls = self.steps[-1]["tools"]
         row = next(item for item in before["invoices"] if item["company_id"] == "C001" and item["invoice_no"] == "F002")
@@ -303,18 +364,37 @@ class Run:
                                                    row["seller_name"], row["item_name"], "价税合计", "用途", "备注"))
                 and not changes(before, evidence.snapshot(self.db)), "D2 detail or read-only boundary differs")
 
+    async def press(self, pilot, selector):
+        await self.wait(pilot, lambda: bool(self.app.screen.query(selector))
+                        and self.app.screen.query_one(selector).region.width > 0)
+        button = self.app.screen.query_one(selector, Button)
+        button.focus()
+        await self.wait(pilot, lambda: self.app.focused is button)
+        await pilot.press("enter")
+
+    async def sign_in(self, pilot, actor):
+        await self.wait(pilot, lambda: bool(self.app.screen.query("#login-user")))
+        self.app.screen.query_one("#login-user", Select).value = actor
+        await pilot.click("#sign-in")
+        await self.wait(pilot, lambda: self.app.user == actor)
+        require(self.app.mode == "live", "TUI login did not start Live")
+        self.app.profile = self.profile
+
     async def drive(self):
         async with self.app.run_test(size=(120, 40)) as pilot:
-            self.app.screen.query_one("#login-user", Select).value = ACTOR
-            await pilot.click("#sign-in")
-            require(self.app.user == ACTOR and self.app.mode == "live", "TUI login did not start Live")
-            self.app.profile = self.profile
+            await self.sign_in(pilot, ACTOR)
             if self.phase == "A":
                 return await self.query(pilot)
+            if self.phase == "A3":
+                return await self.selected_query(pilot)
             if self.phase == "D":
                 await self.directory(pilot)
+            if self.phase in {"D", "D23"}:
+                await self.invoice_detail(pilot)
+                await self.missing(pilot, "D3", 5, "这张发票所属账期还有哪些发票没有填写用途？")
             if self.phase == "B":
-                await self.invoice(pilot, "B")
+                await self.invoice(pilot, "B1")
+                await self.invoice_guards(pilot)
             if self.phase == "C12":
                 await self.task(pilot)
             if self.phase == "C34":
@@ -323,6 +403,10 @@ class Run:
                 require(len(facts(self.db)["missing"]) == 4, "C4 did not reduce current missing count")
             if self.phase == "C5":
                 await self.restored(pilot, 4)
+                await self.missing(pilot, "C5", 4, "现在这个待办做完了哪些，还有哪些发票没填用途？")
+                answer = self.steps[-1]["answer"] or ""
+                if not all(detail in answer for detail in ("F002", VALUE, "ACTIVE", "下一步")):
+                    return "PARTIAL"
         return "PASS"
 
     def execute(self):
@@ -342,10 +426,11 @@ class Run:
             for sent, response in zip(self.requests, responses):
                 sent.update(usage=response.get("usage"), success=response.get("success"),
                             response_model=response.get("response_model"), category=response.get("http_category"),
+                            protocol=response.get("protocol_mode"),
                             latency_ms=response.get("latency_ms"))
             evidence.save(self.folder / f"{self.phase}.result.json",
                           {"phase": self.phase, "pid": os.getpid(), "status": status, "failure": failure,
-                           "stop_live": self.halt, "actor": "SIMULATED_TEST_USER / Textual Pilot",
+                           "stop_live": self.halt, "confirmation_mode": "SIMULATED_CONFIRMATION / Textual Pilot",
                            "steps": self.steps, "requests": self.requests, "changed_tables":
                                sorted(changes(before, evidence.snapshot(self.db)))})
         return 3 if self.halt else 0 if status == "PASS" else 1
@@ -359,7 +444,7 @@ def main():
     parser.add_argument("--preflight", action="store_true")
     parser.add_argument("--p0-windows-vault", action="store_true",
                         help="允许从 Windows 普通凭据 Economy-guy/P0-Live/shared-flash 读取验收密钥")
-    parser.add_argument("--worker", choices=PHASES, help=argparse.SUPPRESS)
+    parser.add_argument("--worker", choices=WORKBOOKS, help=argparse.SUPPRESS)
     parser.add_argument("--run", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     try:
@@ -388,16 +473,25 @@ def main():
         if args.run is None:
             parser.error("Missing internal run directory")
         folder = args.run.resolve()
-        paths = (folder / "budget.sqlite", folder / f"{PHASES[args.worker]}.sqlite")
+        paths = (folder / "budget.sqlite", folder / f"{WORKBOOKS[args.worker]}.sqlite")
         if (folder.parent != ROOT.resolve() or not folder.name.startswith("run-")
                 or any(not p.is_file() or p.resolve() != p or p.stat().st_nlink != 1 for p in paths)):
             parser.error("Invalid internal run directory")
+        try:
+            with (folder / f"{args.worker}.started").open("x", encoding="utf-8") as marker:
+                marker.write(str(os.getpid()))
+        except FileExistsError:
+            return 3
         return Run(folder, args.worker, args).execute()
     ROOT.mkdir(parents=True, exist_ok=True)
     folder = Path(mkdtemp(prefix="run-", dir=ROOT)).resolve()
     for scene in "ABCD":
         evidence.new_database(folder / f"{scene}.sqlite")
     evidence.init_budget(folder / "budget.sqlite")
+    evidence.save(folder / "manifest.json", {"mode": "live", "provider": "deepseek", "profile": args.profile,
+                  "model": MODEL, "base_url": URL, "attempt_limit": LIMIT, "cost_limit_cny": COST_LIMIT / 1_000_000,
+                  "max_request_reserve_cny": MAX_REQUEST_COST / 1_000_000, "sdk_retries": 0})
+    print(f"Live evidence directory: {folder}", flush=True)
     results = {}
     for phase in PHASES:
         if phase in {"C34", "C5"} and results.get("C12" if phase == "C34" else "C34") != "PASS":

@@ -882,6 +882,17 @@ class P0Test(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.purpose(), ("资料打印", 1))
             self.assertEqual(app.records[-1][0], "COMMITTED")
 
+    async def test_submission_read_only_user_cannot_prepare_same_edit(self):
+        app = self.app([tool("prepare_invoice_update", EDIT), FINAL])
+        async with app.run_test(size=(120, 40)) as pilot:
+            await self.sign_in(app, pilot, "U002")
+            await self.send(app, pilot, "把甲企业 F002 的用途改成资料打印。")
+            await self.await_state(pilot, lambda: not app.busy or isinstance(app.screen, Approval))
+            self.assertFalse(isinstance(app.screen, Approval))
+            self.assertEqual(app.records[-1][1][0]["status"], "DENIED")
+            self.assertFalse(app.agent.update_session.drafts)
+            self.assertEqual(self.purpose(), (None, 0))
+
     async def test_model_worker_keeps_read_only_navigation_responsive(self):
         entered, release = Event(), Event()
 
