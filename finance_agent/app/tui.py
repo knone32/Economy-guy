@@ -22,7 +22,7 @@ from .cli_workspaces import company_access, invoice_history, missing_migrations,
 from .model_config import ModelConnection, ProfileError, load_profiles, resolve_connection
 from .persistence import ManagementIntent, ManagementTurn, confirm_management
 from .queries import QueryError, available_periods, get_invoice, invoice_directory
-from .responses import needs_progress_evidence, render_scope, scope_key
+from .responses import explicit_scope, needs_progress_evidence, render_scope, scope_key
 from .rules import RuleError, check_missing_purpose
 from .session_store import workbook_identity
 from .stage2_schema import open_existing
@@ -546,6 +546,7 @@ class AgentWorkspace(ConversationUI, App):
             ("我的账户与权限", "account"), ("当前查询范围", "company"),
             ("工作台设置", "settings"), ("帮助与关于", "help"), ("新对话", "new"),
             ("切换账号", "switch"), ("退出登录", "logout"), ("退出程序", "quit"),
+            ("我的对话", "conversations"),
         ]), self.account_choice)
 
     def account_choice(self, choice):
@@ -555,6 +556,8 @@ class AgentWorkspace(ConversationUI, App):
             self.confirm_logout("切换账号" if choice == "switch" else "退出登录")
         elif choice == "new":
             self.request_new_chat()
+        elif choice == "conversations":
+            self.open_my_conversations()
         elif choice == "quit":
             self.action_quit_safe()
         elif choice == "company":
@@ -570,32 +573,103 @@ class AgentWorkspace(ConversationUI, App):
                 [(f"{row['name']} · 读取 {'允许' if row['read'] else '拒绝'} · "
                   f"修改 {'允许' if row['modify'] else '拒绝'}", None) for row in rows]))
 
-    def request_new_chat(self):
-        if self.busy or isinstance(self.screen, Approval):
+    def can_change_conversation(self, *, discard_local_draft=False):
+        if not self.user:
+            return False
+        if self.busy or self.turn_seq is not None or isinstance(self.screen, Approval):
             self.note("本轮仍在处理或等待确认，请先完成或取消本轮操作。")
+            return False
+        if self.agent:
+            status = self.agent.write_receipt["status"]
+            unresolved_draft = self.agent.update_session.drafts and status not in {"COMMITTED", "NO_CHANGE", "CANCELLED"}
+            outcomes = (self.agent.last_response or {}).get("tool_results", ())
+            unknown = status == "UNKNOWN_OUTCOME" or any(r["status"] == "UNKNOWN_OUTCOME" for _, r in outcomes)
+            if unknown or (not discard_local_draft and (self.agent.pending_edit or unresolved_draft)):
+                self.note("当前有未完成操作。请先完成、取消修改意图，或核对未知提交结果。")
+                return False
+        return True
+
+    def open_my_conversations(self):
+        if not self.can_change_conversation():
+            return
+        if self.conversation is None:
+            self.note("本机会话存储不可用，请重新打开账簿。")
+            return
+        try:
+            chats = self.conversation.list_chats()
+            readable = {row["company_id"] for row in company_access(self.db, self.user) if row["read"]}
+        except (OSError, ValueError, sqlite3.Error):
+            self.note("无法读取会话列表，请重新打开账簿。")
+            return
+        choices = [("新建对话", "new")]
+        for chat in chats:
+            companies = set(chat["company_ids"]) | set(explicit_scope(
+                chat["title"], include_update_aliases=True).get("company_id", ()))
+            title = chat["title"] if companies <= readable else "部分内容已无读取权限"
+            active = chat["state"] == "ACTIVE"
+            label = f"{'当前' if active else '历史'} · {title} · {chat['updated']} UTC"
+            choices.append((label, None if active else chat["id"]))
+        epoch = self.session_epoch
+        def selected(choice):
+            if epoch == self.session_epoch:
+                self.choose_conversation(choice)
+
+        self.push_screen(Choices("我的对话 · 最近 20 条", choices), selected)
+
+    def choose_conversation(self, chat):
+        if chat == "new":
+            self.request_new_chat()
+        elif chat and self.conversation and self.can_change_conversation():
+            try:
+                self.conversation.switch_chat(chat)
+            except (OSError, ValueError, sqlite3.Error):
+                self.note("无法切换对话，请先结束本轮操作或重新打开账簿。")
+                return
+            self.reset_agent(clear_log=True)
+            self.clear_conversation_history()
+            self.company = self.period = self.read_workspace = None
+            self.task_route = self.invoice_route = None
+            self.workspace_widget("#prompt", Input).value = ""
+            try:
+                self.restore_conversation()
+            except (OSError, ValueError, sqlite3.Error):
+                self.reset_agent(clear_log=True)
+                self.clear_conversation_history()
+                self.company = self.period = self.read_workspace = None
+                self.show("chat")
+                self.note("已切换对话，暂无法安全读取历史，请重新打开账簿。")
+                return
+            self.show("chat")
+            self.note("已切换对话。显示为历史记录，当前业务将重新查询。")
+
+    def request_new_chat(self):
+        # The legacy in-memory reset can explicitly discard a draft; persisted chats cannot switch with one.
+        local_only = self.session_path is None
+        if not self.can_change_conversation(discard_local_draft=local_only):
             return
         prompt = self.workspace_widget("#prompt", Input)
+        epoch = self.session_epoch
 
         def start(confirmed):
-            if confirmed is True and not self.busy:
+            if (confirmed is True and epoch == self.session_epoch
+                    and self.can_change_conversation(discard_local_draft=local_only)):
                 if self.conversation:
                     try:
                         self.conversation.new_chat(self.read_workspace)
                     except (OSError, ValueError, sqlite3.Error):
                         self.note("无法保存新对话，请重新打开账簿。")
                         return
-                self.resumed, self.resume_displays, self.resume_focus = [], [], None
-                self.has_saved_history = False
-                self.saved_records = []
+                self.clear_conversation_history()
                 self.reset_agent(clear_log=True)
                 prompt.value = ""
                 self.show("chat")
                 self.note("已开始新对话。可输入问题，按 Enter 发送。")
 
         if self.agent is not None or self.has_saved_history or prompt.value.strip():
+            body = ("当前对话会归档，可在「我的对话」中重开。" if self.conversation else
+                    "当前对话只保存在内存中。确认后将清空，未提交的修改意图也会取消。")
             self.push_screen(Approval(
-                "开始新对话？",
-                "当前对话内容将不再显示，未提交的修改意图会取消。已保存的待办、财务数据和审计记录不会删除。",
+                "开始新对话？", body + "已保存的待办、财务数据和审计记录会保留。",
                 "开始新对话", cancel="返回当前对话", danger=True), start)
         else:
             start(True)

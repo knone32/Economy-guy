@@ -124,10 +124,59 @@ class SessionStore:
         db.execute("INSERT INTO chats(id,workbook,actor) VALUES (?,?,?)", (chat,self.identity,self.actor))
         return chat
 
+    def list_chats(self):
+        """Recent conversations for the locked actor and workbook."""
+        self.validate()
+        with self.connection() as db:
+            rows = db.execute("""SELECT c.id, c.updated, c.state, substr(t.request,1,120) AS first_request, t.calls
+                FROM chats c LEFT JOIN turns t ON t.seq=(SELECT seq FROM turns
+                    WHERE chat=c.id AND request<>'' ORDER BY seq LIMIT 1)
+                WHERE c.workbook=? AND c.actor=?
+                ORDER BY (c.state='ACTIVE') DESC, c.updated DESC, c.rowid DESC LIMIT 20""",
+                (self.identity, self.actor)).fetchall()
+        chats = []
+        for row in rows:
+            chat = dict(row)
+            title = " ".join((chat.pop("first_request") or "").split())
+            calls = json.loads(chat.pop("calls") or "[]")
+            chat["company_ids"] = sorted({c["scope"]["company_id"] for c in calls
+                                          if (c.get("scope") or {}).get("company_id")})
+            chat["title"] = (title[:36] + "…" if len(title) > 36 else title) or "空白对话"
+            chats.append(chat)
+        return chats
+
+    def _archive_current(self, db):
+        if db.execute("SELECT 1 FROM turns WHERE chat=? AND state='RUNNING'", (self.chat,)).fetchone():
+            raise SessionBusyError("Conversation has a running turn")
+        changed = db.execute("""UPDATE chats SET state='ARCHIVED',updated=CURRENT_TIMESTAMP
+                              WHERE id=? AND workbook=? AND actor=? AND state='ACTIVE'""",
+                             (self.chat, self.identity, self.actor)).rowcount
+        if changed != 1:
+            raise ValueError("Active conversation changed")
+
+    def switch_chat(self, chat):
+        self.validate()
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            target = db.execute("SELECT state FROM chats WHERE id=? AND workbook=? AND actor=?",
+                                (chat, self.identity, self.actor)).fetchone()
+            if target is None:
+                raise ValueError("Conversation is outside the current actor/workbook")
+            if chat == self.chat and target["state"] == "ACTIVE":
+                return
+            if target["state"] != "ARCHIVED":
+                raise ValueError("Conversation is not archived")
+            self._archive_current(db)
+            db.execute("UPDATE chats SET state='ACTIVE',updated=CURRENT_TIMESTAMP WHERE id=?", (chat,))
+            # A previously interrupted process never transfers running tool work.
+            db.execute("UPDATE turns SET state='INTERRUPTED' WHERE chat=? AND state='RUNNING'", (chat,))
+        self.chat = chat
+
     def new_chat(self, focus):
         self.validate()
         with self.connection() as db:
-            db.execute("UPDATE chats SET state='ARCHIVED',updated=CURRENT_TIMESTAMP WHERE id=?", (self.chat,))
+            db.execute("BEGIN IMMEDIATE")
+            self._archive_current(db)
             new = self._active(db)
             db.execute("UPDATE chats SET focus=? WHERE id=?", (json.dumps(focus), new))
         self.chat = new

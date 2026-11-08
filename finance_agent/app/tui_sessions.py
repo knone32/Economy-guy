@@ -4,7 +4,7 @@ import sqlite3
 
 from .cli_chat import safe_text
 from .cli_workspaces import company_access
-from .responses import render_reference_error
+from .responses import explicit_scope, render_reference_error
 from .session_store import SessionBusyError, SessionStore
 from .tasks import task_details
 from .updates import inspect_request
@@ -32,74 +32,84 @@ class ConversationUI:
             self.conversation = None
 
     def open_conversation(self):
-        self.resumed, self.resume_displays, self.resume_focus = [], [], None
-        self.has_saved_history = False
-        self.saved_records = []
+        self.clear_conversation_history()
         self.conversation_blocked = False
         if self.session_path is None:
             return False
         try:
             self.conversation = SessionStore(self.session_path, self.db, self.user)
-            history = self.conversation.history()
-            permitted = {row["company_id"] for row in company_access(self.db,self.user) if row["read"]}
-            focus = history["focus"]
-            if focus and focus[0] in permitted:
-                self.read_workspace = tuple(focus)
-                self.company, year, month = self.read_workspace
-                self.period = year, month
-            task = history["task"]
-            if task and task[0] in permitted:
-                found = task_details(self.db, self.user, *task)
-                if found["ok"] and found["data"]["can_execute"]:
-                    self.task_focus = tuple(task)
-            for turn in history["turns"]:
-                scoped = {(c.get("scope") or {}).get("company_id") for c in turn["calls"]}
-                if (scoped - {None}) - permitted:
-                    continue
-                self.has_saved_history = True
-                if turn["calls"]:
-                    self.saved_records.append((turn["state"],turn["mode"],turn["calls"]))
-                if turn["request"]:
-                    self.chat_message("你", turn["request"])
-                for role, body in turn["display"]:
-                    # Older builds persisted the resolver envelope in visible history.
-                    prefix = "请明确引用对象："
-                    if role == "Agent" and body.startswith(prefix):
-                        try:
-                            status = json.loads(body[len(prefix):]).get("status")
-                        except (ValueError, AttributeError):
-                            status = None
-                        body = render_reference_error(status if isinstance(status, str) else None)
-                    self.chat_message(role, body)
-                if turn["state"] == "INTERRUPTED":
-                    self.chat_message("会话状态", "上次处理被中断。请重新提出查询。")
-                elif turn["state"] == "UNKNOWN_OUTCOME":
-                    message = "上次操作结果待核实。请检查执行记录及当前业务状态。"
-                    if turn["lookup"]:
-                        audit = inspect_request(self.db, self.user, turn["lookup"])
-                        if audit["status"].startswith("COMMITTED"):
-                            message = "已在 SQLite 成功审计中核实上次提交。请查看当前发票。"
-                    self.chat_message("会话状态", message)
-                if turn["state"] != "COMPLETED" or turn["seq"] <= history["boundary"]:
-                    continue
-                scopes = query_scopes(turn["calls"])
-                if scopes:
-                    self.query_focus = scopes
-                if turn["trace"]:
-                    self.resume_displays.append(turn["trace"])
-                if turn["hint"] and turn["request"]:
-                    if len(turn["request"]) <= 2000:
-                        self.resumed.append({"request":turn["request"], **turn["hint"]})
-                    self.resume_focus = tuple(turn["hint"]["focus"]) if turn["hint"].get("focus") else None
-            self.resumed = self.resumed[-6:]
-            self.resume_displays = self.resume_displays[-64:]
-            self.saved_records = self.saved_records[-20:]
+            return self.restore_conversation()
         except SessionBusyError:
             self.conversation_blocked = True
             self.note("此账号的账簿对话已在另一窗口打开。请关闭后重新登录。")
         except (OSError, ValueError, sqlite3.Error):
             self.close_conversation()
             self.notify("无法打开本机会话存储。当前聊天仅保存在进程内。", severity="warning")
+        return False
+
+    def clear_conversation_history(self):
+        self.resumed, self.resume_displays, self.resume_focus = [], [], None
+        self.has_saved_history = False
+        self.saved_records = []
+
+    def restore_conversation(self):
+        history = self.conversation.history()
+        permitted = {row["company_id"] for row in company_access(self.db,self.user) if row["read"]}
+        focus = history["focus"]
+        if focus and focus[0] in permitted:
+            self.read_workspace = tuple(focus)
+            self.company, year, month = self.read_workspace
+            self.period = year, month
+        task = history["task"]
+        if task and task[0] in permitted:
+            found = task_details(self.db, self.user, *task)
+            if found["ok"] and found["data"]["can_execute"]:
+                self.task_focus = tuple(task)
+        for turn in history["turns"]:
+            scoped = {(c.get("scope") or {}).get("company_id") for c in turn["calls"]}
+            scoped.update(explicit_scope(turn["request"], include_update_aliases=True).get("company_id", ()))
+            if (scoped - {None}) - permitted:
+                continue
+            self.has_saved_history = True
+            if turn["calls"]:
+                self.saved_records.append((turn["state"],turn["mode"],turn["calls"]))
+            if turn["request"]:
+                self.chat_message("你", turn["request"])
+            for role, body in turn["display"]:
+                # Older builds persisted the resolver envelope in visible history.
+                prefix = "请明确引用对象："
+                if role == "Agent" and body.startswith(prefix):
+                    try:
+                        status = json.loads(body[len(prefix):]).get("status")
+                    except (ValueError, AttributeError):
+                        status = None
+                    body = render_reference_error(status if isinstance(status, str) else None)
+                self.chat_message(role, body)
+            if turn["state"] == "INTERRUPTED":
+                self.chat_message("会话状态", "上次处理被中断。请重新提出查询。")
+            elif turn["state"] == "UNKNOWN_OUTCOME":
+                message = "上次操作结果待核实。请检查执行记录及当前业务状态。"
+                if turn["lookup"]:
+                    audit = inspect_request(self.db, self.user, turn["lookup"])
+                    if audit["status"].startswith("COMMITTED"):
+                        message = "已在 SQLite 成功审计中核实上次提交。请查看当前发票。"
+                self.chat_message("会话状态", message)
+            if turn["state"] != "COMPLETED" or turn["seq"] <= history["boundary"]:
+                continue
+            scopes = query_scopes(turn["calls"])
+            if scopes:
+                self.query_focus = scopes
+            if turn["trace"]:
+                self.resume_displays.append(turn["trace"])
+            if turn["hint"] and turn["request"]:
+                hint = turn["hint"]
+                focus = hint.get("focus")
+                if len(turn["request"]) <= 2000 and (not focus or focus[0] in permitted):
+                    self.resumed.append({"request":turn["request"], **hint})
+                self.resume_focus = tuple(focus) if focus and focus[0] in permitted else None
+        self.resumed = self.resumed[-6:]
+        self.resume_displays = self.resume_displays[-64:]
+        self.saved_records = self.saved_records[-20:]
         if self.has_saved_history:
             self.note("已继续上次对话。当前业务状态将在查询时重新读取。")
         return self.has_saved_history
