@@ -15,7 +15,7 @@ from .references import resolve_reference
 from .persistence import can_manage, can_propose, confirm_management, ManagementIntent, ManagementCandidate, ManagementProposals
 from contextlib import closing
 from copy import deepcopy
-from .provenance import ANNUAL, MONTHLY, validate_scope
+from .provenance import ANNUAL, MONTHLY, is_annual_query, validate_scope
 
 YEAR = {"company_id": "string", "year": "integer"}
 MONTH = {**YEAR, "month": "integer"}
@@ -32,6 +32,7 @@ REGISTRY = {
     "check_missing_purpose": (check_missing_purpose, MONTH),
     "get_annual_finance_summary": (finance.get_annual_finance_summary, YEAR),
     "list_annual_blank_purpose": (queries.list_annual_blank_purpose, {**YEAR, "page": "integer"}),
+    "list_annual_bank_income": (queries.list_annual_bank_income, {**YEAR, "page": "integer"}),
     "get_applicable_rules": (None, {"company_id":"string", "rule_type":"string", "business_date":"string"}),
     "prepare_invoice_update": (None, {"company_id":"string", "invoice_no":"string", "field":"string", "new_value":"string"}),
     "add": (None, {"a": "integer", "b": "integer"}),
@@ -55,9 +56,10 @@ TOOLS = [tool for tool in TOOLS if tool["function"]["name"] in ANNUAL | {
 DESCRIPTIONS = {
     "get_annual_finance_summary":"仅用于可信的完整年度，分别汇总发票、银行收入和银行支出。",
     "list_annual_blank_purpose":"仅用于可信的完整年度，按页列出用途字段为空的发票；不判定必填或合规。",
+    "list_annual_bank_income":"按可信完整年度分页查询银行收入流水明细，每页10条；不判断对应发票。",
     "get_finance_summary":"发票和银行收支综合查询首选：一次返回指定企业年月的价税合计/张数、收入/支出总额/分别条数和R001版本；补充月份后沿用原综合目标。无记录明确返回零，无需额外计划。",
     "list_invoices":"查询指定企业月份的发票明细；大列表优先使用分页目录。",
-    "list_invoice_directory":"分页列出企业发票目录，返回真实总数；每页10条，page从1开始。全企业目录使用year=0、month=0，无需追问月份。用户明确选择年月时提供完整配对。",
+    "list_invoice_directory":"分页列出发票目录和总数，每页10条。全年目录传可信year及month=0；全账簿目录才使用year=0、month=0；月度传完整年月。",
     "get_invoice":"企业编号和发票号联合定位当前发票，不猜测模糊指代。",
     "list_bank_transactions":"查询指定企业年月的银行流水，只读，不推断发票已付款。",
     "check_missing_purpose":"用户问哪些发票用途未填写、还剩多少缺项时，使用本工具。采用可信只读账期或当前明确范围，按有效规则返回实际缺项和发票编号；不要改为财务汇总。备注不代替用途。",
@@ -85,7 +87,7 @@ for tool in TOOLS:
     for key, schema in tool["function"]["parameters"]["properties"].items():
         schema["description"] = PARAMETERS[key]
         if tool["function"]["name"] == "list_invoice_directory" and key in {"year", "month"}:
-            schema["description"] += " 不筛选账期时，年份和月份都传0。"
+            schema["description"] += " 年度目录只将月份设为0；全账簿目录年份和月份都设为0。"
 for tool in TOOLS:
     if tool["function"]["name"] == "prepare_invoice_update":
         tool["function"]["parameters"]["properties"]["field"]["enum"] = ["purpose", "remark"]
@@ -321,7 +323,10 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
                             target[key] = expected_scope[key]
             return prepare_invoice_update(db_path, update_session, **args, expected_scope=target)
         unfiltered = name == "list_invoice_directory" and (args["year"], args["month"]) == (0, 0)
-        if "month" in args and not unfiltered:
+        annual_directory = name == "list_invoice_directory" and is_annual_query(name, args)
+        if annual_directory:
+            queries._year_prefix(args["year"])
+        elif "month" in args and not unfiltered:
             queries._check_month(args["year"], args["month"])
         path = Path(db_path).resolve()
         connection = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
@@ -351,8 +356,10 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
                     return tool_result("SCOPE_MISMATCH", error="请求限定了账期，不能查询全企业目录。")
                 actual_scope = {"company_id": args["company_id"]}
                 if not unfiltered:
-                    actual_scope.update(year=args["year"], month=args["month"])
-            if (name in MONTHLY or (name == "list_invoice_directory" and not unfiltered)) and provenance and provenance.read_workspace:
+                    actual_scope["year"] = args["year"]
+                if not (unfiltered or annual_directory):
+                    actual_scope["month"] = args["month"]
+            if (name in MONTHLY or (name == "list_invoice_directory" and not (unfiltered or annual_directory))) and provenance and provenance.read_workspace:
                 expected_scope = {**(expected_scope or {}), **provenance.read_workspace}
             if expected_scope and scope_mismatch(expected_scope, actual_scope):
                 return tool_result("SCOPE_MISMATCH", evidence={"scope":actual_scope,"requested_scope":expected_scope,"source":"request_validation"},
@@ -416,7 +423,7 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
             if name in ANNUAL:
                 data = function(connection, user_id, **args)
                 evidence = {"source": "current_sqlite", "scope": {"company_id": args["company_id"], "year": args["year"]}}
-                if name == "list_annual_blank_purpose":
+                if name in {"list_annual_blank_purpose", "list_annual_bank_income"}:
                     return tool_result("SUCCESS" if data["rows"] else "NO_DATA", data, evidence)
                 if not any(data[key] for key in ("invoice_count", "bank_income_count", "bank_expense_count")):
                     return tool_result("NO_DATA", data, evidence)

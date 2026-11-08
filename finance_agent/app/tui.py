@@ -502,6 +502,8 @@ class AgentWorkspace(ConversationUI, App):
             "不补造任务内容、期限或目标。明确缺失参数时追问。")
         if self.session_path is not None:
             self.agent.context.display_ids = list(self.resume_displays)
+        if not self.read_workspace and self.resume_focus and self.resume_focus[2] == 0:
+            self.agent.context.annual_focus = self.resume_focus
         if self.conversation:
             self.agent.workbook_guard = self.conversation.validate
             if self.task_focus:
@@ -783,8 +785,8 @@ class AgentWorkspace(ConversationUI, App):
         scope = self.read_workspace or self.resume_focus
         if self.resume_focus and any(word in message for word in ("刚才","上一轮")):
             scope = self.resume_focus
-        if scope and scope[2] == 0 and not any(word in message for word in ("这年", "该年", "同年", "这个年度", "该年度", "同一年度")):
-            scope = None
+        if scope and scope[2] == 0:
+            scope = None  # The Agent owns the annual focus and invalidates it on range changes.
         self.run_turn(message, args, scope)
 
     def wait_confirmation(self, title, body, action, *, danger=False):
@@ -922,6 +924,11 @@ class AgentWorkspace(ConversationUI, App):
         if tool == "list_annual_blank_purpose":
             lines = "\n".join(f"{r['invoice_date']}　{r['invoice_no']}" for r in data["rows"])
             return ("年度用途空值", f"共 {data['total']} 张 · 第 {data['page']} 页 · 仅检查字段值\n" + lines)
+        if tool == "list_annual_bank_income":
+            header = f"共 {data['total']} 条 · 第 {data['page']} 页 · 每页 {data['page_size']} 条"
+            lines = "\n".join(f"{row['transaction_date']}　{row['transaction_no']}　¥{row['amount']}　{row['counterparty_name'] or ''}"
+                              for row in data["rows"])
+            return ("年度银行收入流水", header + ("\n" + lines if lines else "\n本页没有记录。"))
         if tool == "list_invoice_directory":
             rows = data["rows"]
             header = f"共 {data['total']} 张 · 第 {data['page']} 页 · 每页 {data['page_size']} 张"
@@ -1306,6 +1313,8 @@ class AgentWorkspace(ConversationUI, App):
                 return
             self.company, self.period = company, period
             self.read_workspace = (company, *period)
+            if self.agent:
+                self.agent.context.annual_focus = None
             self.remember_focus()
             self.update_header()
             if for_finance:
@@ -1359,7 +1368,7 @@ class AgentWorkspace(ConversationUI, App):
                           Text(row["amount"], style="#91cbff"),
                           Text("已填写" if row["has_purpose"] else "未填写",
                                style="" if row["has_purpose"] else "#f3cf83"), key=key)
-        period = f"{year:04d}-{month:02d}" if year else "全部账期"
+        period = f"{year:04d}-{month:02d}" if month else f"{year} 年" if year else "全部账期"
         pages = max(1, (data["total"] + data["page_size"] - 1) // data["page_size"])
         page = Horizontal(TextAction("上一页", id="invoice-prev", disabled=self.invoice_page <= 1),
                           TextAction("下一页", id="invoice-next", disabled=self.invoice_page >= pages),

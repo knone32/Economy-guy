@@ -4,14 +4,14 @@ import sqlite3
 
 from .cli_chat import safe_text
 from .cli_workspaces import company_access
+from .provenance import ANNUAL
 from .responses import explicit_scope, render_reference_error
 from .session_store import SessionBusyError, SessionStore
 from .tasks import task_details
 from .updates import inspect_request
 
 
-ANNUAL_QUERY_TOOLS = {"get_annual_finance_summary", "list_annual_blank_purpose"}
-QUERY_TOOLS = ANNUAL_QUERY_TOOLS | {"get_finance_summary", "list_invoices", "list_invoice_directory", "check_missing_purpose",
+QUERY_TOOLS = ANNUAL | {"get_finance_summary", "list_invoices", "list_invoice_directory", "check_missing_purpose",
                "get_invoice", "resolve_invoice_reference", "list_bank_transactions", "get_applicable_rules"}
 
 
@@ -124,18 +124,20 @@ class ConversationUI:
     def save_turn(self, calls, status, read_only):
         if self.turn_seq is None or not self.conversation:
             return
-        read_tools = ANNUAL_QUERY_TOOLS | {"get_finance_summary","list_invoices","list_invoice_directory",
+        read_tools = ANNUAL | {"get_finance_summary","list_invoices","list_invoice_directory",
                       "check_missing_purpose","get_invoice","resolve_invoice_reference","list_bank_transactions"}
         reads = [call for call in calls if call["status"] in {"SUCCESS","NO_DATA"} and call["tool"] in read_tools]
         focus = {(scope["company_id"],scope["year"],scope.get("month", 0)) for call in reads
-                 if {"company_id","year"} <= (scope := call.get("scope") or {}).keys()
-                 and ("month" in scope or call["tool"] in ANNUAL_QUERY_TOOLS)}
+                 if {"company_id","year"} <= (scope := call.get("scope") or {}).keys()}
         state = status if status in {"UNKNOWN_OUTCOME","INTERRUPTED"} else "COMPLETED"
         hint = None
-        if read_only and state == "COMPLETED" and (reads or self.agent.last_response.get("category") == "clarification"):
-            next_focus = next(iter(focus)) if len(focus)==1 else None
+        annual_focus = self.agent.context.annual_focus
+        retired_annual_focus = self.resume_focus and self.resume_focus[2] == 0 and not annual_focus
+        if read_only and state == "COMPLETED" and (
+                reads or retired_annual_focus or self.agent.last_response.get("category") == "clarification"):
+            next_focus = annual_focus or (next(iter(focus)) if len(focus) == 1 else None)
             hint = {"tools":[c["tool"] for c in reads], "focus":next_focus}
-            if reads:
+            if reads or retired_annual_focus:
                 self.resume_focus = next_focus
         try:
             evidence = [{**call,"id":self.storage_text(call["id"])} for call in calls]

@@ -290,6 +290,9 @@ def render_clarification(value):
               "action":"具体管理动作", "task_id":"任务编号", "note":"待办的具体说明",
               "key":"偏好名称", "value":"偏好的具体内容"}
     fields = list(dict.fromkeys(value["missing_fields"]))
+    if fields == ["business_object"]:
+        return "请确认您想查银行收入流水还是发票？"
+    labels["business_object"] = "查询对象（银行收入流水或发票）"
     # 追问信封不授予字段/写入权限；未知标签与任意模型text均不直接展示。
     questions=[labels[field] for field in fields if field in labels]
     if any(field not in labels for field in fields):

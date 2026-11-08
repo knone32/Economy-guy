@@ -23,7 +23,9 @@ SYSTEM = """你是财税助手。甲企业=C001，乙企业=C002。需要业务�
 用户只补充企业或年月时，应继续最近未完成的查询目标，不能把原目标缩减成明细。
 context_data的prior_query_tools只是历史查询类型线索：当前轮仅更正范围时可延续查询目标，不能继承旧金额、范围或修改许可。
 询问缺失或未填写用途、剩余缺项时调用check_missing_purpose，不能用财务汇总替代。context_data.read_workspace.scope中的唯一企业及完整年月可直接用于只读查询，无需再次追问；当前明确要求优先。
-用户明确要求完整年份，或明确沿用工作区 annual_year 焦点时，用 get_annual_finance_summary 查金额及张数，用 list_annual_blank_purpose 查用途字段空值。
+完整年度或可信工作区 annual_year 可用于本轮及未更正范围的后续只读查询。目录/所有发票用 list_invoice_directory（可信年份、month=0），不能用汇总代替目录。
+用 list_annual_bank_income 分页查年度银行收入流水，用 get_annual_finance_summary 查年度合计，用 list_annual_blank_purpose 查年度用途空值。
+对象混淆（例如“银行收入发票”）时，追问 missing_fields=["business_object"]，不要推测流水与发票的关系，不重复询问已确认范围。
 年度空值不是规则合规判断；不得猜年份、拆成任意月份或把 2026-09 的必填规则扩展到全年。
 发票与银行收支的综合概览使用get_finance_summary，一次取得价税合计/数量、收入/支出/条数及R001；
 list_invoice_directory用于企业发票目录（所有发票无需月份），每次只返回一页；get_invoice用于已明确企业和发票号的详情。list_invoices/list_bank_transactions用于指定月份明细。不要用明细代替完整汇总。
@@ -320,6 +322,7 @@ class Agent:
         self.trace("turn.started", {"user": self.user_id, "transport_bound": self.transport is not None})
         self.execution = execution = TurnExecution(self.budget_policy,self.trace)
         read_results = []
+        prior_annual_focus = self.context.annual_focus
         awaiting_year = bool(self.context.scope.get("month") and not self.context.scope.get("year"))
         expected_scope = self.context.begin(text,len(self.messages)-1,reset=management=="task")
         explicit = explicit_scope(text, include_update_aliases=True)
@@ -340,7 +343,8 @@ class Agent:
             re.search(r"(?:所有|全部|全量|完整)的?发票|发票(?:的)?(?:完整目录|全部目录)", text))
         exact_invoice = (not reference and not has_dates and
                          len(explicit.get("company_id", [])) == len(explicit.get("invoice_no", [])) == 1)
-        read_workspace = self._workspace_read_scope(read_workspace, text) if not (allow_prepare or management or reference) else None
+        selection = self.context.annual_focus or read_workspace or (prior_annual_focus if has_dates else None)
+        read_workspace = self._workspace_read_scope(selection, text) if not (allow_prepare or management or reference) else None
         annual_year = None
         if not (allow_prepare or management or reference) and not re.search(
                 r"今年|去年|明年|本月|上月|下月|最近|季度|半年|上半|下半|此前|之后|以前|以后|"
@@ -352,6 +356,8 @@ class Agent:
                 annual_year = years[0]
             elif not has_dates and read_workspace:
                 annual_year = next(iter(read_workspace.get("annual_year", [])), None)
+        if self.context.annual_focus and annual_year is None and not (allow_prepare or management or reference):
+            self.context.annual_focus = None
         # 动作由可信CLI命令指定；模型不能把只读意图变成创建/删除。
         if management in {'task','preference'} and management_action:
             self.management_turn=ManagementTurn(self.user_id)
@@ -373,6 +379,8 @@ class Agent:
         def finish(text, store=True, category="operation_result", *, chat_notice=None):
             if chat_notice is None and category in {"clarification", "general_unverified"}:
                 chat_notice = text
+            if not (allow_prepare or management):
+                self.context.remember_annual_read(read_results)
             self.coordinator.assess_current_match(read_results)
             if not execution.stop_reason:
                 execution.stop("WAITING_USER" if category=="clarification" else "MODEL_FINISHED_WITH_PENDING_WORK" if execution.schedule else "ANSWERED")
@@ -471,6 +479,10 @@ class Agent:
                     return finish(render_clarification(natural) + "\n操作回执：" + self.write_receipt["message"], store=False, category="clarification")
                 self.coordinator.pending = None
                 if natural["kind"] == "clarification":
+                    fields = natural["missing_fields"]
+                    company = (read_workspace or self.context.scope).get("company_id", [])
+                    if "business_object" in fields and annual_year and len(company) == 1:
+                        natural["missing_fields"] = [f for f in fields if f not in {"company_id", "year", "month"}]
                     return finish(render_clarification(natural), store=False, category="clarification")
                 if natural["kind"] == "general" and not allow_prepare and not read_results and not expected_scope:
                     # 一般说明作为未核实模型表达单独标注，绝不写入操作回执。
@@ -501,7 +513,7 @@ class Agent:
                         stop = True
                     else:
                         tool_scope = expected_scope
-                        if ((fn.get("name") == "list_invoice_directory" and all_invoices) or
+                        if ((fn.get("name") == "list_invoice_directory" and all_invoices and annual_year is None) or
                                 (fn.get("name") == "get_invoice" and exact_invoice)):
                             tool_scope = {key: values for key, values in expected_scope.items()
                                           if key not in {"year", "month", "periods"}}

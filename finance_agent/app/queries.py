@@ -65,7 +65,7 @@ def invoice_directory(connection, user_id, company_id, year, month, page):
     values = [company_id]
     if (year, month) != (0, 0):
         filters += " AND invoice_date LIKE ?"
-        values.append(_check_month(year, month) + "%")
+        values.append(_year_prefix(year) if month == 0 else _check_month(year, month) + "%")
     return _invoice_page(connection, company_id, filters, values, page)
 
 
@@ -77,14 +77,19 @@ def list_annual_blank_purpose(connection, user_id, company_id, year, page):
                          [company_id, _year_prefix(year), PURPOSE_WHITESPACE], page)
 
 
-def _invoice_page(connection, company_id, filters, values, page):
+def _page_offset(page):
     if type(page) is not int or not 1 <= page <= 2_147_483_647:
         raise QueryError("页码超出范围")
+    return (page - 1) * INVOICE_PAGE_SIZE
+
+
+def _invoice_page(connection, company_id, filters, values, page):
+    offset = _page_offset(page)
     total = connection.execute(f"SELECT count(*) FROM invoices WHERE {filters}", values).fetchone()[0]
     rows = connection.execute(
         f"""SELECT invoice_no, invoice_date, amount_cents, purpose
               FROM invoices WHERE {filters} ORDER BY invoice_date, invoice_no LIMIT ? OFFSET ?""",
-        [*values, INVOICE_PAGE_SIZE, (page - 1) * INVOICE_PAGE_SIZE],
+        [*values, INVOICE_PAGE_SIZE, offset],
     )
     return {"total": total, "page": page, "page_size": INVOICE_PAGE_SIZE,
             "rows": [{"company_id": company_id, "invoice_no": row["invoice_no"],
@@ -119,4 +124,23 @@ def list_bank_transactions(connection, user_id: str, company_id: str, year: int,
     """查询指定企业、年月的银行流水，所有字段只读。"""
     prefix = _check_month(year, month); _authorize(connection, user_id, company_id)
     rows = connection.execute("SELECT * FROM bank_transactions WHERE company_id = ? AND transaction_date LIKE ? ORDER BY transaction_date, transaction_no", (company_id, prefix + "%")).fetchall()
-    return [{"company_id": r["company_id"], "transaction_no": r["transaction_no"], "transaction_date": r["transaction_date"], "direction": r["direction"], "amount": _money(r["amount_cents"]), "counterparty_name": r["counterparty_name"], "remark": r["remark"]} for r in rows]
+    return [_bank_row(row) for row in rows]
+
+
+def list_annual_bank_income(connection, user_id, company_id, year, page):
+    _authorize(connection, user_id, company_id)
+    offset = _page_offset(page)
+    values = (company_id, _year_prefix(year))
+    filters = "company_id=? AND transaction_date LIKE ? AND direction='收入'"
+    total = connection.execute(f"SELECT count(*) FROM bank_transactions WHERE {filters}", values).fetchone()[0]
+    rows = connection.execute(f"""SELECT * FROM bank_transactions WHERE {filters}
+        ORDER BY transaction_date, transaction_no LIMIT ? OFFSET ?""", (*values, INVOICE_PAGE_SIZE, offset))
+    return {"total": total, "page": page, "page_size": INVOICE_PAGE_SIZE,
+            "rows": [_bank_row(row) for row in rows]}
+
+
+def _bank_row(row):
+    return {"company_id": row["company_id"], "transaction_no": row["transaction_no"],
+            "transaction_date": row["transaction_date"], "direction": row["direction"],
+            "amount": _money(row["amount_cents"]), "counterparty_name": row["counterparty_name"],
+            "remark": row["remark"]}

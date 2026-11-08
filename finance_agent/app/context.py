@@ -6,7 +6,7 @@ from .references import reference_catalog, invalidate_references, resolve_refere
 from .responses import explicit_scope, scope_mismatch
 from .tasks import list_tasks
 from .preferences import manage_preference
-from .provenance import SOURCES, ScopeProof
+from .provenance import ANNUAL, SOURCES, ScopeProof
 
 
 class ContextLimitError(ValueError):
@@ -54,6 +54,7 @@ class ContextBuilder:
         self.diagnostics = []
         self.references_blocked = False
         self.prior_query_tools = []
+        self.annual_focus = None
         self.display_ids = None
         self.restored_turns = []
         self.personal_detail = "普通"
@@ -61,6 +62,9 @@ class ContextBuilder:
     def begin(self,text,message_index,reset=False):
         """明确范围更正后弃用旧焦点；不更改长期任务，也不产生提交许可。"""
         explicit = explicit_scope(text,include_update_aliases=True)
+        if reset or (self.annual_focus and scope_mismatch(
+                explicit, dict(zip(("company_id", "year", "month"), self.annual_focus)))):
+            self.annual_focus = None
         previous = self.scope
         self.sources={key:('session_confirmed' if origin=='user_current' else origin)
                       for key,origin in self.sources.items() if key in self.scope}
@@ -154,9 +158,26 @@ class ContextBuilder:
             return {"ok":False,"status":"AMBIGUOUS","data":None,"evidence":{},"error":"旧引用未能安全失效，请明确目标"}
         return resolve_reference(self.db_path,self.user_id,scope=self.scope,display_ids=self.display_ids,**hint)
 
+    def remember_annual_read(self, results):
+        scopes = [outcome["evidence"]["scope"] for name, outcome in results
+                  if outcome["status"] in {"SUCCESS", "NO_DATA"}
+                  and outcome["evidence"].get("source") == "current_sqlite"
+                  and "scope" in outcome["evidence"]
+                  and name in ANNUAL | {"list_invoice_directory", "get_finance_summary",
+                                       "list_invoices", "list_bank_transactions", "check_missing_purpose"}]
+        if scopes:
+            focus = {(scope["company_id"], scope.get("year"), scope.get("month", 0)) for scope in scopes}
+            self.annual_focus = next(iter(focus)) if len(focus) == 1 and all(
+                "year" in scope and "month" not in scope for scope in scopes) else None
+            if self.annual_focus:
+                # A verified year replaces the prior monthly pair, even if the year is the same.
+                for key in ("month", "periods"):
+                    self.scope.pop(key, None)
+                    self.sources.pop(key, None)
+
     def record_displayed(self,results,display_id):
         """调用方已经按实际结果渲染后，提取展示的有序联合键，不采信模型描述。"""
-        readonly={'get_finance_summary','list_invoices','get_invoice','list_bank_transactions',
+        readonly=ANNUAL | {"list_invoice_directory",'get_finance_summary','list_invoices','get_invoice','list_bank_transactions',
                   'check_missing_purpose','get_applicable_rules','list_tasks','resolve_invoice_reference'}
         focus=list(dict.fromkeys(name for name,outcome in results if name in readonly and outcome['status'] in {'SUCCESS','NO_DATA'}))
         if focus:

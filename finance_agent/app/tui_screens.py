@@ -721,6 +721,9 @@ class ProfileKey(Dialog):
         approve_connection(self, changed, apply)
 
 
+DEEPSEEK_MODELS = {"deepseek-flash": "DeepSeek Flash", "deepseek-v4-pro": "DeepSeek V4 Pro"}
+
+
 class NewUserProfile(Dialog):
     def __init__(self, actor, *, previous=None):
         super().__init__()
@@ -739,7 +742,15 @@ class NewUserProfile(Dialog):
             yield Label("服务商", classes="field-label")
             yield Select([(label, key) for key, label in PROVIDERS.items()], value=self.provider, allow_blank=False, id="provider")
             yield Label("模型 ID", classes="field-label")
-            yield Input(value=previous.model if previous else "", placeholder="填写服务商提供的模型 ID", id="model-name")
+            model = previous.model if previous else ""
+            preset = model if model in DEEPSEEK_MODELS else "custom" if model else "deepseek-flash"
+            picker = Select([(label, key) for key, label in DEEPSEEK_MODELS.items()] + [("自定义模型 ID", "custom")],
+                            value=preset, allow_blank=False, id="deepseek-model")
+            picker.display = self.provider == "deepseek"
+            yield picker
+            manual = Input(value=model, placeholder="填写服务商提供的模型 ID", id="model-name")
+            manual.display = self.provider != "deepseek" or preset == "custom"
+            yield manual
             yield Static("只离线校验配置。模型是否可用，要在发送消息后才能验证。", classes="field-hint", markup=False)
             if not previous:
                 yield from credential_fields()
@@ -763,15 +774,36 @@ class NewUserProfile(Dialog):
     def provider_changed(self, event):
         endpoint = self.query_one("#endpoint", Input)
         self.auto_endpoint &= endpoint.value == ENDPOINT_DEFAULTS[self.provider]
+        previous = self.provider
         self.provider = event.value
         if self.auto_endpoint:
             endpoint.value = ENDPOINT_DEFAULTS[self.provider]
+        picker = self.query_one("#deepseek-model", Select)
+        manual = self.query_one("#model-name", Input)
+        if self.provider == "deepseek" and previous != "deepseek" and manual.value.strip():
+            model = manual.value.strip()
+            picker.value = model if model in DEEPSEEK_MODELS else "custom"
+        if previous == "deepseek" and self.provider != "deepseek" and not manual.value and picker.value in DEEPSEEK_MODELS:
+            manual.value = picker.value
+        self.update_model_fields()
+
+    @on(Select.Changed, "#deepseek-model")
+    def preset_changed(self):
+        self.update_model_fields()
+
+    def update_model_fields(self):
+        picker = self.query_one("#deepseek-model", Select)
+        picker.display = self.provider == "deepseek"
+        self.query_one("#model-name", Input).display = not picker.display or picker.value == "custom"
 
     def candidate(self, secret):
         def value(field):
             return self.query_one("#" + field, Input).value.strip()
 
         name, model, endpoint = value("profile-name"), value("model-name"), value("endpoint")
+        preset = self.query_one("#deepseek-model", Select).value
+        if self.provider == "deepseek" and preset in DEEPSEEK_MODELS:
+            model = preset
         if not name:
             raise ProfileError("请填写配置名称，可用英文字母、数字、点、下划线或短横线。")
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/@-]{0,199}", model):

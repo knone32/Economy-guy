@@ -6,7 +6,11 @@ SOURCES={'user_current','session_confirmed','trusted_reference','current_sqlite'
 MONTHLY={'get_finance_summary','summary','list_invoices','list_bank_transactions',
          'invoice_total','bank_income_total','bank_expense_total','check_missing_purpose','get_applicable_rules'}
 
-ANNUAL = {"get_annual_finance_summary", "list_annual_blank_purpose"}
+ANNUAL = {"get_annual_finance_summary", "list_annual_blank_purpose", "list_annual_bank_income"}
+
+
+def is_annual_query(name, scope):
+    return name in ANNUAL or (name == "list_invoice_directory" and bool(scope.get("year")) and not scope.get("month"))
 
 
 @dataclass(frozen=True)
@@ -31,7 +35,7 @@ def validate_scope(proof,user_id,name,args,partial=False):
     accepted_sources = SOURCES
     directory = name == 'list_invoice_directory'
     filtered = directory and args.get('year', 0) != 0 and args.get('month', 0) != 0
-    if name in ANNUAL:
+    if is_annual_query(name, args):
         company = (proof.read_workspace or {}).get("company_id") or proof.values.get("company_id")
         source_ok = bool(proof.read_workspace or proof.sources.get("company_id") in SOURCES)
         missing = [key for key, present in (("company_id", source_ok and company and len(company) == 1),
