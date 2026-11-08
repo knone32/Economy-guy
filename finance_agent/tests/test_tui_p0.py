@@ -25,7 +25,7 @@ from app.stage2_schema import open_existing
 from app.tasks import list_tasks, manage_task, task_details
 from app.tui import AgentWorkspace
 from app.tui_intent import edit_turn
-from app.tui_screens import Approval, Choices, Login, NewUserProfile, Period, Settings, TextAction
+from app.tui_screens import Approval, Choices, Login, NewUserProfile, Period, ProfileDetails, ProfileKey, Settings, TextAction
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "example.xlsx"
@@ -67,6 +67,22 @@ class P0Test(unittest.IsolatedAsyncioTestCase):
         field.value = text
         field.focus()
         await pilot.press("enter")
+
+    async def open_model_detail(self, app, pilot, index=0):
+        await self.await_state(pilot, lambda: isinstance(app.screen, Settings))
+        await self.press_button(app, pilot, f"#ai-profile-{index}")
+        await self.await_state(pilot, lambda: isinstance(app.screen, ProfileDetails))
+
+    async def enter_model_key(self, app, pilot, secret, *, remember=False):
+        await self.press_button(app, pilot, "#set-key")
+        await self.await_state(pilot, lambda: isinstance(app.screen, ProfileKey))
+        field = app.screen.query_one("#key", Input)
+        self.assertTrue(field.password)
+        field.value = secret
+        if remember:
+            app.screen.query_one("#key-mode", Select).value = "saved"
+        await self.press_button(app, pilot, "#save-key")
+        return field
 
     async def await_state(self, pilot, condition):
         for _ in range(60):
@@ -407,30 +423,34 @@ class P0Test(unittest.IsolatedAsyncioTestCase):
                     "choices": [{"index": 0, "finish_reason": "stop",
                                  "message": {"role": "assistant", "content": "invalid final", "reasoning_content": ""}}],
                 })
-            return httpx.Response(503, json={"error": {"message": "offline transport failure"}})
+            status = 503 if len(attempts) == 3 else 404
+            return httpx.Response(status, json={"error": {"message": "synthetic transport failure"}})
 
         with (patch.dict(os.environ, {"FINANCE_MODEL_PROFILE": "", "UX_TEST_API_KEY": ""}),
               patch.object(httpx.HTTPTransport, "handle_request", new=receive)):
             async with app.run_test(size=(90, 26)) as pilot:
                 await self.sign_in(app, pilot)
                 await pilot.click("#configure-ai")
-                await self.press_button(app, pilot, "#apply-model")
-                feedback = app.screen.query_one("#model-feedback")
-                self.assertIn("没有可用的 AI 配置", str(feedback.renderable))
+                await self.await_state(pilot, lambda: bool(app.screen.query("#model-list Static")))
+                empty = app.screen.query_one("#model-list Static")
+                self.assertIn("暂无 AI 配置", str(empty.renderable))
+                self.assertFalse(app.screen.query("#profile"))
+                self.assertFalse(app.screen.query("#key"))
                 self.assertIsNone(app.agent)
                 await pilot.press("escape")
                 await self.await_state(pilot, lambda: not isinstance(app.screen, Settings))
                 self.configured_profile()
                 os.environ["FINANCE_MODEL_PROFILE"] = "first-ai"
                 app.open_settings()
-                await self.await_state(pilot, lambda: isinstance(app.screen, Settings) and bool(app.screen.query("#profile")))
-                app.screen.query_one("#profile", Select).value = Select.BLANK
-                await self.press_button(app, pilot, "#apply-model")
+                await self.open_model_detail(app, pilot)
+                await self.press_button(app, pilot, "#use-profile")
+                await self.await_state(pilot, lambda: isinstance(app.screen, Settings))
                 feedback = app.screen.query_one("#model-feedback")
                 self.assertIn("已选择 first-ai / deepseek-flash", str(feedback.renderable))
                 self.assertEqual(app.model_state()[0], "missing-key")
-                app.screen.query_one("#key", Input).value = "synthetic-offline-only"
-                await self.press_button(app, pilot, "#apply-model")
+                await self.open_model_detail(app, pilot)
+                await self.enter_model_key(app, pilot, "synthetic-offline-only")
+                await self.await_state(pilot, lambda: isinstance(app.screen, Settings))
                 self.assertEqual(app.model_state()[0], "unverified")
                 self.assertEqual(attempts, [])
                 await pilot.press("escape")
@@ -440,8 +460,9 @@ class P0Test(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(app.model_state()[0], "connected", (app.records, attempts))
                 agent = app.agent
                 app.open_settings()
-                await self.press_button(app, pilot, "#apply-model")
-                self.assertIsInstance(app.screen, Settings)
+                await self.open_model_detail(app, pilot)
+                await self.press_button(app, pilot, "#use-profile")
+                await self.await_state(pilot, lambda: isinstance(app.screen, Settings))
                 self.assertIs(app.agent, agent)
                 self.assertEqual(attempts, ["POST"])
                 await pilot.press("escape")
@@ -454,7 +475,11 @@ class P0Test(unittest.IsolatedAsyncioTestCase):
                 await self.await_state(pilot, lambda: len(app.records) == 3 and not app.busy)
                 self.assertEqual(app.model_state()[0], "failed")
                 self.assertIn("503", app.last_api_status)
-                self.assertEqual(attempts, ["POST", "POST", "POST"])
+                await self.send(app, pilot, "请说明第四项功能")
+                await self.await_state(pilot, lambda: len(app.records) == 4 and not app.busy)
+                self.assertEqual(app.model_state()[0], "failed")
+                self.assertIn("未找到模型或端点", app.model_state()[2])
+                self.assertEqual(attempts, ["POST"] * 4)
                 self.assertEqual(self.purpose(), (None, 0))
 
     async def test_task_detail_without_ai_then_reopens_with_fresh_progress(self):
@@ -495,10 +520,12 @@ class P0Test(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("当前待办可以查看", app.screen.body)
                 self.assertIsNone(app.agent)
                 await pilot.press("tab", "enter")
-                await self.await_state(pilot, lambda: isinstance(app.screen, Settings) and bool(app.screen.query("#profile")))
-                app.screen.query_one("#profile", Select).value = "first-ai"
-                app.screen.query_one("#key", Input).value = "synthetic-offline-only"
-                await self.press_button(app, pilot, "#apply-model")
+                await self.open_model_detail(app, pilot)
+                await self.enter_model_key(app, pilot, "synthetic-offline-only")
+                await self.await_state(pilot, lambda: isinstance(app.screen, Settings))
+                await self.open_model_detail(app, pilot)
+                await self.press_button(app, pilot, "#use-profile")
+                await self.await_state(pilot, lambda: isinstance(app.screen, Settings))
                 self.assertEqual(app.model_state()[0], "unverified")
                 # A separate authorized session commits one invoice while settings is open.
                 other = Agent("U001", self.path, mode="mock", model=scripted_model([tool("prepare_invoice_update", EDIT)]))
@@ -599,22 +626,20 @@ class P0Test(unittest.IsolatedAsyncioTestCase):
                 await self.sign_in(app, pilot)
                 app.chat_message("你", "旧对话仍应保留")
                 app.open_settings()
-                await self.await_state(pilot, lambda: bool(app.screen.query("#key-mode")))
-                app.screen.query_one("#key-mode", Select).value = "saved"
-                key_field = app.screen.query_one("#key", Input)
-                key_field.value = "first-synthetic-credential"
-                await self.press_button(app, pilot, "#apply-model")
+                await self.open_model_detail(app, pilot)
+                key_field = await self.enter_model_key(app, pilot, "first-synthetic-credential", remember=True)
+                await self.await_state(pilot, lambda: isinstance(app.screen, Settings))
                 self.assertEqual(app.model_state()[0], "unverified")
                 self.assertIn("Windows 凭据管理器", str(app.screen.query_one("#model-feedback").renderable))
                 self.assertEqual(key_field.value, "")
                 app.ensure_agent()
                 old = app.agent
-                key_field.value = "first-synthetic-credential"
-                await self.press_button(app, pilot, "#apply-model")
+                await self.open_model_detail(app, pilot)
+                await self.enter_model_key(app, pilot, "first-synthetic-credential", remember=True)
+                await self.await_state(pilot, lambda: isinstance(app.screen, Settings))
                 self.assertIs(app.agent, old)
-                self.assertIsInstance(app.screen, Settings)
-                key_field.value = "replacement-synthetic-credential"
-                await self.press_button(app, pilot, "#apply-model")
+                await self.open_model_detail(app, pilot)
+                await self.enter_model_key(app, pilot, "replacement-synthetic-credential", remember=True)
                 await self.await_state(pilot, lambda: isinstance(app.screen, Approval) and app.screen.focused)
                 await pilot.press("tab", "enter")
                 await self.await_state(pilot, lambda: isinstance(app.screen, Settings) and app.agent is None)
@@ -632,6 +657,7 @@ class P0Test(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(reopened.resolve_profile(require_key=True).api_key,
                                  "replacement-synthetic-credential")
                 reopened.open_settings()
+                await self.open_model_detail(reopened, pilot)
                 await self.press_button(reopened, pilot, "#forget-key")
                 await self.await_state(pilot, lambda: isinstance(reopened.screen, Approval) and reopened.screen.focused)
                 await pilot.press("tab", "enter")
@@ -649,19 +675,20 @@ class P0Test(unittest.IsolatedAsyncioTestCase):
                 agent, pending = app.agent, app.agent.pending_edit
                 self.assertTrue(pending)
                 app.open_settings()
-                await self.await_state(pilot, lambda: isinstance(app.screen, Settings) and bool(app.screen.query("#profile")))
-                app.screen.query_one("#profile", Select).value = "first-ai"
-                app.screen.query_one("#key", Input).value = "synthetic-offline-only"
-                await self.press_button(app, pilot, "#apply-model")
+                await self.open_model_detail(app, pilot)
+                await self.enter_model_key(app, pilot, "synthetic-offline-only")
+                await self.await_state(pilot, lambda: isinstance(app.screen, Settings))
+                await self.open_model_detail(app, pilot)
+                await self.press_button(app, pilot, "#use-profile")
                 await self.await_state(pilot, lambda: isinstance(app.screen, Approval) and app.screen.focused is not None)
                 self.assertEqual(app.screen.focused.id, "cancel")
                 await pilot.press("enter")
-                await self.await_state(pilot, lambda: isinstance(app.screen, Settings))
+                await self.await_state(pilot, lambda: isinstance(app.screen, ProfileDetails))
                 self.assertEqual(app.mode, "mock")
                 self.assertIs(app.agent, agent)
                 self.assertEqual(app.agent.pending_edit, pending)
                 self.assertFalse(os.environ["UX_TEST_API_KEY"])
-                await self.press_button(app, pilot, "#apply-model")
+                await self.press_button(app, pilot, "#use-profile")
                 await self.await_state(pilot, lambda: isinstance(app.screen, Approval))
                 await pilot.press("tab", "enter")
                 await self.await_state(pilot, lambda: app.mode == "live")
@@ -753,22 +780,22 @@ class P0Test(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
                 await pilot.press("enter")
                 await self.await_state(pilot, lambda: isinstance(app.screen, NewUserProfile))
-                app.screen.query_one("#profile-name", Input).value = "offline-personal"
-                app.screen.query_one("#key-env", Input).value = "TEST_PERSONAL_API_KEY"
-                app.screen.query_one("#save-profile").focus()
+                form = app.screen
+                self.assertEqual(form.query_one("#model-name", Input).value, "")
+                form.query_one("#profile-name", Input).value = "offline-personal"
+                form.query_one("#provider", Select).value = "deepseek"
                 await pilot.pause()
-                await pilot.press("enter")
-                await self.await_state(pilot, lambda: isinstance(app.screen, Settings))
-                self.assertEqual(app.screen.query_one("#profile", Select).value, "offline-personal")
-                key_field = app.screen.query_one("#key", Input)
+                form.query_one("#model-name", Input).value = "deepseek-flash"
+                form.query_one("#key-env", Input).value = "TEST_PERSONAL_API_KEY"
+                key_field = form.query_one("#key", Input)
                 self.assertTrue(key_field.password)
                 key_field.value = "synthetic-offline-only"
-                app.screen.query_one("#apply-model").focus()
-                await pilot.pause()
-                await pilot.press("enter")
-                await self.await_state(pilot, lambda: app.profile == "offline-personal")
+                await self.press_button(app, pilot, "#save-profile")
+                await self.await_state(pilot, lambda: isinstance(app.screen, Settings))
                 self.assertEqual(key_field.value, "")
                 self.assertEqual(app.profile, "offline-personal")
+                self.assertEqual(app.model_state()[0], "unverified")
+                await self.await_state(pilot, lambda: bool(app.screen.query("#ai-profile-0")))
                 self.assertEqual(app.model_requests, 0)
                 await pilot.press("escape")
                 await self.await_state(pilot, lambda: not isinstance(app.screen, Settings))

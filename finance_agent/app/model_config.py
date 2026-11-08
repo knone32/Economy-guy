@@ -126,14 +126,35 @@ def visible_profiles(user_id,template=DEFAULT_TEMPLATE,local=DEFAULT_LOCAL):
     return [asdict(p) for p in profiles.values() if p.scope=='global' or p.owner_user_id==user_id]
 
 
-def add_profile(data,user_id=None,simulate_manager=False,template=DEFAULT_TEMPLATE,local=DEFAULT_LOCAL):
+def add_profile(data,user_id=None,simulate_manager=False,template=DEFAULT_TEMPLATE,local=DEFAULT_LOCAL, *,
+                isolated_credentials=False):
     """仅可信CLI添加；锁内校验、fsync后原子替换，不覆盖同名配置。"""
     p=validate_profile(data)
     if p.scope=='global' and not simulate_manager:
         raise ProfileError('Global新增需要显式模拟profile.manage管理入口；不是U001默认权限')
     if p.scope=='user' and p.owner_user_id!=user_id:
         raise ProfileError('User新增只能绑定可信CLI当前模拟用户')
-    path=Path(local);path.parent.mkdir(parents=True,exist_ok=True)
+    return _store_profile(p, template, local, isolated_credentials=isolated_credentials)
+
+
+def update_user_profile(previous, data, user_id, *, template=DEFAULT_TEMPLATE, local=DEFAULT_LOCAL):
+    """Replace exactly the local personal record the user opened for editing."""
+    candidate = validate_profile(data)
+    if (previous.scope != "user" or previous.owner_user_id != user_id
+            or (candidate.scope, candidate.owner_user_id, candidate.profile_name)
+            != (previous.scope, previous.owner_user_id, previous.profile_name)):
+        raise ProfileError("只能编辑本人本地个人配置，名称及归属保持固定")
+    if candidate.base_url != previous.base_url and candidate.api_key_env == previous.api_key_env:
+        raise ProfileError("更换端点时请使用新的凭据环境变量引用，避免沿用旧端点密钥")
+    return _store_profile(candidate, template, local, previous=previous, isolated_credentials=True)
+
+
+def _store_profile(profile, template, local, *, previous=None, isolated_credentials=False):
+    path = Path(local)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        raise ProfileError("模型配置目录不可写，未修改") from None
     lock=path.with_name(path.name+'.lock');temp=None
     try:
         fd=os.open(lock,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
@@ -142,9 +163,26 @@ def add_profile(data,user_id=None,simulate_manager=False,template=DEFAULT_TEMPLA
     try:
         os.close(fd)
         profiles,_=load_profiles(template,path)
-        if p.profile_name in profiles: raise ProfileError('Profile同名或归属冲突，未覆盖')
-        raw=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {'version':1,'profiles':[]}
-        raw['profiles'].append(asdict(p))
+        name = profile.profile_name
+        raw = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"version": 1, "profiles": []}
+        rows = raw.setdefault("profiles", [])
+        if previous is None:
+            if name in profiles:
+                raise ProfileError("Profile同名或归属冲突，未覆盖")
+            index = len(rows)
+        else:
+            if profiles.get(name) != previous:
+                raise ProfileError("配置已变更，请重新打开详情后编辑，未覆盖")
+            index = next((i for i, row in enumerate(rows) if row["profile_name"] == name), None)
+            if index is None:
+                raise ProfileError("此配置由模板提供，仅可查看和使用")
+        if isolated_credentials and any(
+            other.profile_name != name and other.api_key_env == profile.api_key_env
+            and (other.base_url != profile.base_url or other.owner_user_id != profile.owner_user_id)
+            for other in profiles.values()
+        ):
+            raise ProfileError("不同账号或端点请使用独立的凭据环境变量引用")
+        rows[index:index + 1] = [asdict(profile)]
         with tempfile.NamedTemporaryFile('w',encoding='utf-8',dir=path.parent,suffix='.tmp',delete=False) as stream:
             temp=Path(stream.name)
             json.dump(raw,stream,ensure_ascii=False,indent=2);stream.flush();os.fsync(stream.fileno())
@@ -156,7 +194,7 @@ def add_profile(data,user_id=None,simulate_manager=False,template=DEFAULT_TEMPLA
     finally:
         if temp is not None: temp.unlink(missing_ok=True)
         lock.unlink(missing_ok=True)
-    return asdict(p)
+    return asdict(profile)
 
 
 @dataclass(frozen=True)

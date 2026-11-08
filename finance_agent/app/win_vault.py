@@ -25,10 +25,12 @@ class _Credential(c.Structure):
     ]
 
 
-def profile_target(profile):
+def profile_target(profile, actor=None):
     # Endpoint/model changes must never silently forward a saved key to a new connection.
     identity = [profile.profile_name, profile.scope, profile.owner_user_id, profile.provider,
                 profile.base_url, profile.model, profile.api_key_env, profile.protocol]
+    if profile.scope == "global" and actor is not None:
+        identity.append(actor)
     token = sha256(json.dumps(identity, ensure_ascii=False).encode("utf-8")).hexdigest()
     return "Economy-guy/Profile/" + token
 

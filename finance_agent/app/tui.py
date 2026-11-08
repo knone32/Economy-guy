@@ -216,10 +216,10 @@ class AgentWorkspace(ConversationUI, App):
                         (new_key if new_key is not None else self.current_key(target)) != connection.api_key)
             return target != self.resolve_profile(require_key=False).profile
         except ProfileError:
-            return profile != self.profile
+            return bool(self.agent and self.agent.connection) or profile != self.profile
 
-    def set_model(self, mode, profile):
-        if self.model_changes(mode, profile):
+    def set_model(self, mode, profile, *, force=False):
+        if force or self.model_changes(mode, profile):
             had_agent = self.agent is not None
             self.reset_agent(clear_log=False)
             if had_agent or self.has_saved_history:
@@ -234,7 +234,7 @@ class AgentWorkspace(ConversationUI, App):
         self.mode, self.profile = mode, profile
         self.update_header()
 
-    def reset_agent(self, *, clear_log, keep_connection_state=False):
+    def reset_agent(self, *, clear_log):
         if self.agent and self.agent.workbook_available():
             self.agent.cancel_update()
         self.agent = None
@@ -246,15 +246,15 @@ class AgentWorkspace(ConversationUI, App):
         self.session_epoch += 1
         self.records.clear()
         self.model_requests = 0
-        if not keep_connection_state:
-            self.last_api_status = ""
-            self.last_api_ok = None
+        self.last_api_status = ""
+        self.last_api_ok = None
         if clear_log:
             self.workspace_widget("#chat-log", RichLog).clear()
 
     def logout(self):
         self.reset_agent(clear_log=True)
         self.close_conversation()
+        self.session_keys.clear()
         self.user, self.profile, self.company, self.period, self.task_route = None, None, None, None, None
         self.read_workspace = None
         self.invoice_route = None
@@ -299,7 +299,7 @@ class AgentWorkspace(ConversationUI, App):
         return ModelConnection(bound.profile, key)
 
     def current_key(self, profile):
-        target = profile_target(profile)
+        target = profile_target(profile, self.user)
         if target in self.session_keys:
             return self.session_keys[target]
         try:
@@ -312,14 +312,14 @@ class AgentWorkspace(ConversationUI, App):
         if not self.vault:
             return "系统安全存储不可用。可仅本次使用。"
         try:
-            if self.vault.read(profile_target(profile)):
+            if self.vault.read(profile_target(profile, self.user)):
                 return "此模型配置在 Windows 中已有保存的密钥。"
         except CredentialError:
             return "暂时无法读取系统凭据。可仅本次使用。"
         return "此模型配置没有保存的密钥。"
 
     def apply_key(self, profile, secret, remember):
-        target = profile_target(profile)
+        target = profile_target(profile, self.user)
         self.session_keys[target] = secret
         if remember and self.vault:
             try:
@@ -334,25 +334,40 @@ class AgentWorkspace(ConversationUI, App):
     def forget_key(self, profile):
         if not self.vault:
             raise CredentialError("系统安全存储不可用。")
-        target = profile_target(profile)
+        target = profile_target(profile, self.user)
+        before = self.current_key(profile)
         self.vault.forget(target)
         self.session_keys.pop(target, None)
-        self.set_model(self.mode, self.profile)
+        try:
+            active = self.mode == "live" and self.resolve_profile(require_key=False).profile == profile
+        except ProfileError:
+            active = False
+        if active:
+            self.set_model("live", self.profile, force=before != self.current_key(profile))
 
     def model_state(self):
         """Offline configuration checks and observed transport outcomes stay distinct."""
+        if not self.user:
+            return "unconfigured", "尚未选择 AI", "登录后可管理 AI 配置。"
         if self.mode == "mock":
             return "mock", "固定脚本测试（开发诊断）", "使用固定示例联调界面。"
         try:
             profile = self.resolve_profile(require_key=False).profile
         except ProfileError:
             return "unconfigured", "尚未配置 AI", "选择现有 AI 配置或新建一个。"
-        if not self.current_key(profile):
+        key = self.current_key(profile)
+        if not key:
             return "missing-key", "缺少 API 密钥", f"为 {profile.model} 输入密钥后即可发送。"
+        if self.agent and self.agent.connection and (
+            self.agent.connection.profile != profile or self.agent.connection.api_key != key
+        ):
+            return "unverified", "配置或密钥已变化", "请从详情重新选用此 AI，再发送消息验证连接。"
         if self.last_api_ok is True:
             return "connected", "真实 AI 已响应", profile.model
         if self.last_api_ok is False:
-            return "failed", "最近模型请求失败", f"{profile.model} · 请核对网络和 AI 配置，详情见执行记录。"
+            detail = ("服务未找到模型或端点（HTTP 404），请核对模型 ID 与 HTTPS 地址。"
+                      if self.last_api_status.endswith("HTTP 404") else "请核对网络和 AI 配置，详情见执行记录。")
+            return "failed", "最近模型请求失败", f"{profile.model} · {detail}"
         return "unverified", "连接尚未验证", f"{profile.model} 的密钥已设置。发送消息后才会联网。"
 
     def profile_status(self):
@@ -406,6 +421,8 @@ class AgentWorkspace(ConversationUI, App):
         if not self.user:
             raise ValueError("请先选择模拟账号。")
         if self.agent is not None:
+            if self.agent.connection and self.model_changes(self.mode, self.profile):
+                raise ProfileError("配置或密钥已变化，请重新选用此 AI。")
             return
         options = {}
         if self.model_override is not None:
@@ -507,7 +524,7 @@ class AgentWorkspace(ConversationUI, App):
                 self.resumed, self.resume_displays, self.resume_focus = [], [], None
                 self.has_saved_history = False
                 self.saved_records = []
-                self.reset_agent(clear_log=True, keep_connection_state=True)
+                self.reset_agent(clear_log=True)
                 prompt.value = ""
                 self.show("chat")
                 self.note("已开始新对话。可输入问题，按 Enter 发送。")

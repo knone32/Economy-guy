@@ -1,5 +1,8 @@
 """Textual dialogs. Every durable action has a distinct, cancel-first preview."""
+from dataclasses import asdict
+from hashlib import sha256
 from pathlib import Path
+import re
 import sqlite3
 
 from rich.text import Text
@@ -7,10 +10,10 @@ from textual import on
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, ContentSwitcher, DirectoryTree, Input, Label, Select, Static
+from textual.widgets import Button, Collapsible, ContentSwitcher, DirectoryTree, Input, Label, Select, Static
 
 from .cli_workspaces import company_access, import_workspace, missing_migrations, rules_available, upgrade_workspace, workspace_users
-from .model_config import ProfileError, add_profile, load_profiles, validate_profile, visible_profiles
+from .model_config import Profile, ProfileError, add_profile, update_user_profile, validate_profile, visible_profiles
 from .trace import redact
 from .tui_local import recent_workbooks
 from .win_vault import CredentialError
@@ -223,22 +226,13 @@ class Settings(Dialog):
         self.application = application
         self.return_to_task = return_to_task
         self.workbook_only = workbook_only
-        self.profiles = {}
-        try:
-            self.profiles = {p["profile_name"]: p for p in
-                             visible_profiles(application.user, **application.profile_options)}
-        except ProfileError:
-            pass
+        self.profiles = []
 
     GROUPS = (("账户", "account"), ("AI 模型", "model"), ("业务数据", "data"), ("高级诊断", "advanced"))
 
     def compose(self):
         app = self.application
         initial = "model" if app.user else "data"
-        try:
-            selected_profile = app.resolve_profile(require_key=False).profile.profile_name if app.user else None
-        except ProfileError:
-            selected_profile = None
         with Vertical(id="settings-shell"):
             yield Label("选择账簿" if self.workbook_only else "工作台设置", classes="dialog-title")
             with Horizontal(id="settings-tabs"):
@@ -256,24 +250,12 @@ class Settings(Dialog):
                             yield TextAction("切换账号", id="switch-account")
                             yield TextAction("退出登录", id="sign-out", variant="error")
                 with VerticalScroll(id="settings-model"):
-                    yield Label("正常使用（真实 AI）", classes="section")
-                    yield Static("发送消息可能产生 API 费用。保存密钥时使用当前 Windows 用户的安全存储。模拟账号用于账簿权限。",
-                                 classes="field-hint", markup=False)
-                    yield Label("AI 配置", classes="field-label")
-                    yield Select([(f"{n} · {p['model']}", n) for n, p in self.profiles.items()],
-                                 prompt="使用默认配置", id="profile",
-                                 value=selected_profile if selected_profile in self.profiles else Select.BLANK)
-                    yield Static(app.profile_status(), id="profile-state", classes="field-hint", markup=False)
-                    yield Label("API 密钥", classes="field-label")
-                    yield Input(placeholder="输入新密钥以设置或替换，内容隐藏", password=True, id="key")
-                    yield Select([("仅本次使用", "session"), ("安全记住在此电脑", "saved")],
-                                 allow_blank=False, value="session", id="key-mode")
-                    yield Static("", id="key-status", classes="field-hint", markup=False)
-                    yield TextAction("忘记已保存密钥", id="forget-key")
+                    yield Label("AI 模型管理中心", classes="section")
+                    yield Static("", id="profile-state", classes="field-hint", markup=False)
+                    yield TextAction("＋ 新建 AI 配置", id="new-profile", variant="primary", disabled=not app.user)
                     yield Static("", id="model-feedback", classes="field-hint", markup=False)
-                    with Horizontal(classes="dialog-actions"):
-                        yield TextAction("使用此 AI 配置", id="apply-model", variant="primary")
-                        yield TextAction("新建个人 AI 配置", id="new-profile", disabled=not app.user)
+                    yield Label("我的 AI", classes="section")
+                    yield Vertical(id="model-list")
                 with VerticalScroll(id="settings-data"):
                     yield Label("打开已有账簿", classes="section")
                     yield Select([(str(p), p) for p in recent_workbooks(app.recent_path)],
@@ -353,98 +335,54 @@ class Settings(Dialog):
         else:
             self.change_workspace(path)
 
-    def selected_profile(self):
-        value = self.query_one("#profile", Select).value
-        name = None if value == Select.BLANK else value
-        return name, self.app.resolve_profile(require_key=False, selection=name).profile
+    def on_mount(self):
+        self.call_later(self.refresh_profiles)
 
-    @on(Select.Changed, "#profile")
-    def profile_changed(self, event):
+    async def refresh_profiles(self):
+        app = self.application
+        listing = self.query_one("#model-list", Vertical)
+        await listing.remove_children()
+        self.profiles = []
+        active = None
         try:
-            name, selected = self.selected_profile()
+            if app.user:
+                active = app.resolve_profile(require_key=False).profile
         except ProfileError:
-            self.message("请选择有效的模型配置。", "profile-state")
-            self.message("", "key-status")
+            pass
+        using = active if app.mode == "live" else None
+        current = (f"{using.profile_name} · {provider_label(using.provider)} / {using.model}"
+                   if using else "尚未选择 AI")
+        self.message(f"当前使用 · {current}\n{app.profile_status()}", "profile-state")
+        self.message(app.profile_status(), "diagnostic-state")
+        if not app.user:
+            await listing.mount(Static("请登录后管理 AI 配置。", markup=False))
             return
-        if not self.app.model_changes("live", name):
-            self.message(self.app.profile_status(), "profile-state")
-        else:
-            ready = bool(self.app.current_key(selected))
-            self.message(f"配置可用 · {selected.model} · 密钥{'已就绪' if ready else '未设置'}。", "profile-state")
-        self.message(self.app.key_status(selected), "key-status")
-
-    def forget_key(self):
         try:
-            _, profile = self.selected_profile()
-        except ProfileError:
-            self.message("请先选择模型配置。")
+            self.profiles = [Profile(**item) for item in visible_profiles(app.user, **app.profile_options)]
+        except ProfileError as error:
+            await listing.mount(Static(f"无法读取 AI 配置。{error}", classes="field-error", markup=False))
             return
-
-        def apply(yes):
-            if yes is not True:
-                return
-            try:
-                self.app.forget_key(profile)
-            except CredentialError as error:
-                self.message(str(error))
-                return
-            self.query_one("#key", Input).value = ""
-            self.message(self.app.key_status(profile), "key-status")
-            self.message(self.app.profile_status(), "profile-state")
-            self.message("已移除这个模型的 Windows 密钥和本次输入的密钥。")
-
-        self.app.push_screen(Approval("忘记已保存密钥",
-            f"模型　{profile.model}\n移除后，如凭据发生变化，新的 AI 上下文将从此处开始。可见对话会保留。",
-            "确认忘记"), apply)
-
-    def profile_created(self, name):
-        if name is None:
+        if not self.profiles:
+            await listing.mount(Static("暂无 AI 配置。点击上方「＋ 新建 AI 配置」开始。", markup=False))
             return
-        self.profiles = {p["profile_name"]: p for p in visible_profiles(self.app.user, **self.app.profile_options)}
-        select = self.query_one("#profile", Select)
-        select.set_options([(f"{n} · {p['provider']} / {p['model']}", n) for n, p in self.profiles.items()])
-        select.value = name
-        self.message("个人模型配置已保存。可输入密钥，再应用模型设置。")
+        entries = []
+        for index, profile in enumerate(self.profiles):
+            state = "正在使用" if profile == using else "未使用"
+            kind = "个人" if profile.scope == "user" else "共享"
+            key = "密钥已设置" if app.current_key(profile) else "等待设置密钥"
+            entries.extend((
+                TextAction(redact(profile.profile_name), id=f"ai-profile-{index}"),
+                Static(redact(f"{provider_label(profile.provider)} / {profile.model} · {kind} · {key} · {state}"),
+                       classes="field-hint", markup=False),
+            ))
+        await listing.mount(*entries)
 
-    def request_model(self, mode, profile):
-        selected = None
-        secret = ""
-        if mode == "live":
-            try:
-                selected = self.app.resolve_profile(require_key=False, selection=profile).profile
-            except ProfileError:
-                self.message("没有可用的 AI 配置。请选择有效配置或新建个人 AI 配置。")
-                return
-            key_field = self.query_one("#key", Input)
-            secret = key_field.value.strip()
-            remember = self.query_one("#key-mode", Select).value == "saved"
-
-        def apply(confirmed):
-            if not confirmed:
-                return
-            key_feedback = ""
-            if secret:
-                key_feedback = self.app.apply_key(selected, secret, remember)
-                key_field.value = ""
-                self.message(self.app.key_status(selected), "key-status")
-            self.app.set_model(mode, profile)
-            status = self.app.profile_status()
-            self.message(status, "profile-state")
-            self.message(status, "diagnostic-state")
-            if selected:
-                _, title, detail = self.app.model_state()
-                followup = " 返回待办详情后，选择「在对话中继续」。" if self.return_to_task else ""
-                self.message(f"已选择 {selected.profile_name} / {selected.model}。{title}。{detail}{key_feedback}{followup}")
-            else:
-                self.message("已启用固定脚本测试。")
-        changed = self.app.model_changes(mode, profile, new_key=secret or None)
-        if changed and self.app.agent is not None:
-            self.app.push_screen(Approval(
-                "更换 AI 连接",
-                "可见聊天会保留。更换后将开始新的 AI 上下文，当前未提交的操作会取消。",
-                "确认更换", cancel="保持当前连接"), apply)
-        else:
-            apply(True)
+    def profile_done(self, feedback):
+        if feedback:
+            if self.return_to_task:
+                feedback += " 返回待办详情后，可选择「在对话中继续」。"
+            self.message(feedback)
+            self.call_later(self.refresh_profiles)
 
     @on(Button.Pressed)
     def pressed(self, event):
@@ -456,7 +394,11 @@ class Settings(Dialog):
                 tab.set_class(tab.id == key, "current")
             return
         if key == "new-profile":
-            self.app.push_screen(NewUserProfile(), self.profile_created)
+            self.app.push_screen(NewUserProfile(self.application.user), self.profile_done)
+            return
+        if key.startswith("ai-profile-"):
+            profile = self.profiles[int(key.removeprefix("ai-profile-"))]
+            self.app.push_screen(ProfileDetails(self.application.user, profile), self.profile_done)
             return
         if key == "close":
             self.action_close_dialog()
@@ -474,14 +416,10 @@ class Settings(Dialog):
             self.dismiss(key)
             return
         if key == "use-mock":
-            self.request_model("mock", self.app.profile)
-            return
-        if key == "forget-key":
-            self.forget_key()
-            return
-        if key == "apply-model":
-            value = self.query_one("#profile", Select).value
-            self.request_model("live", None if value == Select.BLANK else value)
+            def enable_mock():
+                self.application.set_model("mock", self.application.profile)
+                self.profile_done("已启用固定脚本测试。")
+            approve_connection(self, self.application.mode != "mock", enable_mock)
             return
         if key == "browse-db":
             folder = Path(self.query_one("#db", Input).value.strip().strip('"')).expanduser().parent
@@ -626,63 +564,279 @@ class TaskNote(Dialog):
             self.query_one("#task-note-error", Static).update("请填写简短备注。")
 
 
-class NewUserProfile(Dialog):
+PROVIDERS = {"deepseek": "DeepSeek", "openai": "OpenAI", "openai-compatible": "OpenAI 兼容"}
+ENDPOINT_DEFAULTS = {"deepseek": "https://api.deepseek.com", "openai": "https://api.openai.com/v1",
+                     "openai-compatible": ""}
+
+
+def provider_label(provider):
+    return PROVIDERS[provider]
+
+
+def credential_fields():
+    yield Label("API Key", classes="field-label")
+    yield Input(placeholder="输入新密钥，内容隐藏", password=True, id="key")
+    yield Select([("仅本次使用", "session"), ("Windows 安全保存", "saved")],
+                 allow_blank=False, value="session", id="key-mode")
+
+
+def approve_connection(screen, changed, apply):
+    if changed and screen.app.agent is not None:
+        screen.app.push_screen(Approval(
+            "更换 AI 连接", "可见聊天会保留。新 AI 将从此处开始，当前未提交的操作会取消。",
+            "确认更换", cancel="保持当前连接"), lambda yes: apply() if yes is True else None)
+    else:
+        apply()
+
+
+def active_profile(app):
+    if app.mode == "live":
+        try:
+            return app.resolve_profile(require_key=False).profile
+        except ProfileError:
+            pass
+    return None
+
+
+class ProfileDetails(Dialog):
+    def __init__(self, actor, profile):
+        super().__init__()
+        self.actor = actor
+        self.profile = profile
+
+    def compose(self):
+        app = self.app
+        p = self.profile
+        with VerticalScroll():
+            yield Label(redact(p.profile_name), classes="dialog-title")
+            yield Static(redact(f"{provider_label(p.provider)} / {p.model} · {'个人配置' if p.scope == 'user' else '共享配置'}"),
+                         markup=False)
+            yield Static(app.profile_status() if active_profile(app) == p else "当前未使用此 AI。", markup=False)
+            key_state = "密钥已设置" if app.current_key(p) else "等待设置密钥"
+            yield Static(f"{key_state}。{app.key_status(p)}", classes="field-hint", markup=False)
+            yield Static("", id="detail-feedback", classes="field-error", markup=False)
+            yield TextAction("使用此 AI", id="use-profile", variant="primary")
+            yield TextAction("编辑配置", id="edit-profile", disabled=p.scope != "user")
+            yield TextAction("设置 / 更换密钥", id="set-key")
+            yield TextAction("忘记已保存密钥", id="forget-key")
+            yield TextAction("返回", id="cancel")
+
+    def check_profile(self):
+        if self.app.user != self.actor or self.app.resolve_profile(
+            require_key=False, selection=self.profile.profile_name
+        ).profile != self.profile:
+            raise ProfileError("账号或配置已变化，请返回管理中心重新打开。")
+
+    def feedback(self, message):
+        self.query_one("#detail-feedback", Static).update(redact(message))
+
+    @on(Button.Pressed)
+    def pressed(self, event):
+        action = event.button.id
+        if action == "cancel":
+            self.dismiss(None)
+            return
+        app, p = self.app, self.profile
+        try:
+            self.check_profile()
+        except ProfileError as error:
+            self.feedback(str(error))
+            return
+        if action == "edit-profile" and p.scope == "user":
+            app.push_screen(NewUserProfile(self.actor, previous=p), self.edited)
+        elif action == "set-key":
+            app.push_screen(ProfileKey(self.actor, p), self.edited)
+        elif action == "use-profile":
+            def use():
+                try:
+                    self.check_profile()
+                except ProfileError as error:
+                    self.feedback(str(error))
+                    return
+                app.set_model("live", p.profile_name)
+                self.dismiss(f"已选择 {p.profile_name} / {p.model}。{app.profile_status()}")
+            approve_connection(self, app.model_changes("live", p.profile_name), use)
+        elif action == "forget-key":
+            def forget(confirmed):
+                if confirmed is not True:
+                    return
+                try:
+                    self.check_profile()
+                    app.forget_key(p)
+                except (ProfileError, CredentialError) as error:
+                    self.feedback(str(error))
+                    return
+                self.dismiss("已移除此配置的 Windows 密钥和本次输入。环境变量如有设置，仍可用。")
+            app.push_screen(Approval("忘记已保存密钥", f"模型 {p.model}。移除后将重新核对连接状态。", "确认忘记"), forget)
+
+    def edited(self, feedback):
+        if feedback:
+            self.dismiss(feedback)
+
+
+class ProfileKey(Dialog):
+    def __init__(self, actor, profile):
+        super().__init__()
+        self.actor = actor
+        self.profile = profile
+
     def compose(self):
         with VerticalScroll():
-            yield Label("新建个人 AI 配置", classes="dialog-title")
-            yield Static("此处保存服务配置。密钥请在返回模型设置后填写。", classes="field-hint", markup=False)
-            yield Label("配置名称", classes="field-label")
-            yield Input(placeholder="例如 finance-flash", id="profile-name")
-            yield Static("", id="profile-error", classes="field-error", markup=False)
-            yield Label("服务商", classes="field-label")
-            yield Select([("DeepSeek", "deepseek"), ("OpenAI", "openai"), ("OpenAI 兼容", "openai-compatible")],
-                         value="deepseek", allow_blank=False, id="provider")
-            yield Label("模型名称", classes="field-label")
-            yield Input(value="deepseek-flash", placeholder="模型名称", id="model-name")
-            yield Static("", id="model-name-error", classes="field-error", markup=False)
-            yield Label("服务地址（HTTPS）", classes="field-label")
-            yield Input(value="https://api.deepseek.com", placeholder="HTTPS 模型端点", id="endpoint")
-            yield Static("", id="endpoint-error", classes="field-error", markup=False)
-            yield Label("密钥环境变量名", classes="field-label")
-            yield Input(value="DEEPSEEK_API_KEY", placeholder="Key 环境变量名", id="key-env")
-            yield Static("", id="key-env-error", classes="field-error", markup=False)
+            yield Label("设置 / 更换密钥", classes="dialog-title")
+            yield Static(redact(f"{self.profile.profile_name} · {self.profile.model}"), markup=False)
+            yield from credential_fields()
+            yield Static("", id="key-feedback", classes="field-error", markup=False)
             with Horizontal(classes="dialog-actions"):
                 yield TextAction("取消", id="cancel")
-                yield TextAction("离线校验并保存", id="save-profile", variant="primary")
+                yield TextAction("保存密钥", id="save-key", variant="primary")
 
     @on(Button.Pressed)
     def pressed(self, event):
         if event.button.id == "cancel":
             self.dismiss(None)
             return
-        name = self.query_one("#profile-name", Input).value.strip()
-        data = {
-            "profile_name": name, "scope": "user", "owner_user_id": self.app.user,
-            "provider": self.query_one("#provider", Select).value, "service_account_ref": name,
-            "model": self.query_one("#model-name", Input).value.strip(),
-            "base_url": self.query_one("#endpoint", Input).value.strip(),
-            "api_key_env": self.query_one("#key-env", Input).value.strip(), "protocol": "auto",
-        }
-        required = (("profile_name", "profile-error", "请填写配置名称。"),
-                    ("model", "model-name-error", "请填写模型名称。"),
-                    ("base_url", "endpoint-error", "请填写服务地址。"),
-                    ("api_key_env", "key-env-error", "请填写密钥环境变量名。"))
-        for key, field, message in required:
-            self.query_one("#" + field, Static).update("" if data[key] else message)
-        if any(not data[key] for key, _, _ in required):
+        app, p = self.app, self.profile
+        field = self.query_one("#key", Input)
+        secret = field.value.strip()
+        if not secret:
+            self.query_one("#key-feedback", Static).update("请输入 API Key。")
             return
+        remember = self.query_one("#key-mode", Select).value == "saved"
+        is_active = active_profile(app) == p
+        changed = is_active and (app.current_key(p) != secret or app.model_changes("live", p.profile_name, new_key=secret))
+
+        def apply():
+            try:
+                if app.user != self.actor or app.resolve_profile(require_key=False, selection=p.profile_name).profile != p:
+                    raise ProfileError("账号或配置已变化，密钥未保存。")
+            except ProfileError as error:
+                self.query_one("#key-feedback", Static).update(str(error))
+                return
+            feedback = app.apply_key(p, secret, remember)
+            field.value = ""
+            if is_active:
+                app.set_model("live", p.profile_name, force=changed)
+            self.dismiss(feedback + (" " + app.profile_status() if is_active else " 可从详情选用此 AI。"))
+
+        approve_connection(self, changed, apply)
+
+
+class NewUserProfile(Dialog):
+    def __init__(self, actor, *, previous=None):
+        super().__init__()
+        self.actor = actor
+        self.previous = previous
+        self.provider = previous.provider if previous else "openai-compatible"
+        self.auto_endpoint = not previous or previous.base_url == ENDPOINT_DEFAULTS[self.provider]
+
+    def compose(self):
+        previous = self.previous
+        with VerticalScroll():
+            yield Label("编辑个人 AI 配置" if previous else "新建 AI 配置", classes="dialog-title")
+            yield Label("配置名称", classes="field-label")
+            yield Input(value=previous.profile_name if previous else "", placeholder="自定义名称，例如 finance-ai",
+                        disabled=previous is not None, id="profile-name")
+            yield Label("服务商", classes="field-label")
+            yield Select([(label, key) for key, label in PROVIDERS.items()], value=self.provider, allow_blank=False, id="provider")
+            yield Label("模型 ID", classes="field-label")
+            yield Input(value=previous.model if previous else "", placeholder="填写服务商提供的模型 ID", id="model-name")
+            yield Static("只离线校验配置。模型是否可用，要在发送消息后才能验证。", classes="field-hint", markup=False)
+            if not previous:
+                yield from credential_fields()
+                yield Static("可留空先保存配置，稍后从详情设置密钥。", classes="field-hint", markup=False)
+            with Collapsible(title="高级设置", collapsed=True, id="profile-advanced"):
+                yield Label("服务地址（HTTPS）", classes="field-label")
+                yield Input(value=previous.base_url if previous else ENDPOINT_DEFAULTS[self.provider], id="endpoint")
+                yield Label("凭据环境变量引用", classes="field-label")
+                yield Input(value=previous.api_key_env if previous else "", placeholder="留空生成独立引用", id="key-env")
+                yield Label("服务账户逻辑引用", classes="field-label")
+                yield Input(value=previous.service_account_ref if previous else "", placeholder="留空使用配置名称", id="account-ref")
+                yield Label("消息协议", classes="field-label")
+                yield Select([("自动", "auto"), ("标准", "standard"), ("DeepSeek Thinking", "deepseek-thinking")],
+                             value=previous.protocol if previous else "auto", allow_blank=False, id="protocol")
+            yield Static("", id="profile-error", classes="field-error", markup=False)
+            with Horizontal(classes="dialog-actions"):
+                yield TextAction("取消", id="cancel")
+                yield TextAction("保存配置" if previous else "保存并使用此 AI", id="save-profile", variant="primary")
+
+    @on(Select.Changed, "#provider")
+    def provider_changed(self, event):
+        endpoint = self.query_one("#endpoint", Input)
+        self.auto_endpoint &= endpoint.value == ENDPOINT_DEFAULTS[self.provider]
+        self.provider = event.value
+        if self.auto_endpoint:
+            endpoint.value = ENDPOINT_DEFAULTS[self.provider]
+
+    def candidate(self, secret):
+        def value(field):
+            return self.query_one("#" + field, Input).value.strip()
+
+        name, model, endpoint = value("profile-name"), value("model-name"), value("endpoint")
+        if not name:
+            raise ProfileError("请填写配置名称，可用英文字母、数字、点、下划线或短横线。")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/@-]{0,199}", model):
+            raise ProfileError("请填写有效的模型 ID，并向服务商核对名称。")
+        if not endpoint:
+            raise ProfileError("请在高级设置填写服务商的 HTTPS 地址。")
+        env = value("key-env")
+        if not env:
+            identity = f"{self.actor}/{name}/{endpoint.rstrip('/')}"
+            env = "ECONOMY_PROFILE_" + sha256(identity.encode()).hexdigest()[:20].upper()
+        data = {"profile_name": name, "scope": "user", "owner_user_id": self.actor,
+                "provider": self.query_one("#provider", Select).value, "model": model,
+                "base_url": endpoint, "api_key_env": env, "service_account_ref": value("account-ref") or name,
+                "protocol": self.query_one("#protocol", Select).value}
+        if redact(data) != data or (secret and secret in data.values()):
+            raise ProfileError("请将密钥只填在 API Key 输入框。")
+        return validate_profile(data)
+
+    @on(Button.Pressed)
+    def pressed(self, event):
+        if event.button.id == "cancel":
+            self.dismiss(None)
+            return
+        if event.button.id != "save-profile":
+            return
+        app = self.app
+        field = self.query_one("#profile-error", Static)
+        key = None if self.previous else self.query_one("#key", Input)
+        secret = key.value.strip() if key is not None else ""
+        remember = key is not None and self.query_one("#key-mode", Select).value == "saved"
         try:
-            candidate = validate_profile(data)
-            profiles, _ = load_profiles(**self.app.profile_options)
-            if any(p.api_key_env == candidate.api_key_env and p.base_url != candidate.base_url
-                   for p in profiles.values()):
-                raise ProfileError("不同端点请配置独立的凭据环境变量")
-            add_profile(data, self.app.user, **self.app.profile_options)
+            candidate = self.candidate(secret)
         except ProfileError as error:
-            message = str(error)
-            field = ("endpoint-error" if "端点" in message or "URL" in message else
-                     "key-env-error" if "环境变量" in message else "profile-error")
-            for name in ("endpoint-error", "key-env-error", "profile-error"):
-                self.query_one("#" + name, Static).update(redact(message) if name == field else "")
+            field.update(str(error))
             return
-        self.dismiss(name)
+        active_edit = self.previous is not None and active_profile(app) == self.previous
+        changed = active_edit and self.previous != candidate
+        name = candidate.profile_name
+
+        def save():
+            if app.user != self.actor:
+                field.update("账号已变化，未保存配置。")
+                return
+            try:
+                if self.previous:
+                    update_user_profile(self.previous, asdict(candidate), self.actor, **app.profile_options)
+                else:
+                    add_profile(asdict(candidate), self.actor, isolated_credentials=True, **app.profile_options)
+            except ProfileError as error:
+                field.update(str(error))
+                return
+            try:
+                if app.resolve_profile(require_key=False, selection=name).profile != candidate:
+                    raise ProfileError("重载的配置与保存内容不一致")
+            except ProfileError:
+                if changed:
+                    app.set_model("live", name, force=True)
+                self.dismiss("配置已写入，但重新读取核对失败。未处理本次输入的密钥，请重新打开管理中心核对。")
+                return
+            feedback = app.apply_key(candidate, secret, remember) if secret else ""
+            if key is not None:
+                key.value = ""
+            if not self.previous or active_edit:
+                app.set_model("live", name, force=changed)
+                feedback += " " + app.profile_status()
+            self.dismiss(f"已保存 {name}。{feedback}".strip())
+
+        approve_connection(self, not self.previous or changed, save)
