@@ -1,5 +1,5 @@
 """从当前数据库计算精确金额汇总。"""
-from .queries import QueryError, _authorize, _check_month, _money
+from .queries import QueryError, _authorize, _check_month, _money, _year_prefix
 from .queries import list_invoices, list_bank_transactions
 
 
@@ -15,6 +15,23 @@ def get_finance_summary(connection, user_id: str, company_id: str, year: int, mo
         "bank_income_count": sum(r["direction"] == "收入" for r in bank),
         "bank_expense_count": sum(r["direction"] == "支出" for r in bank),
     }
+
+
+def get_annual_finance_summary(connection, user_id, company_id, year):
+    """同一企业、同一完整年度，沿用整数分及银行收支分算口径。"""
+    _authorize(connection, user_id, company_id)
+    scope = (company_id, _year_prefix(year))
+    count, cents = connection.execute(
+        "SELECT count(*),coalesce(sum(amount_cents),0) FROM invoices WHERE company_id=? AND invoice_date LIKE ?",
+        scope).fetchone()
+    bank = {direction: (n, total) for direction, n, total in connection.execute(
+        """SELECT direction,count(*),sum(amount_cents) FROM bank_transactions
+            WHERE company_id=? AND transaction_date LIKE ? GROUP BY direction""", scope)}
+    income_count, income = bank.get("收入", (0, 0))
+    expense_count, expense = bank.get("支出", (0, 0))
+    return {"invoice_total": _money(cents), "invoice_count": count,
+            "bank_income_total": _money(income), "bank_income_count": income_count,
+            "bank_expense_total": _money(expense), "bank_expense_count": expense_count}
 
 
 def _total(connection, user_id: str, company_id: str, year: int, month: int, table: str, date_column: str, direction: str | None = None) -> str:

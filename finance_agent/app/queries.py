@@ -13,6 +13,12 @@ def _check_month(year: int, month: int) -> str:
     return f"{year:04d}-{month:02d}"
 
 
+def _year_prefix(year):
+    if type(year) is not int or not 1 <= year <= 9999:
+        raise QueryError("年份必须为 1 到 9999 的整数")
+    return f"{year:04d}-%"
+
+
 def _authorize(connection: sqlite3.Connection, user_id: str, company_id: str) -> None:
     if not user_id or not company_id:
         raise QueryError("用户编号和企业编号不能为空")
@@ -48,18 +54,32 @@ def available_periods(connection, user_id, company_id):
 
 
 INVOICE_PAGE_SIZE = 10
+# Match Python str.strip() for invoice purposes, including full-width spaces.
+PURPOSE_WHITESPACE = "".join(chr(code) for code in range(0x3001) if chr(code).isspace())
 
 
 def invoice_directory(connection, user_id, company_id, year, month, page):
     """A stable, bounded invoice directory with a count from the same transaction."""
     _authorize(connection, user_id, company_id)
-    if type(page) is not int or not 1 <= page <= 2_147_483_647:
-        raise QueryError("页码超出范围")
     filters = "company_id = ?"
     values = [company_id]
     if (year, month) != (0, 0):
         filters += " AND invoice_date LIKE ?"
         values.append(_check_month(year, month) + "%")
+    return _invoice_page(connection, company_id, filters, values, page)
+
+
+def list_annual_blank_purpose(connection, user_id, company_id, year, page):
+    """筛选用途字段的当前值，独立于必填规则。"""
+    _authorize(connection, user_id, company_id)
+    return _invoice_page(connection, company_id,
+                         "company_id=? AND invoice_date LIKE ? AND trim(coalesce(purpose,''),?)=''",
+                         [company_id, _year_prefix(year), PURPOSE_WHITESPACE], page)
+
+
+def _invoice_page(connection, company_id, filters, values, page):
+    if type(page) is not int or not 1 <= page <= 2_147_483_647:
+        raise QueryError("页码超出范围")
     total = connection.execute(f"SELECT count(*) FROM invoices WHERE {filters}", values).fetchone()[0]
     rows = connection.execute(
         f"""SELECT invoice_no, invoice_date, amount_cents, purpose

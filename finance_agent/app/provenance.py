@@ -6,16 +6,20 @@ SOURCES={'user_current','session_confirmed','trusted_reference','current_sqlite'
 MONTHLY={'get_finance_summary','summary','list_invoices','list_bank_transactions',
          'invoice_total','bank_income_total','bank_expense_total','check_missing_purpose','get_applicable_rules'}
 
+ANNUAL = {"get_annual_finance_summary", "list_annual_blank_purpose"}
+
+
 @dataclass(frozen=True)
 class ScopeProof:
     actor: str
     values: dict
     sources: dict
     read_workspace: dict | None = None
+    annual_year: int | None = None
 
     def metadata(self):
         """可记录的来源，不含凭据或模型自报权限。"""
-        return {'values':deepcopy(self.values),'sources':dict(self.sources)}
+        return {'values':deepcopy(self.values),'sources':dict(self.sources), **({'annual_year': self.annual_year} if self.annual_year else {})}
 
 def validate_scope(proof,user_id,name,args,partial=False):
     """权限由Handler先检查；来源缺失和已知范围冲突分别返回。"""
@@ -27,6 +31,22 @@ def validate_scope(proof,user_id,name,args,partial=False):
     accepted_sources = SOURCES
     directory = name == 'list_invoice_directory'
     filtered = directory and args.get('year', 0) != 0 and args.get('month', 0) != 0
+    if name in ANNUAL:
+        company = (proof.read_workspace or {}).get("company_id") or proof.values.get("company_id")
+        source_ok = bool(proof.read_workspace or proof.sources.get("company_id") in SOURCES)
+        missing = [key for key, present in (("company_id", source_ok and company and len(company) == 1),
+                                             ("year", proof.annual_year is not None)) if not present]
+        if missing:
+            return {"status": "AMBIGUOUS", "error": "请明确企业和完整年度",
+                    "evidence": {"missing_fields": missing, "provenance": proof.metadata()}}
+        if (("company_id" in args and args["company_id"] != company[0])
+                or ("year" in args and args["year"] != proof.annual_year)):
+            return {"status": "SCOPE_MISMATCH", "error": "参数与可信年度范围不一致",
+                    "evidence": {"scope": args, "provenance": proof.metadata()}}
+        return None
+    if proof.annual_year is not None and (name in MONTHLY or directory):
+        return {"status": "SCOPE_MISMATCH", "error": "全年查询不能替换成月度查询或跨年目录",
+                "evidence": {"scope": args, "provenance": proof.metadata()}}
     if (name in MONTHLY or directory) and proof.read_workspace:
         workspace = proof.read_workspace if not directory or filtered else {
             'company_id': proof.read_workspace['company_id']}

@@ -22,7 +22,7 @@ from .cli_workspaces import company_access, invoice_history, missing_migrations,
 from .model_config import ModelConnection, ProfileError, load_profiles, resolve_connection
 from .persistence import ManagementIntent, ManagementTurn, confirm_management
 from .queries import QueryError, available_periods, get_invoice, invoice_directory
-from .responses import needs_progress_evidence, render_scope, scope_key, verified_task_progress
+from .responses import needs_progress_evidence, render_scope, scope_key
 from .rules import RuleError, check_missing_purpose
 from .session_store import workbook_identity
 from .stage2_schema import open_existing
@@ -425,7 +425,7 @@ class AgentWorkspace(ConversationUI, App):
             company, year, month = scope
             if company not in names:
                 return "已不可读取"
-            period = f"{year:04d}-{month:02d}" if year is not None and month is not None else "未限定账期"
+            period = f"{year:04d}-{month:02d}" if year and month else f"{year} 年" if year else "未限定账期"
             return f"{names[company]} / {period}"
 
         query = label(self.read_workspace) if self.read_workspace else "未选择"
@@ -709,6 +709,8 @@ class AgentWorkspace(ConversationUI, App):
         scope = self.read_workspace or self.resume_focus
         if self.resume_focus and any(word in message for word in ("刚才","上一轮")):
             scope = self.resume_focus
+        if scope and scope[2] == 0 and not any(word in message for word in ("这年", "该年", "同年", "这个年度", "该年度", "同一年度")):
+            scope = None
         self.run_turn(message, args, scope)
 
     def wait_confirmation(self, title, body, action, *, danger=False):
@@ -836,13 +838,16 @@ class AgentWorkspace(ConversationUI, App):
                                           for row in data) or "没有符合条件的银行流水。")
         if not isinstance(data, dict):
             return None
-        if tool == "get_finance_summary":
+        if tool in {"get_finance_summary", "get_annual_finance_summary"}:
             return ("账期合计", "\n".join(
                 f"{label} ¥{data[key + '_total']}（{data[key + '_count']} {unit}）"
                 for label, key, unit in (("发票价税合计", "invoice", "张"), ("银行收入", "bank_income", "条"),
                                          ("银行支出", "bank_expense", "条"))))
         if tool in {"get_invoice", "resolve_invoice_reference"} and data:
             return ("发票详情", AgentWorkspace.invoice_text(data))
+        if tool == "list_annual_blank_purpose":
+            lines = "\n".join(f"{r['invoice_date']}　{r['invoice_no']}" for r in data["rows"])
+            return ("年度用途空值", f"共 {data['total']} 张 · 第 {data['page']} 页 · 仅检查字段值\n" + lines)
         if tool == "list_invoice_directory":
             rows = data["rows"]
             header = f"共 {data['total']} 张 · 第 {data['page']} 页 · 每页 {data['page_size']} 张"
@@ -924,15 +929,17 @@ class AgentWorkspace(ConversationUI, App):
         notice = response["chat_notice"]
         if notice:
             self.chat_message("Agent", notice)
+        elif stop == "INVALID_RESPONSE" and shown:
+            self.chat_message("Agent", "上方结果已核验。模型未能整理本轮回复。")
         elif stop not in {"ANSWERED", "COMPLETED", "TASK_FINISHED", "WAITING_CONFIRMATION"}:
             self.chat_message("Agent", status_label(stop))
         elif response["operation_receipt"]["status"] == "CURRENT_VALUE_MATCHES":
             self.chat_message("发票回执", "当前发票值已经符合要求，本轮无需再次保存。")
         elif not (shown or verified or receipt):
             self.chat_message("Agent", "本轮没有可核实的业务结果。请补充查询对象或查看执行记录。")
-        progress = verified_task_progress(results)
-        if progress:
-            self.chat_message("当前待办", "已重新核对待办与缺项。请逐张补充用途，全部补齐后再确认完成。")
+        closure = response.get("task_closure")
+        if closure:
+            self.chat_message("当前待办", closure)
         elif needs_progress_evidence(results):
             self.chat_message("当前待办", "暂时无法将本轮检查与唯一待办对应，请打开待办详情核对。")
         for detail in verified:

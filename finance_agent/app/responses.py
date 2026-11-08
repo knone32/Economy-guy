@@ -73,7 +73,7 @@ def scope_mismatch(expected, actual):
 def scope_key(evidence):
     scope = evidence.get("scope", {})
     rule = evidence.get("rule") or {}
-    period = (scope["year"], scope["month"]) if "year" in scope and "month" in scope else scope.get("business_date")
+    period = (scope["year"], scope.get("month")) if "year" in scope else scope.get("business_date")
     return (scope.get("company_id"), period, evidence.get("source"),
             rule.get("rule_id") or rule.get("id"), rule.get("version"), rule.get("name"), evidence.get("rule_status"))
 
@@ -83,6 +83,8 @@ def render_scope(evidence, *, conversational=False):
     company = scope.get("company_id","未限定")
     if "year" in scope and "month" in scope:
         period = f"{scope['year']:04d}-{scope['month']:02d}"
+    elif "year" in scope:
+        period = f"{scope['year']} 年"
     else:
         period = scope.get("business_date","未按年月限定")
     rule = evidence.get("rule")
@@ -91,6 +93,8 @@ def render_scope(evidence, *, conversational=False):
         heading = f"企业 {company}" if "company_id" in scope else ""
         if "year" in scope and "month" in scope:
             heading += f" {scope['year']} 年 {scope['month']} 月"
+        elif "year" in scope:
+            heading += f" {scope['year']} 年"
         elif "business_date" in scope:
             heading += f" {scope['business_date']}"
         source = {"current_sqlite": "按工作账簿当前记录", "local_display_preference": "按本地显示设置"}.get(
@@ -143,6 +147,20 @@ def verified_task_progress(results):
     return {"status": "SUCCESS", "data": {"task": tasks[0], "check": check}, "evidence": evidence}
 
 
+def render_task_closure(data):
+    task, check = data["task"], data["check"]
+    parts = [f"已重新核对待办与缺项。待办 {task['status']}，当前剩余 {check['count']} 张必填用途缺失。"]
+    if data["filled"]:
+        parts.append("当前值已填写：" + "、".join(data["filled"]) + "。")
+    if data["audited"]:
+        parts.append("有补齐成功记录且当前值一致：" + "、".join(data["audited"]) + "。审计未绑定待办。")
+    if check["count"]:
+        parts.append("下一步：逐张补齐缺项，保存前核对并确认。")
+    elif task["status"] in {"ACTIVE", "WAITING_USER", "PAUSED"}:
+        parts.append("下一步：打开待办，单独核对并确认完成。")
+    return "\n".join(parts)
+
+
 def needs_progress_evidence(results):
     return (any(name == "check_missing_purpose" for name, _ in results)
             and any(outcome["status"] in {"SUCCESS", "NO_DATA"} and
@@ -173,10 +191,13 @@ def render_information(results):
             continue
         data = outcome["data"]
         add_scope(outcome.get("evidence", {}))
-        if name == "get_finance_summary":
+        if name in {"get_finance_summary", "get_annual_finance_summary"}:
             parts.append(f"本轮查询：发票价税合计 {data['invoice_total']} 元（{data['invoice_count']}张）；"
                          f"银行收入 {data['bank_income_total']} 元（{data['bank_income_count']}条）；"
                          f"银行支出 {data['bank_expense_total']} 元（{data['bank_expense_count']}条）。")
+        elif name == "list_annual_blank_purpose":
+            parts.append(f"全年用途字段为空的发票共 {data['total']} 张（仅检查字段值）。"
+                         + f"第 {data['page']} 页：" + "、".join(row["invoice_no"] for row in data["rows"]))
         elif name == "check_missing_purpose":
             parts.append(f"本轮检查：{data['count']}张必填用途缺失。依据{data['rule']['name']} {data['rule']['version']}版。")
             parts.append("缺失明细（业务数据）：" + json.dumps(data["missing_invoices"], ensure_ascii=False))

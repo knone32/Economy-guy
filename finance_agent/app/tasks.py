@@ -1,6 +1,7 @@
 """当前SQLite中的单用户×企业待办任务；没有任务树或调度引擎。"""
 import json
 import sqlite3
+from decimal import Decimal
 from uuid import uuid4
 from .permissions import check_permission
 from .persistence import can_manage, can_propose, result, require_management_confirmation
@@ -77,7 +78,32 @@ def task_progress(path, user_id, company_id, year, month):
             connection.close()
 
 
-def task_details(path, user_id, company_id, task_id):
+def _filled_purposes(connection, task, invoices, check):
+    # 旧成功审计没有 task_id；只能核对某次写入和当前值。
+    audits = {}
+    for row in connection.execute("""SELECT actor, invoice_no, old_value, new_value, committed_at
+            FROM invoice_audit WHERE company_id=? AND field='purpose' AND status='COMMITTED'
+            ORDER BY committed_at, rowid""", (task["company_id"],)):
+        audits[row["invoice_no"]] = row
+    params = check["rule"]["params"]
+    filled, audited = [], []
+    for invoice in invoices:
+        purpose = invoice["purpose"]
+        if not (purpose or "").strip():
+            continue
+        if params["mode"] != "all" and Decimal(invoice["amount"]) * 100 < params["threshold_cents"]:
+            continue
+        number = invoice["invoice_no"]
+        row = audits.get(number)
+        if (row and row["actor"] == task["user_id"] and row["committed_at"] > task["created_at"]
+                and not (row["old_value"] or "").strip() and row["new_value"] == purpose):
+            audited.append(number)
+        else:
+            filled.append(number)
+    return {"filled": filled, "audited": audited}
+
+
+def task_details(path, user_id, company_id, task_id, *, include_filled=False):
     """Open a task link against current ownership, ACL, rules and invoice rows."""
     connection = open_existing(path, readonly=True)
     try:
@@ -98,7 +124,8 @@ def task_details(path, user_id, company_id, task_id):
         except (RuleError, ValueError):
             check, problem = None, "当前规则不可用或存在冲突，请核对适用规则。"
         may_modify = check_permission(connection, user_id, company_id, "modify").allowed
-        return result("SUCCESS", {"task": task, "check": check, "invoices": invoices,
+        filled = _filled_purposes(connection, task, invoices, check) if include_filled and check else {}
+        return result("SUCCESS", {"task": task, "check": check, "invoices": invoices, **filled,
                                   "problem": problem, "may_modify": may_modify,
                                   "can_execute": may_modify and bool(check and check["invoice_count"])
                                   and task["status"] in UNFINISHED})

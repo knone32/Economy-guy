@@ -15,9 +15,10 @@ from .references import resolve_reference
 from .persistence import can_manage, can_propose, confirm_management, ManagementIntent, ManagementCandidate, ManagementProposals
 from contextlib import closing
 from copy import deepcopy
-from .provenance import MONTHLY, validate_scope
+from .provenance import ANNUAL, MONTHLY, validate_scope
 
-MONTH = {"company_id": "string", "year": "integer", "month": "integer"}
+YEAR = {"company_id": "string", "year": "integer"}
+MONTH = {**YEAR, "month": "integer"}
 REGISTRY = {
     "list_invoices": (queries.list_invoices, MONTH),
     "list_invoice_directory": (queries.invoice_directory, {**MONTH, "page": "integer"}),
@@ -29,6 +30,8 @@ REGISTRY = {
     "summary": (None, MONTH),
     "get_finance_summary": (finance.get_finance_summary, MONTH),
     "check_missing_purpose": (check_missing_purpose, MONTH),
+    "get_annual_finance_summary": (finance.get_annual_finance_summary, YEAR),
+    "list_annual_blank_purpose": (queries.list_annual_blank_purpose, {**YEAR, "page": "integer"}),
     "get_applicable_rules": (None, {"company_id":"string", "rule_type":"string", "business_date":"string"}),
     "prepare_invoice_update": (None, {"company_id":"string", "invoice_no":"string", "field":"string", "new_value":"string"}),
     "add": (None, {"a": "integer", "b": "integer"}),
@@ -45,11 +48,13 @@ TOOLS = [{"type": "function", "function": {"name": name,
                          "required": list(fields), "additionalProperties": False}}}
          for name, (_, fields) in REGISTRY.items()]
 TEACHING_TOOLS = TOOLS
-TOOLS = [tool for tool in TOOLS if tool["function"]["name"] in {
+TOOLS = [tool for tool in TOOLS if tool["function"]["name"] in ANNUAL | {
     "get_finance_summary", "list_invoices", "list_invoice_directory", "get_invoice", "list_bank_transactions",
     "check_missing_purpose", "get_applicable_rules", "prepare_invoice_update",
     "list_tasks", "manage_task", "manage_preference", "manage_display_preference", "resolve_invoice_reference", "set_schedule"}]
 DESCRIPTIONS = {
+    "get_annual_finance_summary":"仅用于可信的完整年度，分别汇总发票、银行收入和银行支出。",
+    "list_annual_blank_purpose":"仅用于可信的完整年度，按页列出用途字段为空的发票；不判定必填或合规。",
     "get_finance_summary":"发票和银行收支综合查询首选：一次返回指定企业年月的价税合计/张数、收入/支出总额/分别条数和R001版本；补充月份后沿用原综合目标。无记录明确返回零，无需额外计划。",
     "list_invoices":"查询指定企业月份的发票明细；大列表优先使用分页目录。",
     "list_invoice_directory":"分页列出企业发票目录，返回真实总数；每页10条，page从1开始。全企业目录使用year=0、month=0，无需追问月份。用户明确选择年月时提供完整配对。",
@@ -245,6 +250,18 @@ def _confirm_proposal(outcome, service, intent, user_id, action, confirm):
     return outcome
 
 
+def annual_amount_rule(connection, user_id, company_id, year):
+    if not connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='rules'").fetchone():
+        return {"id": "R001", "name": "金额统计说明", "version": "1.0"}
+    prefix = queries._year_prefix(year)[:-1]
+    decisions = [resolve_rule(connection, user_id, company_id, "amount", f"{period}-01")
+                 for period, _, _ in queries.available_periods(connection, user_id, company_id)
+                 if period.startswith(prefix)]
+    if not decisions or any(decision != decisions[0] for decision in decisions[1:]):
+        raise RuleError("RULE_CONFLICT")
+    return asdict(decisions[0])
+
+
 def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allowed_tools=None, expected_scope=None, management_intent=None, reference_context=None, execution=None, management_confirmation=None, management_proposals=None,provenance=None,display_preference=None):
     """严格按 Schema 校验，身份仅取可信 Session，并复用业务函数。"""
     try:
@@ -396,6 +413,15 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
             if name == "check_missing_purpose":
                 data = check_missing_purpose(connection, user_id, **args)
                 return tool_result("SUCCESS", data, {"rule":data["rule"], "source":"current_sqlite", "scope":args})
+            if name in ANNUAL:
+                data = function(connection, user_id, **args)
+                evidence = {"source": "current_sqlite", "scope": {"company_id": args["company_id"], "year": args["year"]}}
+                if name == "list_annual_blank_purpose":
+                    return tool_result("SUCCESS" if data["rows"] else "NO_DATA", data, evidence)
+                if not any(data[key] for key in ("invoice_count", "bank_income_count", "bank_expense_count")):
+                    return tool_result("NO_DATA", data, evidence)
+                evidence["rule"] = annual_amount_rule(connection, user_id, **args)
+                return tool_result("SUCCESS", data, evidence)
             if name in {"summary", "get_finance_summary"}:
                 data = finance.get_finance_summary(connection, user_id, **args)
                 empty = not (data["invoice_count"] + data["bank_income_count"] + data["bank_expense_count"])

@@ -109,10 +109,10 @@ class ContextBuilder:
             self.scope.pop("invoice_no",None)
         return dict(self.scope) if explicit else {}
 
-    def proof(self, read_workspace=None):
+    def proof(self, read_workspace=None, *, annual_year=None):
         """不采信模型或旧SQL汇总的年月。"""
         from copy import deepcopy
-        return ScopeProof(self.user_id,deepcopy(self.scope),dict(self.sources),read_workspace)
+        return ScopeProof(self.user_id,deepcopy(self.scope),dict(self.sources),read_workspace,annual_year)
 
     def accept_reference(self,evidence):
         """仅在真实引用解析成功后绑定来源。"""

@@ -23,6 +23,8 @@ SYSTEM = """你是财税助手。甲企业=C001，乙企业=C002。需要业务�
 用户只补充企业或年月时，应继续最近未完成的查询目标，不能把原目标缩减成明细。
 context_data的prior_query_tools只是历史查询类型线索：当前轮仅更正范围时可延续查询目标，不能继承旧金额、范围或修改许可。
 询问缺失或未填写用途、剩余缺项时调用check_missing_purpose，不能用财务汇总替代。context_data.read_workspace.scope中的唯一企业及完整年月可直接用于只读查询，无需再次追问；当前明确要求优先。
+用户明确要求完整年份，或明确沿用工作区 annual_year 焦点时，用 get_annual_finance_summary 查金额及张数，用 list_annual_blank_purpose 查用途字段空值。
+年度空值不是规则合规判断；不得猜年份、拆成任意月份或把 2026-09 的必填规则扩展到全年。
 发票与银行收支的综合概览使用get_finance_summary，一次取得价税合计/数量、收入/支出/条数及R001；
 list_invoice_directory用于企业发票目录（所有发票无需月份），每次只返回一页；get_invoice用于已明确企业和发票号的详情。list_invoices/list_bank_transactions用于指定月份明细。不要用明细代替完整汇总。
 仅用户明确本次修改目标、purpose/remark与新内容时可调用prepare_invoice_update。模糊目标先追问，不猜用途。
@@ -172,7 +174,7 @@ class Agent:
         from .responses import explicit_scope
         from .stage2_schema import open_existing
         company, year, month = selection
-        if type(year) is not int or type(month) is not int or not (1 <= year <= 9999 and 1 <= month <= 12):
+        if type(year) is not int or type(month) is not int or not (1 <= year <= 9999 and 0 <= month <= 12):
             raise ValueError("工作区账期无效")
         explicit = explicit_scope(text, include_update_aliases=True)
         if explicit.get("company_id", [company]) != [company]:
@@ -183,7 +185,10 @@ class Agent:
         scope = {"company_id": [company]}
         if not {"year", "month", "periods"}.intersection(explicit) and not re.search(
                 r"今年|去年|明年|本月|上月|下月|上个月|下个月|最近", text):
-            scope.update(year=[year], month=[month], periods=[(year, month)])
+            if month:
+                scope.update(year=[year], month=[month], periods=[(year, month)])
+            else:
+                scope["annual_year"] = [year]
         return scope
 
     def model_messages(self,reference=None,read_workspace=None):
@@ -272,6 +277,26 @@ class Agent:
         self.context.accept_task(details)
         return details
 
+    def task_closure(self, results):
+        from .responses import render_task_closure, verified_task_progress
+        from .tasks import task_details
+
+        progress = verified_task_progress(results)
+        if not progress:
+            return None
+        if not self.workbook_available():
+            return "工作库已变化，请重新打开账簿核对待办。"
+        task, check = progress["data"]["task"], progress["data"]["check"]
+        try:
+            fresh = task_details(self.db_path, self.user_id, task["company_id"], task["task_id"], include_filled=True)
+        except (OSError, sqlite3.Error, ValueError):
+            fresh = None
+        if fresh and fresh["ok"]:
+            data = fresh["data"]
+            if data["task"] == task and data["check"] == {**check, "invoice_count": len(data["invoices"])}:
+                return render_task_closure(data)
+        return "待办或缺项可能已变化，请打开待办重新核对当前进度。"
+
     def _ask(self, text, allow_prepare=False, continue_edit=False, management=None, management_action=None, edit_scope=None, edit_correction=False, read_workspace=None):
         """执行一轮有界请求；每个 tool_call 都配对结果后才停止。"""
         self._check_identity()
@@ -295,6 +320,7 @@ class Agent:
         self.trace("turn.started", {"user": self.user_id, "transport_bound": self.transport is not None})
         self.execution = execution = TurnExecution(self.budget_policy,self.trace)
         read_results = []
+        awaiting_year = bool(self.context.scope.get("month") and not self.context.scope.get("year"))
         expected_scope = self.context.begin(text,len(self.messages)-1,reset=management=="task")
         explicit = explicit_scope(text, include_update_aliases=True)
         reference = self.context.resolve(text, explicit=explicit)
@@ -315,6 +341,17 @@ class Agent:
         exact_invoice = (not reference and not has_dates and
                          len(explicit.get("company_id", [])) == len(explicit.get("invoice_no", [])) == 1)
         read_workspace = self._workspace_read_scope(read_workspace, text) if not (allow_prepare or management or reference) else None
+        annual_year = None
+        if not (allow_prepare or management or reference) and not re.search(
+                r"今年|去年|明年|本月|上月|下月|最近|季度|半年|上半|下半|此前|之后|以前|以后|"
+                r"第?[一二三四1-4]\s*[季期]|\d{4}\s*年\s*\d+\s*月|\d{4}[-/]\d|"
+                r"(?:至|到|—|~|～)\s*\d|[一二三四五六七八九十0-9]+\s*(?:日|号|月)", text):
+            years = explicit.get("year", [])
+            fills_month = awaiting_year and re.fullmatch(r"\s*\d{4}\s*年[。！!\s]*", text)
+            if len(years) == 1 and not {"month", "periods"} & explicit.keys() and years[0] > 0 and not fills_month:
+                annual_year = years[0]
+            elif not has_dates and read_workspace:
+                annual_year = next(iter(read_workspace.get("annual_year", [])), None)
         # 动作由可信CLI命令指定；模型不能把只读意图变成创建/删除。
         if management in {'task','preference'} and management_action:
             self.management_turn=ManagementTurn(self.user_id)
@@ -358,6 +395,11 @@ class Agent:
             api={key:self.transport.counts()[key]-api_before[key] for key in api_before} if api_before is not None else None
             self.last_response["chat_notice"] = chat_notice
             self.last_response["tool_results"] = tuple(read_results)
+            closure = self.task_closure(read_results)
+            if closure:
+                self.last_response["task_closure"] = closure
+                text += "\n" + closure
+                self.last_response["text"] = text
             self.last_response['api_counts']=api
             if store:
                 self.messages.append({"role": "assistant", "name":"harness_output", "content": text})
@@ -421,6 +463,7 @@ class Agent:
                     self.coordinator.pending = None
                     # 原始响应已进Trace，不把不符合协议的成功声称留作后续上下文。
                     self.messages.pop()
+                    self.trace("error", {"category": "invalid_final_envelope"})
                     execution.stop("INVALID_RESPONSE")
                     return finish(self.write_receipt["message"], category="unverified")
                 if natural["kind"] == "clarification" and allow_prepare:
@@ -469,7 +512,8 @@ class Agent:
                                              reference_context=reference_context,execution=execution,
                                              management_confirmation=confirm_proposal if self.management_confirmation else None,
                                              management_proposals=self.management_proposals if management is None else None,
-                                             provenance=self.context.proof(read_workspace),display_preference=self.display_preference)
+                                             provenance=self.context.proof(read_workspace, annual_year=annual_year),
+                                             display_preference=self.display_preference)
                         if fn.get('name') in {'manage_task','list_tasks'}:self.context.accept_task(result)
                         if fn.get("name") == "prepare_invoice_update":
                             self.coordinator.record_preparation(result)
