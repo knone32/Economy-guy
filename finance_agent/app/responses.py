@@ -202,6 +202,36 @@ def render_task_scope_negotiation(stopped, results):
     return "\n".join(parts)
 
 
+def directory_preview(pages):
+    return min(pages, key=lambda page: page["page"])["rows"][:3]
+
+
+def display_rule_amounts(content):
+    def yuan(cents):
+        whole, fraction = divmod(int(cents), 100)
+        return f"¥{whole:,}.{fraction:02d}"
+
+    content = re.sub(r"大于或等于\s*(\d+)\s*分", lambda m: f"达到{yuan(m[1])}（含）", content)
+    return re.sub(r"(?<![\d.])(\d+)\s*分(?!钟)", lambda m: yuan(m[1]), content)
+
+
+def render_rule_history(rows):
+    return "\n".join(
+        f"{row['rule_id']} v{row['version']} · {'已停用' if row['status'] == 'DISABLED' else '启用'}"
+        f" · 生效日期 {row['effective_from']}：{display_rule_amounts(row['content'])}" for row in rows
+    ) or "该企业范围内没有此规则的历史版本。"
+
+
+def render_invoice_comparison(previous, current):
+    labels = {"invoice_date": "开票日期", "seller_name": "销售方", "item_name": "项目",
+              "amount": "价税合计", "purpose": "用途", "remark": "备注"}
+    first = f"{previous['company_id']}/{previous['invoice_no']}"
+    second = f"{current['company_id']}/{current['invoice_no']}"
+    differences = [f"{label}：{previous[key] or '（空）'} → {current[key] or '（空）'}"
+                   for key, label in labels.items() if previous[key] != current[key]]
+    return f"已重新读取 {first} 与 {second}。\n" + ("\n".join(differences) or "所列发票字段一致。")
+
+
 def render_information(results):
     """保留执行摘要，从本轮真实证据按结构化范围合并说明。"""
     parts = []
@@ -227,13 +257,15 @@ def render_information(results):
                          f"银行收入 {data['bank_income_total']} 元（{data['bank_income_count']}条）；"
                          f"银行支出 {data['bank_expense_total']} 元（{data['bank_expense_count']}条）。")
         elif name == "get_applicable_rules":
-            parts.append(f"当前适用规则 {data['rule_id']} v{data['version']}：{data['content']}")
+            parts.append(f"当前适用规则 {data['rule_id']} v{data['version']}：" + display_rule_amounts(data["content"]))
+        elif name == "list_rule_versions":
+            parts.append(render_rule_history(data))
         elif name == "list_annual_blank_purpose":
             parts.append(f"全年用途字段为空的发票共 {data['total']} 张（仅检查字段值）。"
                          + f"第 {data['page']} 页：" + "、".join(row["invoice_no"] for row in data["rows"]))
         elif name == "check_missing_purpose":
             parts.append(f"本轮检查：{data['count']}张必填用途缺失。依据{data['rule']['name']} {data['rule']['version']}版。")
-            parts.append(data["rule"]["content"])
+            parts.append(display_rule_amounts(data["rule"]["content"]))
             parts.append("缺失明细（业务数据）：" + json.dumps(data["missing_invoices"], ensure_ascii=False))
         elif name in {"manage_task","manage_preference","manage_display_preference"}:
             parts.append("持久化管理结果 "+outcome['status']+"（不授予发票修改许可）：" + json.dumps(data,ensure_ascii=False))
@@ -334,8 +366,10 @@ def render_clarification(value):
     return "请提供" + "和".join(questions)
 
 
-def render_tool_failure(status, tool=None):
+def render_tool_failure(status, tool=None, outcome=None):
     """User-facing guidance; diagnostic codes and provider details stay in Trace."""
+    if status == "CONFLICT" and tool == "manage_task" and ((outcome or {}).get("data") or {}).get("existing_task_id"):
+        return "该企业已有未完成待办，本次未创建。可打开待办列表查看或继续原待办。"
     if status == "INVALID_ARGUMENTS" and tool == "check_missing_purpose":
         return "当前用途合规检查仅支持2026年9月。本轮未完成检查；请明确企业并选择该月，或改查指定年度的用途字段空值。空值查询不代表合规判断。"
     return {

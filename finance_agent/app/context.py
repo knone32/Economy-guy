@@ -3,7 +3,7 @@ import json
 import re
 import sqlite3
 from .references import reference_catalog, invalidate_references, resolve_reference, record_display
-from .responses import explicit_scope, scope_mismatch
+from .responses import directory_preview, explicit_scope, scope_mismatch
 from .tasks import list_tasks
 from .preferences import manage_preference
 from .provenance import ANNUAL, SOURCES, ScopeProof
@@ -151,8 +151,7 @@ class ContextBuilder:
         if hint is None:
             return None
         if (explicit and len(explicit.get("company_id", [])) == len(explicit.get("invoice_no", [])) == 1
-                and hint["ordinal"] is None and not hint["anchor_id"]
-                and "这张" in text and not any(word in text for word in ("那张", "那一张"))):
+                and hint["ordinal"] is None and not hint["anchor_id"]):
             return None
         if self.references_blocked:
             return {"ok":False,"status":"AMBIGUOUS","data":None,"evidence":{},"error":"旧引用未能安全失效，请明确目标"}
@@ -183,10 +182,18 @@ class ContextBuilder:
         if focus:
             self.prior_query_tools=focus
         groups = []
+        directories = {}
         for name,outcome in results:
             if outcome["status"] != "SUCCESS":
                 continue
             data = outcome["data"]
+            if name == "list_invoice_directory":
+                evidence = outcome["evidence"]
+                if evidence.get("source") == "current_sqlite":
+                    scope = evidence["scope"]
+                    key = (scope["company_id"], scope.get("year"), scope.get("month"))
+                    directories.setdefault(key, (scope, []))[1].append(data)
+                continue
             if name=="list_invoices":
                 rows = data
             elif name=="check_missing_purpose":
@@ -198,6 +205,10 @@ class ContextBuilder:
             if rows:
                 groups.append({"scope":outcome["evidence"]["scope"],"source":name,
                                "keys":[{"company_id":row["company_id"],"invoice_no":row["invoice_no"]} for row in rows]})
+        for scope, pages in directories.values():
+            groups.append({"scope": scope, "source": "list_invoice_directory",
+                           "keys": [{"company_id": row["company_id"], "invoice_no": row["invoice_no"]}
+                                    for row in directory_preview(pages)]})
         if not groups:
             return []
         if self.references_blocked:

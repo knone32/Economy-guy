@@ -35,6 +35,7 @@ REGISTRY = {
     "list_annual_blank_purpose": (queries.list_annual_blank_purpose, {**YEAR, "page": "integer"}),
     "list_annual_bank_income": (queries.list_annual_bank_income, {**YEAR, "page": "integer"}),
     "get_applicable_rules": (None, {"company_id":"string", "rule_type":"string", "business_date":"string"}),
+    "list_rule_versions": (None, {"company_id": "string", "rule_id": "string"}),
     "prepare_invoice_update": (None, {"company_id":"string", "invoice_no":"string", "field":"string", "new_value":"string"}),
     "add": (None, {"a": "integer", "b": "integer"}),
     "list_tasks": (None, {"company_id":"string"}),
@@ -52,7 +53,7 @@ TOOLS = [{"type": "function", "function": {"name": name,
 TEACHING_TOOLS = TOOLS
 TOOLS = [tool for tool in TOOLS if tool["function"]["name"] in ANNUAL | {
     "get_finance_summary", "list_invoices", "list_invoice_directory", "get_invoice", "list_bank_transactions",
-    "check_missing_purpose", "get_applicable_rules", "prepare_invoice_update",
+    "check_missing_purpose", "get_applicable_rules", "list_rule_versions", "prepare_invoice_update",
     "list_tasks", "manage_task", "manage_preference", "manage_display_preference", "resolve_invoice_reference", "set_schedule"}]
 DESCRIPTIONS = {
     "get_annual_finance_summary":"仅用于可信的完整年度，分别汇总发票、银行收入和银行支出。",
@@ -66,6 +67,7 @@ DESCRIPTIONS = {
     "check_missing_purpose":"用户问哪些发票用途未填写、还剩多少缺项时，使用本工具。采用可信只读账期或当前明确范围，按有效规则返回实际缺项和发票编号；不要改为财务汇总。备注不代替用途。",
     "get_applicable_rules":"按企业、业务日期和规则类型获取唯一启用依据。R001对应amount，R002/R003对应purpose，R004对应bank。查询旧版是否仍适用也使用其规则类型，不用金额汇总规则替代用途门槛规则；不提供管理权限。",
     "prepare_invoice_update":"只生成用途/备注草稿，展示旧值，不保存；必须等待可信CLI最终确认。",
+    "list_rule_versions":"读取企业可见的规则历史版本与启停状态。问 R002 v1.0、旧版或版本区别时使用，无需月份；停用版本不能用于当前合规判断。",
     "list_tasks":"列出当前用户指定企业的持久任务，不创建或修改待办。",
     "manage_task":"为普通自然语言后续待办提出创建/更正/取消等候选，或查询任务；候选无写入权限，需可信CLI展示具体对象和内容并确认。恢复重查规则与发票，完成必须有业务证据；不能修改发票。",
     "manage_display_preference":"仅当前模拟账号的个人回复详细度；明确要求以后简洁或详细时用set，value为简洁、详细或普通；get/delete时value为空。保存需要独立可信确认。与企业偏好、权限和财务事实无关。",
@@ -76,7 +78,7 @@ DESCRIPTIONS = {
 PARAMETERS = {"company_id":"企业编号，例如C001；不能凭空猜测。", "year":"明确的业务年份。",
               "month":"业务月份，1到12。", "page":"目录页码，从1开始。", "invoice_no":"与企业共同确定发票的精确编号。",
               "field":"只允许purpose或remark。", "new_value":"用户明确的新内容，空字符串表示清空。",
-              "rule_type":"amount、purpose或bank。", "business_date":"YYYY-MM-DD业务日期。",
+              "rule_id":"规则编号，如R002。", "rule_type":"amount、purpose或bank。", "business_date":"YYYY-MM-DD业务日期。",
               "action":"该管理工具支持的操作名称。", "task_id":"已有任务ID；create使用空字符串。",
               "note":"用户明确的简短后续待办说明，优先保留原话；不扩写发票清单、规则解释或步骤计划；具体内容仍需可信确认，不接受模型声称完成作为证据。",
               "key":"偏好名称；list时为空。", "value":"用户明确的偏好内容；查询/删除时为空。",
@@ -474,6 +476,13 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
                     if check:
                         outcome["evidence"]["rule"] = check["rule"]
                 return outcome
+            if name == "list_rule_versions":
+                versions = [dict(row) for row in connection.execute("""
+                    SELECT rule_id,version,name,effective_from,status,content FROM rules
+                    WHERE rule_id=? AND company_scope IN (?, '*') ORDER BY effective_from,version
+                """, (args["rule_id"], args["company_id"]))]
+                return tool_result("SUCCESS" if versions else "NO_DATA", versions,
+                                   {"scope": {"company_id": args["company_id"]}, "source": "current_sqlite"})
             if name == "get_applicable_rules":
                 decision = resolve_rule(connection, user_id, **args)
                 return tool_result("SUCCESS", asdict(decision), {"rule":asdict(decision),"scope":actual_scope,"source":"current_sqlite"})

@@ -22,7 +22,8 @@ from .cli_workspaces import company_access, invoice_history, missing_migrations,
 from .model_config import ModelConnection, ProfileError, load_profiles, resolve_connection
 from .persistence import ManagementIntent, ManagementTurn, confirm_management
 from .queries import QueryError, available_periods, get_invoice, invoice_directory
-from .responses import explicit_scope, needs_progress_evidence, render_scope, scope_key
+from .responses import (directory_preview, display_rule_amounts, explicit_scope, needs_progress_evidence,
+                        render_rule_history, render_scope, scope_key)
 from .rules import RuleError, check_missing_purpose
 from .session_store import workbook_identity
 from .stage2_schema import open_existing
@@ -958,6 +959,8 @@ class AgentWorkspace(ConversationUI, App):
         if tool == "list_bank_transactions" and isinstance(data, list):
             return ("银行流水", "\n".join(f"{row['transaction_date']}　{row['direction']} ¥{row['amount']}"
                                           for row in data) or "没有符合条件的银行流水。")
+        if tool == "list_rule_versions":
+            return ("规则版本", render_rule_history(data))
         if not isinstance(data, dict):
             return None
         if tool in {"get_finance_summary", "get_annual_finance_summary"}:
@@ -977,7 +980,7 @@ class AgentWorkspace(ConversationUI, App):
             return ("年度银行收入流水", header + ("\n" + lines if lines else "\n本页没有记录。"))
         if tool == "check_missing_purpose":
             return ("用途检查", f"目前有 {data['count']} 张发票未填写必填用途。\n"
-                    + data["rule"]["content"] + "\n"
+                    + display_rule_amounts(data["rule"]["content"]) + "\n"
                     + "\n".join(f"{r['invoice_date']}　{r['invoice_no']}" for r in data["missing_invoices"]))
         if tool == "manage_task" and "task" in data:
             task = data["task"]
@@ -988,7 +991,7 @@ class AgentWorkspace(ConversationUI, App):
                 return ("待办回执", f"{action}用途补充待办，{state}{next_step}。")
             return ("待办", f"{task['year']} 年 {task['month']} 月用途补充待办，{state}。")
         if tool == "get_applicable_rules":
-            return ("适用规则", data["content"])
+            return ("适用规则", display_rule_amounts(data["content"]))
         return None
 
     @staticmethod
@@ -1036,7 +1039,7 @@ class AgentWorkspace(ConversationUI, App):
             header = f"各次查询的总数或每页数量不一致，以目录重新读取为准。\n{details}"
         if route[1:] == (0, 0):
             header = "全部账期 · " + header
-        rows = preferred["rows"][:3]
+        rows = directory_preview(pages)
         preview = (f"预览第 {preferred['page']} 页（前 {len(rows)} 张）\n" + self.invoice_lines(rows)
                    if rows else "本页没有发票。")
         return "发票目录", header + "\n" + preview

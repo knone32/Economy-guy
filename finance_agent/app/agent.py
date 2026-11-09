@@ -1,5 +1,6 @@
 """唯一Agent Loop与兼容Facade；业务/工具/Trace/写入协调各有所有者。"""
 import json
+import re
 from pathlib import Path
 from contextlib import closing
 from uuid import uuid4
@@ -9,7 +10,8 @@ from .trace import redact, write_trace, warn_trace_degraded
 from .write_coordination import WriteCoordinator
 from .updates import commit_invoice_update
 from .responses import (explicit_scope, parse_final, render_information, render_clarification,
-                        render_reference_error, render_stopped, render_task_scope_negotiation, render_tool_failure)
+                        render_invoice_comparison, render_reference_error, render_stopped,
+                        render_task_scope_negotiation, render_tool_failure)
 from .persistence import ManagementIntent, ManagementTurn, ManagementProposals
 from .context import ContextBuilder, ContextLimitError, reference_hint
 from .scheduler import BudgetPolicy, TurnExecution
@@ -27,6 +29,7 @@ context_data的prior_query_tools只是历史查询类型线索：当前轮仅更
 完整年度或可信工作区 annual_year 可用于本轮及未更正范围的后续只读查询。目录/所有发票用 list_invoice_directory（可信年份、month=0），不能用汇总代替目录。
 用 list_annual_bank_income 分页查年度银行收入流水，用 get_annual_finance_summary 查年度合计，用 list_annual_blank_purpose 查年度用途空值。
 对象混淆（例如“银行收入发票”）时，追问 missing_fields=["business_object"]，不要推测流水与发票的关系，不重复询问已确认范围。
+规则旧版、停用状态和版本差异用 list_rule_versions；当前适用性用 get_applicable_rules。
 年度空值不是规则合规判断；不得猜年份、拆成任意月份或把 2026-09 的必填规则扩展到全年。
 用户要求全年用途待办时，可先查全年字段空值；不能替用户改成9月。待办建议需要用户下一轮明确同意具体企业、年月和动作，再按原流程请求可信确认。
 发票与银行收支的综合概览使用get_finance_summary，一次取得价税合计/数量、收入/支出/条数及R001；
@@ -174,6 +177,7 @@ class Agent:
             self.execution = None
             self.continuity=None
             self.last_user_request=None
+            self.last_response=None
 
     def _workspace_read_scope(self, selection, text):
         """Use only a caller-selected company/period that the current actor can read."""
@@ -335,10 +339,26 @@ class Agent:
         self.execution = execution = TurnExecution(self.budget_policy,self.trace)
         read_results = []
         retrieval_corrected = False
+        prior_reads = {name: result["evidence"]["scope"]
+                       for name, result in (self.last_response or {}).get("tool_results", ())
+                       if result["status"] in {"SUCCESS", "NO_DATA"}
+                       and result["evidence"].get("source") == "current_sqlite" and "scope" in result["evidence"]}
+        explicit = explicit_scope(text, include_update_aliases=True)
+        read_only = not (allow_prepare or management or self.teaching)
+        hint = reference_hint(text)
+        comparison = None
+        if (read_only and len(explicit.get("company_id", [])) == len(explicit.get("invoice_no", [])) == 1
+                and hint and hint["ordinal"] is None and not hint["anchor_id"]
+                and re.search(r"那(?:一)?张", text) and re.search(r"不同|区别|差异|比较|对比", text)):
+            # Resolve the previous operand before a new explicit company retires its anchor.
+            comparison = self.context.resolve("那张发票")
+        bank_question = (read_only and "发票" in text and re.search(r"付款|支付|已付|付清", text)
+                         and (re.search(r"银行|流水|收支", text) or prior_reads.keys() & {
+                             "get_finance_summary", "list_bank_transactions", "get_annual_finance_summary",
+                             "list_annual_bank_income"}))
         prior_annual_focus = self.context.annual_focus
         awaiting_year = bool(self.context.scope.get("month") and not self.context.scope.get("year"))
         expected_scope = self.context.begin(text,len(self.messages)-1,reset=management=="task")
-        explicit = explicit_scope(text, include_update_aliases=True)
         reference = self.context.resolve(text, explicit=explicit)
         reference_context = None
         if reference and reference["ok"]:
@@ -349,7 +369,6 @@ class Agent:
                                  "anchor_id":reference["evidence"]["reference"]["anchor_id"],
                                  "display_ids":self.context.display_ids}
             self.trace("reference.resolved",reference)
-        import re
         has_dates = bool({"year", "month", "periods"} & explicit.keys()) or bool(
             re.search(r"今年|去年|明年|本月|上月|下月|上个月|下个月|最近|近[一二三四五六七八九十0-9]+", text))
         all_invoices = not reference and not has_dates and bool(
@@ -390,6 +409,25 @@ class Agent:
             self.allowed_tools & {tool["function"]["name"] for tool in turn_tools},
             proposals=self.management_proposals if management is None else None)
         def finish(text, store=True, category="operation_result", *, chat_notice=None):
+            if comparison and category == "database_query":
+                current = next((result["data"] for name, result in read_results
+                                if name == "get_invoice" and result["status"] == "SUCCESS"
+                                and result["evidence"].get("source") == "current_sqlite"
+                                and all(result["data"][key] == explicit[key][0]
+                                        for key in ("company_id", "invoice_no"))), None)
+                if current:
+                    if comparison["ok"]:
+                        self.trace("reference.resolved", comparison)
+                        read_results.append(("resolve_invoice_reference", comparison))
+                        detail = render_invoice_comparison(comparison["data"], current)
+                    else:
+                        detail = "已读取本轮明确指定的发票。刚才那张无法按当前权限或展示范围核对，请提供它的企业和编号。"
+                    chat_notice = "\n".join(filter(None, (chat_notice, detail)))
+                    text += "\n" + detail
+            if bank_question:
+                detail = "当前账簿没有可靠的发票与银行流水关联，无法据此判断具体发票是否已付款。"
+                chat_notice = "\n".join(filter(None, (chat_notice, detail)))
+                text = "\n".join(filter(None, (text, detail)))
             if chat_notice is None and category in {"clarification", "general_unverified"}:
                 chat_notice = text
             if not (allow_prepare or management):
@@ -400,7 +438,8 @@ class Agent:
             if not self.teaching and category not in {'database_query','general_unverified'}:
                 evidence=render_stopped(read_results,execution.stop_reason)
                 if evidence:
-                    text=evidence+('\n'+text if category=='clarification' else '')
+                    detail = text if category == "clarification" else chat_notice
+                    text = "\n".join(filter(None, (evidence, detail)))
                     # 异常收尾不建立可复用引用锚点；实际证据仍展示，但不扩展旧焦点。
             if category=="database_query" and not self.teaching:
                 try:
@@ -427,6 +466,23 @@ class Agent:
             self.trace("turn.finished", {"answer": text, "tools_attempted": execution.actual_tools, "write_receipt": self.write_receipt,"execution":execution.snapshot(),'api_counts':api})
             self.last_response["trace_degraded"] = self.trace_degraded
             return text
+        if (read_only and not explicit and "list_annual_blank_purpose" in prior_reads
+                and re.search(r"违规|违反|合规", text) and re.search(r"这(?:\s*[\d零一二三四五六七八九十]+\s*张|些)|刚才|上述", text)):
+            notice = ("全年查询只检查用途字段是否为空，不能把这些发票一律认定为违规。"
+                      "用途合规检查限于 2026 年 9 月。")
+            if prior_reads["list_annual_blank_purpose"]["company_id"] == "C001":
+                notice += "甲企业该月适用 R002 v2.0。"
+            notice += "不能据此认定 8 月或其他月份的发票违规。"
+            return finish(notice, store=False, chat_notice=notice)
+        if (not self.teaching and not management and not explicit.get("invoice_no")
+                and re.search(r"银行(?:流水|收入|支出|收支|统计|总额)", text)
+                and re.search(r"修改|更改|调整|改成|改为|改一下|改掉|更新", text)):
+            self.coordinator.pending = None
+            execution.stop("DENIED")
+            notice = "银行流水及其统计总额均为只读。本轮未修改，统计总额由当前流水计算。"
+            return finish(notice, store=False, chat_notice=notice)
+        if bank_question and not explicit and not re.search(r"查询|列出|查一下|统计|汇总", text):
+            return finish("", store=False)
         if reference and not reference["ok"]:
             self.trace("reference.unresolved",reference)
             execution.stop(reference["status"])
@@ -604,7 +660,7 @@ class Agent:
                 if execution.stop_reason in {"COMPLETED","WAITING_USER","TASK_FINISHED"}:
                     return finish(render_information(read_results),store=False,category="database_query")
                 notice = render_tool_failure(execution.stop_reason, next(
-                    (name for name, outcome in read_results if outcome is stop_result), None))
+                    (name for name, outcome in read_results if outcome is stop_result), None), stop_result)
                 return finish(notice, chat_notice=notice)
         if not execution.stop_reason:
             execution.stop("MODEL_LIMIT")
