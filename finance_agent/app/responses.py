@@ -226,11 +226,14 @@ def render_information(results):
             parts.append(f"本轮查询：发票价税合计 {data['invoice_total']} 元（{data['invoice_count']}张）；"
                          f"银行收入 {data['bank_income_total']} 元（{data['bank_income_count']}条）；"
                          f"银行支出 {data['bank_expense_total']} 元（{data['bank_expense_count']}条）。")
+        elif name == "get_applicable_rules":
+            parts.append(f"当前适用规则 {data['rule_id']} v{data['version']}：{data['content']}")
         elif name == "list_annual_blank_purpose":
             parts.append(f"全年用途字段为空的发票共 {data['total']} 张（仅检查字段值）。"
                          + f"第 {data['page']} 页：" + "、".join(row["invoice_no"] for row in data["rows"]))
         elif name == "check_missing_purpose":
             parts.append(f"本轮检查：{data['count']}张必填用途缺失。依据{data['rule']['name']} {data['rule']['version']}版。")
+            parts.append(data["rule"]["content"])
             parts.append("缺失明细（业务数据）：" + json.dumps(data["missing_invoices"], ensure_ascii=False))
         elif name in {"manage_task","manage_preference","manage_display_preference"}:
             parts.append("持久化管理结果 "+outcome['status']+"（不授予发票修改许可）：" + json.dumps(data,ensure_ascii=False))
@@ -329,3 +332,21 @@ def render_clarification(value):
     if any(field not in labels for field in fields):
         questions.append("本次请求的具体对象、操作和内容（无法确定所缺信息）")
     return "请提供" + "和".join(questions)
+
+
+def render_tool_failure(status, tool=None):
+    """User-facing guidance; diagnostic codes and provider details stay in Trace."""
+    if status == "INVALID_ARGUMENTS" and tool == "check_missing_purpose":
+        return "当前用途合规检查仅支持2026年9月。本轮未完成检查；请明确企业并选择该月，或改查指定年度的用途字段空值。空值查询不代表合规判断。"
+    return {
+        "DENIED": "当前账号没有执行这项操作的权限，已停止。请使用有相应权限的账号。",
+        "SCOPE_MISMATCH": "查询参数与您确认的范围不一致，已停止。请明确企业、年份和月份，或明确完整年度后重试。",
+        "INVALID_ARGUMENTS": "本次操作的参数不完整或不适用，已停止。请明确查询对象和范围；修改时还需说明字段和新内容。",
+        "UNKNOWN_OUTCOME": "提交结果未知，请先检查本次操作的审计与当前记录，不要直接重复提交。",
+        "SCHEDULE_MISMATCH": "本轮步骤与已确认的执行顺序不一致，已停止；尚未执行剩余步骤。",
+        "CANCELLED": "已取消本次操作，没有保存本次候选内容。",
+        "WAITING_CONFIRMATION": "请核对具体对象和内容，确认后才会保存。",
+        "NOT_FOUND": "在当前权限和范围内未找到目标，请核对编号或重新查询列表。",
+        "CONFLICT": "当前记录与本次操作冲突，请重新读取并核对后再操作。",
+        "NO_PROGRESS": "本轮没有取得新的结果，已停止重复操作。请补充或更正查询条件。",
+    }.get(status, "本轮操作未能继续，请核对查询对象和范围后重试；已核验结果仍按实际执行情况保留。")

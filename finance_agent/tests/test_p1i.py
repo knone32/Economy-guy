@@ -99,9 +99,9 @@ class NegotiationPilotTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(110, 36)) as pilot:
             await h.helper.sign_in(app, pilot)
             await self.send_finished(app, pilot, "查甲企业2026年全年用途为空的发票")
-            self.assertEqual(app.records[-1][0], "INVALID_RESPONSE")
+            self.assertEqual(app.records[-1][0], "EVIDENCE_RETURNED")
             self.assertIn("共 10 张", h.log(app))
-            self.assertIn("模型未能整理", h.log(app))
+            self.assertIn("仅覆盖", h.log(app))
             self.assertNotIn("伪造已完成", h.log(app))
         self.assertEqual(list_tasks(h.book, "U001", "C001")["data"], [])
 

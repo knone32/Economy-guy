@@ -113,7 +113,7 @@ print(json.dumps({'answer':answer,'drafts':len(a.update_session.drafts),'confirm
         wrong = "F003" if actual != "F003" else "F002"
         agent.model = scripted_model([call("prepare_invoice_update",company_id="C001",invoice_no=wrong,field="remark",new_value="明确新备注")])
         answer = agent.ask("把刚才第二张的 remark 改为 明确新备注",allow_prepare=True)
-        self.assertIn("SCOPE_MISMATCH",answer)
+        self.assertEqual(agent.execution.stop_reason,"SCOPE_MISMATCH")
         self.assertFalse(agent.update_session.drafts)
         self.assertEqual(self.connection.execute("SELECT COUNT(*) FROM invoice_audit").fetchone()[0],0)
 
@@ -130,7 +130,7 @@ print(json.dumps({'answer':answer,'drafts':len(a.update_session.drafts),'confirm
         agent = Agent("U001",self.db_path,model,mode="mock")
         agent.ask("C001")
         data = next(m for m in captured if m.get("name")=="context_data")
-        self.assertEqual(data["role"],"assistant")
+        self.assertEqual(data["role"],"user")
         self.assertIn("preferences",data["content"])
         self.assertIn("下次补齐用途",data["content"])
         self.assertEqual(sum(m["role"]=="system" for m in captured),1)
@@ -169,11 +169,12 @@ print(json.dumps({'answer':answer,'drafts':len(a.update_session.drafts),'confirm
         events=[json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()]
         self.assertTrue(any(e.get("event")=="context.selected" and "trimmed" in e.get("data",{}) for e in events))
 
-    def test_unshown_tool_result_does_not_create_anchor(self):
+    def test_recovered_displayed_result_creates_current_anchor(self):
         agent=Agent("U001",self.db_path,scripted_model([call("list_invoices",company_id="C001",year=2026,month=9),
                                                      {"role":"assistant","content":"invalid JSON"}]),mode="mock")
         agent.ask("C001 2026-09")
-        self.assertEqual(reference_catalog(self.db_path,"U001"),[])
+        self.assertEqual(agent.execution.stop_reason,"EVIDENCE_RETURNED")
+        self.assertEqual(len(reference_catalog(self.db_path,"U001")),1)
 
     def test_task_switch_clears_reference_without_changing_task(self):
         agent=self.displayed()
@@ -225,7 +226,7 @@ print(json.dumps({'answer':answer,'drafts':len(a.update_session.drafts),'confirm
     def test_known_company_alias_is_scope_constraint(self):
         agent=Agent("U001",self.db_path,scripted_model([call("get_finance_summary",company_id="C002",year=2026,month=9)]),mode="mock")
         answer=agent.ask("查询甲企业 2026-09")
-        self.assertIn("SCOPE_MISMATCH",answer)
+        self.assertEqual(agent.execution.stop_reason,"SCOPE_MISMATCH")
 
     def test_missing_database_reference_is_error_not_zero(self):
         agent=Agent("U001",self.db_path.parent/"missing.db",scripted_model([]),mode="mock")

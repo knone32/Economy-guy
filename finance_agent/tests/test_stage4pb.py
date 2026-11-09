@@ -85,8 +85,12 @@ class Stage4PBTests(DatabaseTestCaseMixin,unittest.TestCase):
                 agent=self.agent([reply(call('get_finance_summary',PERIOD)),final])
                 answer=agent.ask('查询C001 2026-09')
                 self.assertIn('9622.06',answer)
-                self.assertIn(agent.execution.stop_reason,answer)
-                self.assertIn('未完成',answer)
+                if final is not None:
+                    self.assertEqual(agent.execution.stop_reason,'EVIDENCE_RETURNED')
+                    self.assertIn('仅覆盖',answer)
+                else:
+                    self.assertIn(agent.execution.stop_reason,answer)
+                    self.assertIn('未完成',answer)
                 self.assertNotEqual(agent.execution.stop_reason,'ANSWERED')
 
     def test_mixed_success_denied_error_does_not_claim_global_success(self):

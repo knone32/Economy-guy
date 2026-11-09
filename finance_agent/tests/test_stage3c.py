@@ -103,13 +103,14 @@ class Stage3CTests(DatabaseTestCaseMixin,unittest.TestCase):
 
     def test_dependency_violation_does_not_complete_step(self):
         agent=self.agent([reply(tool("set_schedule",plan())),reply(tool("get_invoice",invoice(2)))])
-        self.assertIn("SCHEDULE_MISMATCH",agent.ask("C001 按顺序核对发票 F001、F002、F003、F004、F005、F006、F007、F008、F009、F010"))
+        agent.ask("C001 按顺序核对发票 F001、F002、F003、F004、F005、F006、F007、F008、F009、F010")
+        self.assertEqual(agent.execution.stop_reason,"SCHEDULE_MISMATCH")
         self.assertTrue(all(s["status"]=="PENDING" for s in agent.last_response["execution"]["schedule"]["steps"]))
 
     def test_denied_stops_and_keeps_first_reason_with_multiple_calls(self):
         agent=Agent("U002",self.db_path,scripted_model([reply(tool("get_invoice",{"company_id":"C002","invoice_no":"F002"},"denied"),tool("get_invoice",invoice(1),"later"))]),mode="mock")
         answer=agent.ask("查询发票")
-        self.assertIn("DENIED",answer)
+        self.assertEqual(agent.execution.stop_reason,"DENIED")
         self.assertEqual(agent.last_response["execution"]["actual_tool_calls"],1)
         self.assert_pairs(agent)
 
@@ -125,7 +126,8 @@ class Stage3CTests(DatabaseTestCaseMixin,unittest.TestCase):
         proposal=plan(2)
         proposal["steps"][1].update(action="prepare_invoice_update",arguments={"company_id":"C001","invoice_no":"F002","field":"remark","new_value":"不能保存"})
         agent=self.agent([reply(tool("set_schedule",proposal))])
-        self.assertIn("DENIED",agent.ask("C001 查询"))
+        agent.ask("C001 查询")
+        self.assertEqual(agent.execution.stop_reason,"DENIED")
         self.assertFalse(agent.update_session.drafts)
 
     def test_fake_model_completion_keeps_pending_steps(self):

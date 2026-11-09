@@ -156,7 +156,7 @@ class QwenWireTests(qwen.DatabaseTestCaseMixin, unittest.TestCase):
             sent, wire = qwen.exchange([{"tool_calls": [qwen.call()]}, {"content": content}])
             with wire:
                 answer = agent.ask(qwen.QUERY)
-            self.assertEqual(agent.last_response["execution"]["stop_reason"], "INVALID_RESPONSE")
+            self.assertEqual(agent.last_response["execution"]["stop_reason"], "EVIDENCE_RETURNED")
             self.assertIn("9622.06", answer)
             self.assertNotIn("已提交", answer)
             self.assertEqual(len(sent), 2)

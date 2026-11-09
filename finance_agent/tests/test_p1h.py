@@ -76,11 +76,11 @@ class WorkbenchTests(unittest.IsolatedAsyncioTestCase):
                 app.mode = "live"
                 await h.helper.send(app, pilot, qwen.QUERY)
                 await h.helper.await_state(pilot, lambda: len(app.records) == 1 and not app.busy)
-                self.assertEqual(app.records[-1][0], "INVALID_RESPONSE")
+                self.assertEqual(app.records[-1][0], "EVIDENCE_RETURNED")
                 self.assertIn("9622.06", h.log(app))
-                self.assertIn("模型未能整理", h.log(app))
+                self.assertIn("仅覆盖", h.log(app))
                 self.assertNotIn("伪造财务成功", h.log(app))
-                self.assertEqual(app.last_api_status, "HTTP 成功 · 模型最终回复协议无效")
+                self.assertIs(app.last_api_ok, True)
                 await h.helper.send(app, pilot, qwen.QUERY)
                 await h.helper.await_state(pilot, lambda: len(app.records) == 2 and not app.busy)
                 self.assertIn("HTTP 503", app.last_api_status)
@@ -156,8 +156,8 @@ class FinalEnvelopeTests(qwen.DatabaseTestCaseMixin, unittest.TestCase):
     def test_extra_fields_invalid_json_and_correct_envelope(self):
         from app.agent import Agent
         for content, stop in (
-            ('{"kind":"information","text":"伪造成功","status":"COMMITTED"}', "INVALID_RESPONSE"),
-            ('{"kind":"information","text":', "INVALID_RESPONSE"),
+            ('{"kind":"information","text":"伪造成功","status":"COMMITTED"}', "EVIDENCE_RETURNED"),
+            ('{"kind":"information","text":', "EVIDENCE_RETURNED"),
             ('{"kind":"information","text":"已核对"}', "ANSWERED"),
         ):
             with self.subTest(stop=stop, content=content):

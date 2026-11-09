@@ -52,7 +52,7 @@ class Stage4PATests(DatabaseTestCaseMixin, unittest.TestCase):
                 self.assertEqual(outcome['status'],'WAITING_CONFIRMATION')
                 self.assertEqual(outcome['data']['proposal'],args)
                 self.assertEqual(outcome['data']['original_request'],request)
-                self.assertIn('WAITING_CONFIRMATION',answer)
+                self.assertEqual(agent.execution.stop_reason,'WAITING_CONFIRMATION')
                 approval.assert_not_called()
                 self.assertEqual(self.connection.execute('SELECT COUNT(*) FROM '+table).fetchone()[0],0)
 

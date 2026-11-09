@@ -256,12 +256,12 @@ class ContextBuilder:
             raise ContextLimitError("当前输入或本轮工具结果超过上下文字符上限，请缩小查询范围")
         sources = ["system","current_turn"]
         dropped = []
-        # 这些消息为assistant数据而非system/user；不会制造虚假Tool Call。
+        # 上下文作为输入数据置于当前请求之前，避免成为assistant最终回复示例。
         data = self._data(read_workspace)
         data_origins = data["origins"]
         if read_workspace:
             data["read_workspace"] = {"scope": read_workspace, "usage": "仅供本轮只读查询，用户明确要求优先，不授予任何写入权限。"}
-        extras = [{"role":"assistant","name":"context_data","content":json.dumps(data,ensure_ascii=False)}] if self.scope or read_workspace or data.get("references") or data.get("personal_display") else []
+        extras = [{"role":"user","name":"context_data","content":json.dumps(data,ensure_ascii=False)}] if self.scope or read_workspace or data.get("references") or data.get("personal_display") else []
         if self.restored_turns and self.history_start == 1:
             extras.append({"role":"assistant","name":"harness_history","content":json.dumps({
                 "source":"local_session","historical":True,

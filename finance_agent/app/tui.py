@@ -49,6 +49,7 @@ STATUS = {
     "INVALID_ARGUMENTS": "本轮未能确认查询或操作条件，请补充具体对象与范围",
     "CONFLICT": "当前状态有变化，请重新核对", "NOT_FOUND": "没有找到目标",
     "API_OR_RESPONSE_ERROR": "模型连接或响应失败，请检查设置与执行记录",
+    "EVIDENCE_RETURNED": "已返回本轮核验结果",
     "INVALID_RESPONSE": "模型回复格式无效，请重新描述",
     "PROTOCOL_ERROR": "模型响应异常，请查看执行记录",
     "RULE_CONFLICT": "当前规则存在冲突", "NO_APPLICABLE_RULE": "没有适用规则",
@@ -976,6 +977,7 @@ class AgentWorkspace(ConversationUI, App):
             return ("年度银行收入流水", header + ("\n" + lines if lines else "\n本页没有记录。"))
         if tool == "check_missing_purpose":
             return ("用途检查", f"目前有 {data['count']} 张发票未填写必填用途。\n"
+                    + data["rule"]["content"] + "\n"
                     + "\n".join(f"{r['invoice_date']}　{r['invoice_no']}" for r in data["missing_invoices"]))
         if tool == "manage_task" and "task" in data:
             task = data["task"]

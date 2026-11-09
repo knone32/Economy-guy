@@ -69,7 +69,7 @@ class ManagementConfirmationTests(DatabaseTestCaseMixin,unittest.TestCase):
             with self.subTest(answer=answer):
                 agent=self.preference_agent(args,lambda proposal:answer)
                 response=agent.ask('请记住C001偏好简洁',management='preference',management_action='create')
-                self.assertIn('CANCELLED',response)
+                self.assertEqual(agent.execution.stop_reason,'CANCELLED')
                 self.assertEqual(self.connection.execute('SELECT COUNT(*) FROM preferences').fetchone()[0],0)
 
     def test_task_note_correct_confirmation_and_cancel(self):
@@ -105,7 +105,7 @@ class ManagementConfirmationTests(DatabaseTestCaseMixin,unittest.TestCase):
             args={'company_id':'C001','action':action,'task_id':created['task_id'],'year':2026,'month':9,'note':'模型替换的说明'}
             agent=Agent('U001',self.db_path,scripted_model([call('manage_task',args)]),mode='mock')
             response=agent.ask('管理C001 2026-09任务，保持真实说明',management='task',management_action=action)
-            self.assertIn('WAITING_CONFIRMATION',response)
+            self.assertEqual(agent.execution.stop_reason,'WAITING_CONFIRMATION')
             row=self.connection.execute('SELECT status,context_json FROM tasks').fetchone()
             self.assertEqual(row['status'],'ACTIVE')
             self.assertEqual(json.loads(row['context_json'])['note'],'正确原始任务')
@@ -147,8 +147,9 @@ class ManagementConfirmationTests(DatabaseTestCaseMixin,unittest.TestCase):
             self.connection.commit()
             return True
         args={'company_id':'C001','action':'update','key':'format','value':'简洁'}
-        response=self.preference_agent(args,confirm).ask('C001 format改为简洁',management='preference',management_action='update')
-        self.assertIn('CONFLICT',response)
+        agent=self.preference_agent(args,confirm)
+        response=agent.ask('C001 format改为简洁',management='preference',management_action='update')
+        self.assertEqual(agent.execution.stop_reason,'CONFLICT')
         self.assertEqual(self.connection.execute('SELECT value FROM preferences').fetchone()[0],'他人新值')
 
     def test_forged_model_confirmation_is_rejected_without_prompt(self):
@@ -186,8 +187,9 @@ class ManagementConfirmationTests(DatabaseTestCaseMixin,unittest.TestCase):
             self.connection.commit()
             return True
         args={'company_id':'C001','action':'create','key':'format','value':'简洁'}
-        response=self.preference_agent(args,confirm).ask('C001记住简洁',management='preference',management_action='create')
-        self.assertIn('DENIED',response)
+        agent=self.preference_agent(args,confirm)
+        response=agent.ask('C001记住简洁',management='preference',management_action='create')
+        self.assertEqual(agent.execution.stop_reason,'DENIED')
         self.assertEqual(self.connection.execute('SELECT COUNT(*) FROM preferences').fetchone()[0],0)
 
     def test_cli_displays_original_and_exact_proposal_then_confirms_or_cancels(self):

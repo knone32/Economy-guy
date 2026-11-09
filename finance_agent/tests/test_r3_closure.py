@@ -167,10 +167,10 @@ class InvalidFinalTests(unittest.IsolatedAsyncioTestCase):
             await h.sign_in(app, pilot)
             await h.send(app, pilot, "列出甲企业所有发票。")
             await h.await_state(pilot, lambda: bool(app.records))
-            self.assertEqual(app.records[-1][0], "INVALID_RESPONSE")
+            self.assertEqual(app.records[-1][0], "EVIDENCE_RETURNED")
             self.assertEqual([c["id"] for c in app.records[-1][1]], ["page-1", "page-2"])
             text = "".join(line.text for line in app.workspace_widget("#chat-log").lines)
-            for expected in ("第 1 页", "第 2 页", "上方结果已核验", "模型未能整理"):
+            for expected in ("第 1 页", "第 2 页", "本轮数据库核验结果", "仅覆盖"):
                 self.assertIn(expected, text)
             self.assertNotIn("未核验伪造成功", text)
         events = [json.loads(line) for line in app.trace_path.read_text(encoding="utf-8").splitlines()]

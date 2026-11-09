@@ -9,7 +9,7 @@ from .trace import redact, write_trace, warn_trace_degraded
 from .write_coordination import WriteCoordinator
 from .updates import commit_invoice_update
 from .responses import (explicit_scope, parse_final, render_information, render_clarification,
-                        render_reference_error, render_stopped, render_task_scope_negotiation)
+                        render_reference_error, render_stopped, render_task_scope_negotiation, render_tool_failure)
 from .persistence import ManagementIntent, ManagementTurn, ManagementProposals
 from .context import ContextBuilder, ContextLimitError, reference_hint
 from .scheduler import BudgetPolicy, TurnExecution
@@ -334,6 +334,7 @@ class Agent:
         self.trace("turn.started", {"user": self.user_id, "transport_bound": self.transport is not None})
         self.execution = execution = TurnExecution(self.budget_policy,self.trace)
         read_results = []
+        retrieval_corrected = False
         prior_annual_focus = self.context.annual_focus
         awaiting_year = bool(self.context.scope.get("month") and not self.context.scope.get("year"))
         expected_scope = self.context.begin(text,len(self.messages)-1,reset=management=="task")
@@ -448,6 +449,11 @@ class Agent:
                 return finish('协议安全停止：'+str(error)+'；未执行新的业务操作。')
             if not execution.start_request():
                 break
+            if retrieval_corrected and not read_results:
+                context.append({"role": "system", "content":
+                    "本轮尚无当前业务查询证据。不要复述历史金额、规则或记录。"
+                    "请根据原始用户请求和可信范围调用所需查询工具；范围或对象不明确则返回 clarification。"
+                    "不创建待办、不保存偏好、不修改发票。只纠正本轮的查询回答。"})
             self.trace("model_input", redact({"messages": context, "tools": turn_tools}))
             try:
                 reply = self.transport(context,turn_tools) if self.transport and self.model is _BUILTIN_LIVE_MODEL else self.model(context, turn_tools)
@@ -479,6 +485,37 @@ class Agent:
                         return finish(render_clarification(missing["evidence"]), store=False,
                                       category="clarification")
                 natural = parse_final(reply.get("content"))
+                # A failed final envelope cannot invalidate successful, authorized reads.
+                # Return exactly the executed scopes, never claim the entire intent was completed.
+                readonly_evidence = (read_results and all(
+                    outcome["status"] in {"SUCCESS", "NO_DATA"}
+                    and outcome.get("evidence", {}).get("source") == "current_sqlite"
+                    and name not in {"manage_task", "manage_preference", "prepare_invoice_update"}
+                    for name, outcome in read_results))
+                if natural is None and readonly_evidence and not allow_prepare and not management and not self.teaching:
+                    self.messages.pop()
+                    self.trace("error", {"category": "invalid_final_envelope"})
+                    execution.stop("EVIDENCE_RETURNED")
+                    notice = "已展示本轮数据库核验结果，仅覆盖列出的查询对象和范围；未据此确认其他请求已完成。"
+                    return finish(render_information(read_results) + "\n" + notice, store=False, category="database_query", chat_notice=notice)
+                # One bounded repair, using the same loop, budget and authorization guards.
+                needs_retrieval = (not read_results and not allow_prepare and not management and not self.teaching
+                    and bool(expected_scope or read_workspace)
+                    and bool(re.search(r"查|汇总|财务|发票|金额|流水|收支|用途|规则|R00[1-4]", text, re.I))
+                    and (natural is not None and natural["kind"] == "information"
+                         or natural is None and bool(expected_scope or read_workspace)))
+                if needs_retrieval and not retrieval_corrected and execution.model_requests < min(execution.block_limit, self.max_requests):
+                    self.messages.pop()
+                    retrieval_corrected = True
+                    # Repair is read-only even when the ordinary turn offers management candidates.
+                    turn_tools = [tool for tool in turn_tools if tool["function"]["name"] not in
+                                  {"manage_task", "manage_preference", "manage_display_preference", "prepare_invoice_update", "set_schedule"}]
+                    self.trace("retrieval.corrected", {"reason": "no_current_evidence", "attempt": 1})
+                    continue
+                if needs_retrieval and retrieval_corrected:
+                    self.messages.pop()
+                    execution.stop("UNVERIFIED_RESULT")
+                    return finish("本轮还没有取得当前账簿结果。请明确要查询的企业、账期和内容后重试。", category="clarification")
                 if natural is None:
                     self.coordinator.pending = None
                     # 原始响应已进Trace，不把不符合协议的成功声称留作后续上下文。
@@ -566,7 +603,9 @@ class Agent:
                     return finish(self.write_receipt["message"])
                 if execution.stop_reason in {"COMPLETED","WAITING_USER","TASK_FINISHED"}:
                     return finish(render_information(read_results),store=False,category="database_query")
-                return finish("请求已安全停止："+execution.stop_reason+"；" + json.dumps(stop_result, ensure_ascii=False))
+                notice = render_tool_failure(execution.stop_reason, next(
+                    (name for name, outcome in read_results if outcome is stop_result), None))
+                return finish(notice, chat_notice=notice)
         if not execution.stop_reason:
             execution.stop("MODEL_LIMIT")
         self.trace("error", "模型请求上限")

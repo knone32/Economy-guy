@@ -51,7 +51,7 @@ class Stage252Tests(DatabaseTestCaseMixin, unittest.TestCase):
         agent = self.agent([{"role":"assistant","tool_calls":[query("C002")]},final("information","C001合计12667.24元")])
         answer = agent.ask("查询C001 2026-09的发票总额")
         self.assertIn("范围不一致",answer)
-        self.assertIn("C002",answer)
+        self.assertEqual(agent.last_response["tool_results"][0][1]["evidence"]["scope"]["company_id"],"C002")
         self.assertNotIn("12667.24",answer)
         outcome = json.loads([m for m in agent.messages if m["role"]=="tool"][0]["content"])
         self.assertEqual(outcome["status"],"SCOPE_MISMATCH")

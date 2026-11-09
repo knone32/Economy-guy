@@ -143,7 +143,7 @@ class IntegrationBoundaryTests(HarnessCase):
     def test_invalid_final_after_query_preserves_only_actual_evidence(self):
         a=self.agent([call('get_finance_summary',SCOPE),{'role':'assistant','content':'发票已保存'}])
         answer=a.ask('C001 2026-09发票和银行收支')
-        self.assertIn('9622.06',answer);self.assertEqual(a.execution.stop_reason,'INVALID_RESPONSE')
+        self.assertIn('9622.06',answer);self.assertEqual(a.execution.stop_reason,'EVIDENCE_RETURNED')
         self.assertNotIn('发票已保存',answer);self.assertEqual(a.write_receipt['status'],'NOT_SUBMITTED')
     def test_json_mode_is_scoped_to_official_provider(self):
         from app.model_config import ModelConnection,validate_profile

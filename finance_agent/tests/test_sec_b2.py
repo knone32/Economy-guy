@@ -59,7 +59,7 @@ class AgentBoundaryTests(HarnessCase):
                 agent = self.agent([raw_call(raw)])
                 answer = agent.ask("查询 C001 的回复格式偏好")
                 self.check_turn(agent, ["invalid"], ["INVALID_ARGUMENTS"], 1, 1)
-                self.assertIn("INVALID_ARGUMENTS", answer)
+                self.assertEqual(agent.execution.stop_reason, "INVALID_ARGUMENTS")
                 self.assertEqual(agent.execution.observed, [])
 
     def test_mixed_batch_pairs_executed_invalid_and_skipped_calls(self):
@@ -70,7 +70,7 @@ class AgentBoundaryTests(HarnessCase):
         answer = agent.ask(QUERY)
         self.check_turn(agent, ["good", "invalid", "skipped"], ["SUCCESS", "INVALID_ARGUMENTS", "DENIED"], 1, 2)
         self.assertIn("9622.06", answer)
-        self.assertIn("INVALID_ARGUMENTS", answer)
+        self.assertEqual(agent.execution.stop_reason, "INVALID_ARGUMENTS")
 
     def test_invalid_later_reply_preserves_prior_read_evidence(self):
         agent = self.agent([call("get_finance_summary", SCOPE, "good"), raw_call("[]")])
