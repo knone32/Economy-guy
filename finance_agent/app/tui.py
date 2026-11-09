@@ -125,7 +125,7 @@ class AgentWorkspace(ConversationUI, App):
         self.task_route = None
         self.task_focus = None
         self.invoice_route = None
-        self.chat_invoice_route = None
+        self.chat_invoice_routes = ()
         self.invoice_page = 1
         self.session_epoch = 0
         self.records = []
@@ -273,7 +273,7 @@ class AgentWorkspace(ConversationUI, App):
         self.agent = None
         self.task_focus = None
         self.query_focus = ()
-        self.chat_invoice_route = None
+        self.chat_invoice_routes = ()
         self.workspace_widget("#chat-invoices").display = False
         self.supplement = False
         self.workspace_widget("#supplement", Button).display = False
@@ -283,6 +283,9 @@ class AgentWorkspace(ConversationUI, App):
         self.last_api_status = ""
         self.last_api_ok = None
         if clear_log:
+            self.invoice_route = None
+            self.invoice_page = 1
+            self.invoice_rows = []
             self.workspace_widget("#chat-log", RichLog).clear()
 
     def logout(self):
@@ -711,8 +714,8 @@ class AgentWorkspace(ConversationUI, App):
         elif key == "query-scope":
             if not self.busy:
                 self.choose_workspace_scope()
-        elif key == "chat-invoices" and self.chat_invoice_route:
-            self.show_invoice_directory(*self.chat_invoice_route)
+        elif key == "chat-invoices" and self.chat_invoice_routes and not self.busy:
+            self.open_chat_invoice_directory()
         elif key == "new-task" and not self.busy:
             self.new_task()
         elif key == "configure-ai":
@@ -777,6 +780,8 @@ class AgentWorkspace(ConversationUI, App):
                 return
         event.input.value = ""
         self.chat_message("你", message)
+        self.chat_invoice_routes = ()
+        self.workspace_widget("#chat-invoices").display = False
         self.busy = True
         event.input.disabled = True
         self.note("正在处理，请稍候。")
@@ -929,10 +934,6 @@ class AgentWorkspace(ConversationUI, App):
             lines = "\n".join(f"{row['transaction_date']}　{row['transaction_no']}　¥{row['amount']}　{row['counterparty_name'] or ''}"
                               for row in data["rows"])
             return ("年度银行收入流水", header + ("\n" + lines if lines else "\n本页没有记录。"))
-        if tool == "list_invoice_directory":
-            rows = data["rows"]
-            header = f"共 {data['total']} 张 · 第 {data['page']} 页 · 每页 {data['page_size']} 张"
-            return ("发票目录", header + "\n" + AgentWorkspace.invoice_lines(rows))
         if tool == "check_missing_purpose":
             return ("用途检查", f"目前有 {data['count']} 张发票未填写必填用途。\n"
                     + "\n".join(f"{r['invoice_date']}　{r['invoice_no']}" for r in data["missing_invoices"]))
@@ -958,13 +959,67 @@ class AgentWorkspace(ConversationUI, App):
                 f"销售方　{row['seller_name']}\n项目　{row['item_name']}\n价税合计　¥{row['amount']}\n"
                 f"用途　{row['purpose'] or '未填写'}\n备注　{row['remark'] or '（无）'}")
 
+    @staticmethod
+    def directory_scope(evidence, data, status):
+        if (status not in {"SUCCESS", "NO_DATA"} or not isinstance(evidence, dict)
+                or evidence.get("source") != "current_sqlite" or not isinstance(data, dict)):
+            return None
+        scope = evidence.get("scope")
+        if not isinstance(scope, dict):
+            return None
+        company, year, month = scope.get("company_id"), scope.get("year", 0), scope.get("month", 0)
+        if (not isinstance(company, str) or not company or type(year) is not int or not 0 <= year <= 9999
+                or type(month) is not int or not 0 <= month <= 12 or (month and not year)):
+            return None
+        page, total, size, rows = (data.get(key) for key in ("page", "total", "page_size", "rows"))
+        if (any(type(value) is not int for value in (page, total, size))
+                or page < 1 or total < 0 or size < 1 or not isinstance(rows, list)
+                or bool(rows) != (status == "SUCCESS") or len(rows) > min(total, size)):
+            return None
+        if any(not isinstance(row, dict) or row.get("company_id") != company
+               or not all(isinstance(row.get(key), str) for key in ("invoice_date", "invoice_no", "amount"))
+               for row in rows):
+            return None
+        return company, year, month
+
+    def directory_summary(self, pages, route):
+        # Keep distinct reported totals, including disagreement between two reads of the same page.
+        counts = sorted({(d["page"], d["total"], d["page_size"]) for d in pages})
+        preferred = min(pages, key=lambda d: d["page"])
+        if len({(total, size) for _, total, size in counts}) == 1:
+            page_labels = "、".join(f"第 {page} 页" for page, _, _ in counts)
+            header = f"共 {preferred['total']} 张 · 每页 {preferred['page_size']} 张 · 已查询 {page_labels}"
+        else:
+            details = "；".join(f"第 {page} 页报告共 {total} 张（每页 {size} 张）" for page, total, size in counts)
+            header = f"各次查询的总数或每页数量不一致，以目录重新读取为准。\n{details}"
+        if route[1:] == (0, 0):
+            header = "全部账期 · " + header
+        rows = preferred["rows"][:3]
+        preview = (f"预览第 {preferred['page']} 页（前 {len(rows)} 张）\n" + self.invoice_lines(rows)
+                   if rows else "本页没有发票。")
+        return "发票目录", header + "\n" + preview
+
     def show_turn_results(self, results):
         groups = {}
+        directories = {}
+        fallback_route = None
         for tool, outcome in results:
             if outcome["status"] not in {"SUCCESS", "NO_DATA", "NO_CHANGE"}:
                 continue
             evidence = outcome["evidence"]
             data = outcome["data"]
+            if tool == "list_invoice_directory":
+                route = self.directory_scope(evidence, data, outcome["status"])
+                if route is None:
+                    self.chat_message("Agent", "发票目录结果格式异常，请重新查询。")
+                elif outcome["status"] == "SUCCESS":
+                    directories.setdefault(route, (evidence, []))[1].append(data)
+                else:
+                    cards = groups.setdefault(scope_key(evidence), (evidence, []))[1]
+                    item = (data, self.directory_summary([data], route))
+                    if item not in cards:
+                        cards.append(item)
+                continue
             card = self.business_card(tool, data, evidence)
             if card is None:
                 if outcome["status"] == "NO_DATA":
@@ -985,10 +1040,14 @@ class AgentWorkspace(ConversationUI, App):
                 item = (totals, card)
                 if item not in amount_group[1]:
                     amount_group[1].append(item)
-            if outcome["status"] == "SUCCESS" and tool in {"list_invoice_directory", "list_invoices", "get_invoice"}:
+            if outcome["status"] == "SUCCESS" and tool in {"list_invoices", "get_invoice"}:
                 scope = evidence["scope"]
-                page = data["page"] if tool == "list_invoice_directory" else 1
-                self.chat_invoice_route = (scope["company_id"], scope.get("year", 0), scope.get("month", 0), page)
+                fallback_route = (scope["company_id"], scope.get("year", 0), scope.get("month", 0), 1)
+        routes = []
+        for route, (evidence, pages) in directories.items():
+            groups.setdefault(scope_key(evidence), (evidence, []))[1].append((None, self.directory_summary(pages, route)))
+            routes.append((*route, min(page["page"] for page in pages)))
+        self.chat_invoice_routes = tuple(routes) if routes else (fallback_route,) if fallback_route else ()
         for evidence, cards in groups.values():
             self.chat_message("查询与处理结果", render_scope(evidence, conversational=True))
             for _, (title, text) in cards:
@@ -1004,9 +1063,8 @@ class AgentWorkspace(ConversationUI, App):
                               for name, result in results if result["evidence"].get("source") == "current_sqlite")
         if scopes:
             self.query_focus = scopes
-        self.chat_invoice_route = None
         shown = self.show_turn_results(results)
-        self.workspace_widget("#chat-invoices").display = self.chat_invoice_route is not None
+        self.workspace_widget("#chat-invoices").display = bool(self.chat_invoice_routes)
         notice = response["chat_notice"]
         if notice:
             self.chat_message("Agent", notice)
@@ -1322,6 +1380,29 @@ class AgentWorkspace(ConversationUI, App):
 
         self.select_period(company, selected)
 
+    @property
+    def chat_invoice_route(self):
+        return self.chat_invoice_routes[0] if len(self.chat_invoice_routes) == 1 else None
+
+    @staticmethod
+    def invoice_period_label(year, month):
+        return f"{year:04d}-{month:02d}" if month else f"{year} 年" if year else "全部账期"
+
+    def open_chat_invoice_directory(self):
+        if self.chat_invoice_route:
+            self.show_invoice_directory(*self.chat_invoice_route)
+            return
+        routes = self.chat_invoice_routes
+
+        def selected(route):
+            if route in self.chat_invoice_routes and not self.busy:
+                self.show_invoice_directory(*route)
+
+        self.push_screen(Choices("选择本轮发票目录", [
+            (f"{company} · {self.invoice_period_label(year, month)} · 第 {page} 页", (company, year, month, page))
+            for company, year, month, page in routes
+        ]), selected)
+
     def show_invoice_directory(self, company, year, month, page=1):
         self.task_route = None
         self.invoice_route = (company, year, month)
@@ -1330,6 +1411,7 @@ class AgentWorkspace(ConversationUI, App):
         self.call_later(self.refresh_pane, "finance")
 
     def finance_widgets(self):
+        self.invoice_rows = []
         actions = [
             TextAction("按企业查看全部", id="choose-finance-company"),
             TextAction("按企业和账期查看", id="choose-finance"),
@@ -1368,7 +1450,7 @@ class AgentWorkspace(ConversationUI, App):
                           Text(row["amount"], style="#91cbff"),
                           Text("已填写" if row["has_purpose"] else "未填写",
                                style="" if row["has_purpose"] else "#f3cf83"), key=key)
-        period = f"{year:04d}-{month:02d}" if month else f"{year} 年" if year else "全部账期"
+        period = self.invoice_period_label(year, month)
         pages = max(1, (data["total"] + data["page_size"] - 1) // data["page_size"])
         page = Horizontal(TextAction("上一页", id="invoice-prev", disabled=self.invoice_page <= 1),
                           TextAction("下一页", id="invoice-next", disabled=self.invoice_page >= pages),

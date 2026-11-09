@@ -89,10 +89,14 @@ class AccountantTrialTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual([c["id"] for c in app.records[-1][1]], ["page-1", "page-2"])
                 self.assertEqual([role for role, _ in shown].count("查询与处理结果"), 1)
                 cards = [text for role, text in shown if role == "业务核验 / 发票目录"]
-                self.assertEqual(len(cards), 2)
+                self.assertEqual(len(cards), 1)
                 self.assertIn("第 1 页", cards[0])
-                self.assertIn("第 2 页", cards[1])
-                self.assertEqual(sum(len(text.splitlines()) - 1 for text in cards), 20)
+                self.assertIn("第 2 页", cards[0])
+                self.assertIn("预览第 1 页（前 3 张）", cards[0])
+                raw = [outcome["data"] for name, outcome in app.agent.last_response["tool_results"]
+                       if name == "list_invoice_directory"]
+                self.assertEqual([(data["page"], data["total"], len(data["rows"])) for data in raw],
+                                 [(1, 20, 10), (2, 20, 10)])
                 for query in (EXPLICIT, PLAIN):
                     shown.clear()
                     await self.send(app, pilot, query)
