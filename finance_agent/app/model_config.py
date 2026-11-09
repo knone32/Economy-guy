@@ -1,4 +1,5 @@
 """可信本地模型Profile与凭据引用；不读写业务SQLite，不提供LLM工具。"""
+from collections import Counter
 from dataclasses import dataclass,field,asdict
 import ipaddress
 import json
@@ -62,6 +63,17 @@ class Profile:
     base_url: str
     api_key_env: str
     protocol: str='auto'
+
+    @property
+    def identity(self):
+        return self.scope, self.owner_user_id, self.profile_name
+
+
+def _name_conflict(profiles, candidate):
+    # Global names remain reserved to keep CLI and saved unqualified choices unambiguous.
+    return any(p.identity == candidate.identity or
+               (p.profile_name == candidate.profile_name and "global" in (p.scope, candidate.scope))
+               for p in profiles)
 
 
 def is_official_qwen(profile):
@@ -129,14 +141,23 @@ def load_profiles(template=DEFAULT_TEMPLATE,local=DEFAULT_LOCAL):
             if default: defaults.append(default)
             for item in raw.get('profiles',[]):
                 p=validate_profile(item)
-                if p.profile_name in profiles: raise ProfileError('Profile同名或来源冲突，未覆盖')
-                profiles[p.profile_name]=p
+                if _name_conflict(profiles.values(), p):
+                    raise ProfileError('Profile同名或来源冲突；全局名称不得与个人配置共用')
+                if p.scope == "user" and any(
+                    other.profile_name == p.profile_name and other.api_key_env == p.api_key_env
+                    for other in profiles.values()
+                ):
+                    raise ProfileError("不同账号的同名配置必须使用独立凭据环境变量")
+                profiles[p.identity]=p
         except ProfileError:
             raise
         except (OSError,ValueError,TypeError):
             raise ProfileError('模型配置文件异常，未修改原文件') from None
     if len(set(defaults))>1: raise ProfileError('默认Profile来源冲突')
-    return profiles,defaults[0] if defaults else None
+    names = Counter(p.profile_name for p in profiles.values())
+    # Preserve existing plain-name reads for unambiguous catalogs.
+    catalog = {p.profile_name if names[p.profile_name] == 1 else p.identity: p for p in profiles.values()}
+    return catalog, defaults[0] if defaults else None
 
 
 def visible_profiles(user_id,template=DEFAULT_TEMPLATE,local=DEFAULT_LOCAL):
@@ -181,22 +202,25 @@ def _store_profile(profile, template, local, *, previous=None, isolated_credenti
     try:
         os.close(fd)
         profiles,_=load_profiles(template,path)
-        name = profile.profile_name
         raw = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"version": 1, "profiles": []}
         rows = raw.setdefault("profiles", [])
         if previous is None:
-            if name in profiles:
-                raise ProfileError("Profile同名或归属冲突，未覆盖")
+            if _name_conflict(profiles.values(), profile):
+                raise ProfileError("Profile同名或归属冲突；全局名称不得与个人配置共用")
             index = len(rows)
         else:
-            if profiles.get(name) != previous:
+            current = next((p for p in profiles.values() if p.identity == previous.identity), None)
+            if current != previous:
                 raise ProfileError("配置已变更，请重新打开详情后编辑，未覆盖")
-            index = next((i for i, row in enumerate(rows) if row["profile_name"] == name), None)
+            index = next((i for i, row in enumerate(rows)
+                          if (row["scope"], row.get("owner_user_id"), row["profile_name"]) == previous.identity), None)
             if index is None:
                 raise ProfileError("此配置由模板提供，仅可查看和使用")
-        if isolated_credentials and any(
-            other.profile_name != name and other.api_key_env == profile.api_key_env
-            and (other.base_url != profile.base_url or other.owner_user_id != profile.owner_user_id)
+        if any(
+            other.identity != profile.identity and other.api_key_env == profile.api_key_env
+            and ((other.scope == profile.scope == "user" and other.owner_user_id != profile.owner_user_id)
+                 or (isolated_credentials and (other.base_url != profile.base_url
+                                               or other.owner_user_id != profile.owner_user_id)))
             for other in profiles.values()
         ):
             raise ProfileError("不同账号或端点请使用独立的凭据环境变量引用")
@@ -238,9 +262,12 @@ def resolve_connection(user_id,profile=None,*,template=DEFAULT_TEMPLATE,local=DE
     profiles,default=load_profiles(template,local)
     name=profile or os.getenv('FINANCE_MODEL_PROFILE') or default
     if name:
-        if name not in profiles: raise ProfileError('指定Profile不存在，未回退')
-        p=profiles[name]
-        if p.scope=='user' and p.owner_user_id!=user_id: raise ProfileError('当前用户无权选择此Profile，未回退')
+        p = next((item for item in profiles.values() if item.profile_name == name
+                  and (item.scope == 'global' or item.owner_user_id == user_id)), None)
+        if p is None:
+            if any(item.profile_name == name for item in profiles.values()):
+                raise ProfileError('当前用户无权选择此Profile，未回退')
+            raise ProfileError('指定Profile不存在，未回退')
         key=os.getenv(p.api_key_env,'') if require_key else ''
     else:
         modern=[os.getenv('OPENAI_'+suffix) for suffix in ('API_KEY','BASE_URL','MODEL')]

@@ -109,13 +109,13 @@ class Home:
         return self.profile or os.environ.get("FINANCE_MODEL_PROFILE") or default
 
     def config(self):
-        profiles, default = load_profiles(**self.options)
+        _, default = load_profiles(**self.options)
         name = self.configured_name(default)
-        profile = profiles.get(name)
-        visible = profile and (profile.scope == "global" or profile.owner_user_id == self.user)
-        if name and not visible:
+        try:
+            profile = resolve_connection(self.user, name, require_key=False, **self.options).profile if name else None
+        except ProfileError as error:
             selected = f" {self.profile}" if self.profile else ""
-            raise ProfileError(f"当前 Profile{selected} 不存在或对该用户不可见。请在「Profile 设置」选择可见项。")
+            raise ProfileError(f"当前 Profile{selected} 不存在或对该用户不可见。请在「Profile 设置」选择可见项。") from error
         return name, profile
 
     def status(self):

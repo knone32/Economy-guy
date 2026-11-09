@@ -22,7 +22,7 @@ TextAction:hover { color: $ink; }
 TextAction.current { color: $accent; text-style: bold; }
 TextAction:focus { background: $accent-fill; color: $ink; text-style: bold; }
 TextAction:disabled { color: $quiet; background: transparent; text-style: dim; }
-TextAction.text-link { text-style: underline; }
+TextAction.text-link { height: 1; }
 Input, SelectCurrent {
     height: 3; background: $canvas; color: $ink; border: round $line;
 }
@@ -47,7 +47,7 @@ SelectOverlay > .option-list--option-highlighted {
 #rail-spacer { height: 1fr; }
 #panes { width: 1fr; height: 1fr; }
 #chat { height: 1fr; padding: 0 2; }
-#chat-log { height: 1fr; min-height: 1; scrollbar-size-vertical: 1; padding-top: 1; }
+#chat-log { height: 1fr; min-height: 1; overflow-x: hidden; scrollbar-size-vertical: 1; padding-top: 1; }
 #ai-guide { height: auto; padding: 0 1; margin-bottom: 1; }
 #ai-guide-text { width: 1fr; height: auto; color: $quiet; }
 #configure-ai { margin-left: 1; }

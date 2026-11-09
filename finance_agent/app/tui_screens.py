@@ -28,7 +28,8 @@ class TextAction(Button):
 
     def render(self):
         if self.has_class("text-link"):
-            label = Text.assemble(self.label, style="underline")
+            label = self.label.copy()
+            label.stylize("underline")
         elif self.has_class("current"):
             label = Text.assemble("› ", self.label)
         else:

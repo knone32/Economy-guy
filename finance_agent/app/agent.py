@@ -95,7 +95,14 @@ class Agent:
                 except ProfileError as error: self._connection_error=str(error)
         if self.connection: self.connection.authorize(user_id)
         self.transport=ModelTransport(self.connection,self.trace) if self.connection and mode=='live' and model is _BUILTIN_LIVE_MODEL else None
-        if self.transport: self.protocol=self.transport.protocol
+        if self.transport:
+            self.protocol = self.transport.protocol
+            if self.transport.official_qwen:
+                self.messages[0]["content"] += (
+                    "\nQwen 最终回复约定：需要工具时正常返回 tool_calls。工具返回后，若无需继续调用，"
+                    "content 只写一个符合前述字段约定的 JSON 对象。不要附加字段、Markdown 代码围栏、"
+                    "解释性前后缀或工具结果副本。")
+
         self._active=False
         self._retired=False
         self.continuity=None

@@ -35,7 +35,8 @@ from .tui_screens import Approval, Choices, Login, Settings, TaskNote, TextActio
 from .win_vault import CredentialError, profile_target
 
 ROOT = Path(__file__).resolve().parents[1]
-CHAT_WIDTH = 62  # Fits the 80-column layout, including rail, padding and scrollbar.
+CHAT_MAX_WIDTH = 108
+FINAL_FORMAT_ERROR = "HTTP 成功 · 模型最终回复协议无效"
 STATUS = {
     "ANSWERED": "本轮回复完成", "COMPLETED": "本轮处理完成", "SUCCESS": "执行成功",
     "NO_DATA": "没有符合条件的记录", "NO_CHANGE": "当前无需变更",
@@ -80,6 +81,44 @@ def offline_model(messages, tools):
     year, month = periods[0]
     return {"role":"assistant","tool_calls":[{"id":"offline-query","type":"function","function":{
         "name":tool,"arguments":json.dumps({"company_id":company[0],"year":year,"month":month})}}]}
+
+
+class ChatLog(RichLog):
+    """Reflow sanitized chat renderables to the current viewport width."""
+
+    def __init__(self):
+        super().__init__(id="chat-log", markup=False, wrap=True, min_width=1)
+        self.entries = []
+        self.render_width = 0
+
+    def clear(self):
+        self.entries.clear()
+        return super().clear()
+
+    def add(self, renderable):
+        self.entries.append(renderable)
+        self.render_width = self.chat_width()
+        self.write(renderable, width=self.render_width)
+
+    def chat_width(self):
+        # Reserve one scrollbar column and two columns of trailing space.
+        return min(CHAT_MAX_WIDTH, max(1, self.content_region.width - 3))
+
+    def on_resize(self, event):
+        super().on_resize(event)
+        width = self.chat_width()
+        if not self.entries or width == self.render_width or not event.size.width:
+            return
+        at_end = self.is_vertical_scroll_end
+        scroll_y = self.scroll_y
+        super().clear()
+        self.render_width = width
+        for entry in self.entries:
+            self.write(entry, width=width, scroll_end=False)
+        if at_end:
+            self.scroll_end(animate=False)
+        else:
+            self.scroll_to(y=scroll_y, animate=False)
 
 
 class AgentWorkspace(ConversationUI, App):
@@ -144,7 +183,7 @@ class AgentWorkspace(ConversationUI, App):
                     yield TextAction(label, id=key, classes="current" if key == "go-chat" else None)
             with ContentSwitcher(initial="chat", id="panes"):
                 with Vertical(id="chat"):
-                    yield RichLog(id="chat-log", markup=False, wrap=True, min_width=1)
+                    yield ChatLog()
                     with Horizontal(id="ai-guide"):
                         yield Static("", id="ai-guide-text", markup=False)
                         yield TextAction("配置 AI 模型", id="configure-ai", variant="primary")
@@ -404,6 +443,8 @@ class AgentWorkspace(ConversationUI, App):
             self.agent.connection.profile != profile or self.agent.connection.api_key != key
         ):
             return "unverified", "配置或密钥已变化", "请从详情重新选用此 AI，再发送消息验证连接。"
+        if self.last_api_status == FINAL_FORMAT_ERROR:
+            return "failed", "模型收尾格式无效", "HTTP 已成功，已核验的业务结果仍可查看。"
         if self.last_api_ok is True:
             return "connected", "真实 AI 已响应", profile.model
         if self.last_api_ok is False:
@@ -471,15 +512,15 @@ class AgentWorkspace(ConversationUI, App):
         self.workspace_widget("#chat-note", Static).update(safe_text(text))
 
     def chat_message(self, role, text):
-        log = self.workspace_widget("#chat-log", RichLog)
+        log = self.workspace_widget("#chat-log", ChatLog)
         clean = self.storage_text(text)
         if role.startswith("业务核验 / ") or role in {"业务回执", "发票回执", "当前待办", "待办回执", "待办未保存"}:
-            log.write(Panel(Text(clean), title=Text(role), title_align="left", border_style="#83ddd6",
-                            width=CHAT_WIDTH, padding=(0, 1)))
+            log.add(Panel(Text(clean), title=Text(role), title_align="left", border_style="#83ddd6",
+                          padding=(0, 1)))
         else:
             color = "#91cbff" if role == "你" else "#83ddd6"
             line = Text.assemble("\n", (role, f"bold {color}"), "\n", clean)
-            log.write(line, width=min(CHAT_WIDTH, log.scrollable_content_region.width) or None)
+            log.add(line)
         if self.turn_seq is not None and role != "你":
             self.turn_display.append((role,clean))
 
@@ -1095,9 +1136,9 @@ class AgentWorkspace(ConversationUI, App):
         api = response.get("api_counts")
         if api:
             self.model_requests += api["attempts"]
-        if self.agent.transport and response["execution"]["stop_reason"] in {
-            "API_OR_RESPONSE_ERROR", "INVALID_RESPONSE", "PROTOCOL_ERROR",
-        }:
+        if self.agent.transport and stop == "INVALID_RESPONSE" and self.last_api_ok is True:
+            self.last_api_status = FINAL_FORMAT_ERROR
+        elif self.agent.transport and stop in {"API_OR_RESPONSE_ERROR", "INVALID_RESPONSE", "PROTOCOL_ERROR"}:
             if self.last_api_ok is not False:
                 self.last_api_status = "模型响应或协议校验失败"
             self.last_api_ok = False
