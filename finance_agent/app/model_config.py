@@ -12,6 +12,9 @@ from urllib.parse import urlsplit
 CONFIG=Path(__file__).resolve().parents[1]/'config'
 DEFAULT_TEMPLATE=CONFIG/'model_profiles.toml'
 DEFAULT_LOCAL=CONFIG/'model_profiles.local.json'
+QWEN_SNAPSHOT = "qwen3.8-max-0902"
+QWEN_PREFLIGHT = "qwen-thinking-preflight"
+PROFILE_PROTOCOLS = ("auto", "standard", "deepseek-thinking", QWEN_PREFLIGHT)
 
 
 class ProfileError(ValueError):
@@ -61,6 +64,19 @@ class Profile:
     protocol: str='auto'
 
 
+def is_official_qwen(profile):
+    """Only the requested snapshot and documented Bailian Chat Completions base URLs."""
+    if profile.provider != "openai-compatible" or profile.model != QWEN_SNAPSHOT:
+        return False
+    endpoint = urlsplit(safe_url(profile.base_url))
+    if endpoint.path != "/compatible-mode/v1":
+        return False
+    host = endpoint.hostname
+    return host in {"dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com"} or bool(re.fullmatch(
+        r"[a-z0-9][a-z0-9-]*\.(?:cn-beijing|ap-southeast-1|us-east-1|eu-central-1|"
+        r"ap-northeast-1|cn-hongkong)\.maas\.aliyuncs\.com", host))
+
+
 def validate_profile(data):
     """所有存储来源使用同一白名单；只保存环境变量名称。"""
     fields=set(Profile.__dataclass_fields__)
@@ -74,7 +90,7 @@ def validate_profile(data):
         raise ProfileError('Profile名称或服务账户逻辑引用格式无效')
     if not re.fullmatch(r'[A-Z][A-Z0-9_]{0,95}',values['api_key_env']):
         raise ProfileError('api_key_env必须是环境变量名称，不是实际Key')
-    if values['provider'] not in {'deepseek','openai','openai-compatible'} or values['protocol'] not in {'auto','standard','deepseek-thinking'}:
+    if values['provider'] not in {'deepseek','openai','openai-compatible'} or values['protocol'] not in PROFILE_PROTOCOLS:
         raise ProfileError('不支持该Provider或协议配置')
     if values['scope'] not in {'global','user'} or (values['scope']=='global' and values['owner_user_id'] is not None):
         raise ProfileError('Profile范围或归属不合法')
@@ -82,6 +98,8 @@ def validate_profile(data):
         raise ProfileError('User Profile必须绑定可信模拟用户')
     values['base_url']=safe_url(values['base_url'])
     p=Profile(**values)
+    if p.protocol == QWEN_PREFLIGHT and not is_official_qwen(p):
+        raise ProfileError("Qwen 思考预检仅支持指定快照和百炼官方端点")
     # 协议配置不会给自定义代理猜测DeepSeek兼容性。
     from .thinking_protocol import ThinkingProtocol
     protocol=ThinkingProtocol(p.base_url,p.model,thinking=p.protocol!='standard',bind_environment=False)

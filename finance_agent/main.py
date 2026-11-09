@@ -54,7 +54,7 @@ def main() -> None:
         raise SystemExit(2)
     parser = argparse.ArgumentParser(description="财税 Agent Harness（无子命令时打开全屏工作台）")
     parser.add_argument("--db", type=Path, help="SQLite 数据库路径")
-    from app.model_config import DEFAULT_TEMPLATE,DEFAULT_LOCAL
+    from app.model_config import DEFAULT_TEMPLATE,DEFAULT_LOCAL,PROFILE_PROTOCOLS
     parser.add_argument('--profiles-file',type=Path,default=DEFAULT_TEMPLATE,help='无密钥TOML模板')
     parser.add_argument('--profiles-local',type=Path,default=DEFAULT_LOCAL,help='本地新增Profile JSON；不提交Git')
     sub = parser.add_subparsers(dest="command")
@@ -69,7 +69,7 @@ def main() -> None:
     profiles.add_argument('--simulate-profile-manager',action='store_true',help='显式模拟独立profile.manage，不自动授予U001')
     for key in ('provider','service-account-ref','model','base-url','api-key-env'):
         profiles.add_argument('--'+key)
-    profiles.add_argument('--protocol',choices=('auto','standard','deepseek-thinking'),default='auto')
+    profiles.add_argument('--protocol',choices=PROFILE_PROTOCOLS,default='auto')
     init = sub.add_parser("init", help="安全首次导入，拒绝覆盖已有数据库")
     init.add_argument("--excel", type=Path, default=DEFAULT_EXCEL,
                       help="只读 Excel 来源，默认使用仓库已有的虚构测试夹具")

@@ -763,7 +763,8 @@ class NewUserProfile(Dialog):
                 yield Label("服务账户逻辑引用", classes="field-label")
                 yield Input(value=previous.service_account_ref if previous else "", placeholder="留空使用配置名称", id="account-ref")
                 yield Label("消息协议", classes="field-label")
-                yield Select([("自动", "auto"), ("标准", "standard"), ("DeepSeek Thinking", "deepseek-thinking")],
+                yield Select([("自动", "auto"), ("标准", "standard"), ("DeepSeek Thinking", "deepseek-thinking"),
+                              ("Qwen 低力度思考预检", "qwen-thinking-preflight")],
                              value=previous.protocol if previous else "auto", allow_blank=False, id="protocol")
             yield Static("", id="profile-error", classes="field-error", markup=False)
             with Horizontal(classes="dialog-actions"):
