@@ -22,30 +22,74 @@ def parse_final(content):
     return value
 
 
-def render_grounded_explanation(text, facts):
-    """Render a model-written explanation with values supplied by the Harness."""
+def render_explanation_evidence(facts):
     if "annual_blank_purpose" in facts:
         data = facts["annual_blank_purpose"]
         when = "上一轮查询" if data["historical"] else "本轮查询"
         year, month = data["compliance_period"]
-        boundary = f"字段为空本身不足以认定违规。当前支持的用途合规检查账期为 {year} 年 {month} 月。"
+        text = (f"{when}已核验：{data['company_id']} {data['year']} 年用途为空的发票共 {data['total']} 张。\n"
+                f"字段为空本身不足以认定违规。当前支持的用途合规检查账期为 {year} 年 {month} 月。")
         if data["rule"]:
-            boundary += f"该企业在该账期的依据为 {data['rule']['id']} v{data['rule']['version']}。"
-        slots = {"result": f"{when}中，{data['company_id']} {data['year']} 年用途为空的发票共 {data['total']} 张。",
-                 "boundary": boundary}
-    elif "bank_invoice_link" in facts:
-        slots = {"boundary": "当前账簿没有可靠的发票与银行流水关联，无法据此判断具体发票是否已付款。"}
-    else:
+            text += f"该企业在该账期的依据为 {data['rule']['id']} v{data['rule']['version']}。"
+        return text
+    if "bank_invoice_link" in facts:
+        return "当前账簿没有可靠的发票与银行流水关联，无法据此判断具体发票是否已付款。"
+    return ""
+
+
+def render_grounded_explanation(text, facts, user_text=""):
+    """Check cited business literals and keep the verified evidence separate from model prose."""
+    evidence = render_explanation_evidence(facts)
+    if not evidence:
         return None
     token = r"\[\[([a-z_]+)\]\]"
-    if sorted(re.findall(token, text)) != sorted(slots):
-        return None
-    prose = re.sub(token, "", text)
+    annual = facts.get("annual_blank_purpose")
+    if annual:
+        rule = annual["rule"]
+        citation = f"{rule['id']} v{rule['version']}" if rule else "未取得唯一适用规则"
+        slots = {"result": str(annual["total"]), "boundary": citation}
+        if set(re.findall(token, text)) - slots.keys():
+            return None
+        prose = re.sub(token, "", text)
+        year, month = annual["compliance_period"]
+        allowed_years = {annual["year"], year}
+        claimed_scope = explicit_scope(prose, include_update_aliases=True)
+        if (set(claimed_scope.get("company_id", ())) - {annual["company_id"]}
+                or set(claimed_scope.get("year", ())) - allowed_years
+                or set(claimed_scope.get("month", ())) - {month}
+                or set(claimed_scope.get("periods", ())) - {(year, month)}):
+            return None
+        if rule:
+            prose = re.sub(rf"(?<![A-Za-z0-9]){re.escape(rule['id'])}\s*v?\s*{re.escape(rule['version'])}(?![\d.])",
+                           "", prose, flags=re.IGNORECASE)
+        verified_years = "|".join(str(value) for value in sorted(allowed_years))
+        prose = re.sub(rf"(?<![A-Za-z0-9]){re.escape(annual['company_id'])}(?![A-Za-z0-9])|"
+                       rf"(?<!\d)(?:{verified_years})\s*年|(?<!\d){month:02d}\s*月|(?<!\d){month}\s*月",
+                       "", prose, flags=re.IGNORECASE)
+        counts = r"(?<![\d.,])(\d{1,9})\s*张"
+        quoted = {int(match) for match in re.findall(counts, user_text)}
+        for match in re.finditer(counts, prose):
+            count = int(match[1])
+            if count == annual["total"]:
+                continue
+            lead = prose[:match.start()]
+            tail = prose[match.end():]
+            attributed = (re.search(r"(?:你|您)(?:所)?(?:说|提到|引用)(?:的)?\s*[“「]?$|(?:而非|并非|不是)\s*[“「]?$", lead)
+                          or re.match(r"\s*[”」]?\s*(?:是|为)(?:你|您)(?:所)?(?:说|提到|引用)", tail))
+            if count not in quoted or not attributed:
+                return None
+        prose = re.sub(counts, "", prose)
+        rendered = re.sub(token, lambda match: slots[match[1]], text)
+    else:
+        if re.findall(token, text) != ["boundary"]:
+            return None
+        prose = re.sub(token, "", text)
+        rendered = re.sub(token, lambda _: evidence, text)
     if (not prose.strip() or re.search(
             r"[\d¥￥$\[\]]|[零〇一二两三四五六七八九十百千万亿]+\s*(?:张|条|元|分|年|月)|"
             r"金额|人民币|已(?:经)?(?:保存|提交|修改|付款|支付|确认|授权)|成功(?:保存|提交|修改)", prose)):
         return None
-    return re.sub(token, lambda match: slots[match[1]], text)
+    return rendered + "\n\n" + evidence if annual else rendered
 
 
 def explicit_scope(text, include_update_aliases=False):

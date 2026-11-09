@@ -13,6 +13,9 @@ from .rules import RuleError, resolve_rule
 from .stage2_schema import open_existing
 
 
+RELATIVE_PERIOD = r"本月|今年|去年|上个月|下个月|上月|下月|最近"
+
+
 class ContextLimitError(ValueError):
     """必需消息超出上限时停止；不截断当前请求或拆散工具消息。"""
 
@@ -63,7 +66,7 @@ class ContextBuilder:
         self.restored_turns = []
         self.personal_detail = "普通"
 
-    def begin(self,text,message_index,reset=False):
+    def begin(self,text,message_index,reset=False,*,independent_read=False):
         """明确范围更正后弃用旧焦点；不更改长期任务，也不产生提交许可。"""
         explicit = explicit_scope(text,include_update_aliases=True)
         if reset or (self.annual_focus and scope_mismatch(
@@ -110,11 +113,12 @@ class ContextBuilder:
             self.sources["periods"] = "user_current"
         task_ids=re.findall(r'(?<![a-fA-F0-9])[a-fA-F0-9]{32}(?![a-fA-F0-9])',text)
         if task_ids:self.scope['task_id']=task_ids;self.sources['task_id']='user_current'
-        if re.search(r'本月|今年|去年|上个月|下个月|上月|下月|最近',text) and not ('year' in explicit and 'month' in explicit):
+        if re.search(RELATIVE_PERIOD, text) and not ('year' in explicit and 'month' in explicit):
             for key in ('year','month','periods'):
                 self.scope.pop(key,None);self.sources.pop(key,None)
-        if reference_hint(text) and "invoice_no" not in explicit:
-            self.scope.pop("invoice_no",None)
+        if (independent_read or reference_hint(text)) and "invoice_no" not in explicit:
+            self.scope.pop("invoice_no", None)
+            self.sources.pop("invoice_no", None)
         return dict(self.scope) if explicit else {}
 
     def proof(self, read_workspace=None, *, annual_year=None):
@@ -159,7 +163,13 @@ class ContextBuilder:
             return None
         if self.references_blocked:
             return {"ok":False,"status":"AMBIGUOUS","data":None,"evidence":{},"error":"旧引用未能安全失效，请明确目标"}
-        return resolve_reference(self.db_path,self.user_id,scope=self.scope,display_ids=self.display_ids,**hint)
+        scope = dict(self.scope)
+        if explicit is not None and "invoice_no" not in explicit:
+            scope.pop("invoice_no", None)
+        if explicit == {} and re.search(RELATIVE_PERIOD, text):
+            for key in ("year", "month", "periods"):
+                scope.pop(key, None)
+        return resolve_reference(self.db_path,self.user_id,scope=scope,display_ids=self.display_ids,**hint)
 
     def remember_annual_read(self, results):
         scopes = [outcome["evidence"]["scope"] for name, outcome in results
