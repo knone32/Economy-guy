@@ -27,9 +27,10 @@ def reference_hint(text):
     malformed = bool(re.search(r"第[^。\n]{1,16}张",text)) and not match
     if not match and not malformed and not any(word in text for word in ("那张","这张","那一张","最后一张","上一张")):
         return None
-    ordinal = 0 if malformed or any(word in text for word in ("最后一张","上一张")) else None
+    # False is an unresolved expression, distinct from an explicitly requested zero.
+    ordinal = False if malformed or any(word in text for word in ("最后一张","上一张")) else None
     if match:
-        ordinal = 0
+        ordinal = False
         number = match[1]
         if number.isdigit():
             ordinal = int(number)
@@ -45,7 +46,7 @@ def reference_hint(text):
     if len({m[1] for m in matches})>1 or len(set(anchors))>1 or any(word in text for word in
             ("昨天","前天","上个月","上月","去年","上次","最早","上一份列表")):
         # 尚未实现历史时间/多序号选择，明确追问而非悄悄当成最近列表。
-        ordinal = 0
+        ordinal = False
     return {"ordinal":ordinal,"anchor_id":anchors[0] if anchors else ""}
 
 

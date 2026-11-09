@@ -177,7 +177,14 @@ def render_scope(evidence, *, conversational=False):
     return f"实际查询范围：企业 {company}；年月 {period}；来源 {evidence.get('source','未知')}；规则 {rule_text}。"
 
 
-def render_reference_error(status):
+def render_reference_error(status, evidence=None):
+    if status == "OUT_OF_RANGE":
+        reference = (evidence or {}).get("reference", {})
+        ordinal, count = reference.get("ordinal"), reference.get("count")
+        if type(ordinal) is int and type(count) is int and count > 0:
+            choices = "第 1 张" if count == 1 else f"第 1～{count} 张"
+            return f"刚才的列表共 {count} 张发票，不存在第 {ordinal} 张。请选择{choices}，或直接提供发票编号。"
+        return "该序号超出刚才展示的范围。请从列表中选择，或直接提供发票编号。"
     return {
         "DENIED": "当前账号没有读取权限，请切换到有权限的账簿账号。",
         "NOT_FOUND": "先前展示的发票已找不到，请刷新发票列表后再选。",

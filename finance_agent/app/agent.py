@@ -494,7 +494,10 @@ class Agent:
             execution.stop(reference["status"])
             if read_only:
                 del self.messages[turn_start:]
-            return finish(render_reference_error(reference["status"]), store=not read_only, category="clarification")
+            notice = render_reference_error(reference["status"], reference.get("evidence"))
+            # A failed read reference is visible history, not a resumable query hint.
+            return finish(notice, store=not read_only,
+                          category="reference_error" if read_only else "clarification", chat_notice=notice)
         for index in range(self.max_requests):
             try:
                 facts = previous_facts

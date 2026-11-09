@@ -133,8 +133,14 @@ def resolve_reference(path, user_id, ordinal, scope=None, anchor_id="", *, displ
         # “那张”仅能用于单对象展示；不根据模型猜测序号。
         if ordinal is None and len(keys) == 1:
             ordinal = 1
-        if type(ordinal) is not int or not 1 <= ordinal <= len(keys):
-            return result("AMBIGUOUS",error="引用序号不存在或对象不唯一，请明确发票")
+        if type(ordinal) is not int:
+            return result("AMBIGUOUS", error="无法确定引用序号，请明确发票")
+        if not 1 <= ordinal <= len(keys):
+            scope_evidence = {field: row[field] for field in ("company_id", "year", "month") if row[field] is not None}
+            return result("OUT_OF_RANGE", evidence={
+                "source": "reference_display", "scope": scope_evidence,
+                "reference": {"ordinal": ordinal, "count": len(keys)},
+            }, error="引用序号超出实际展示范围")
         key = keys[ordinal-1]
         if not check_permission(connection,user_id,key["company_id"],"read").allowed:
             return result("DENIED",error="没有企业读取权限")

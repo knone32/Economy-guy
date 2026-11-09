@@ -42,6 +42,7 @@ STATUS = {
     "ANSWERED": "本轮回复完成", "COMPLETED": "本轮处理完成", "SUCCESS": "执行成功",
     "NO_DATA": "没有符合条件的记录", "NO_CHANGE": "当前无需变更",
     "WAITING_USER": "等待补充", "AMBIGUOUS": "请补充范围", "WAITING_CONFIRMATION": "等待确认",
+    "OUT_OF_RANGE": "发票序号超出展示范围",
     "COMMITTED": "已成功保存并核验", "CURRENT_VALUE_MATCHES": "当前值已相同",
     "DENIED": "权限不足", "ERROR": "本轮执行失败", "SCOPE_MISMATCH": "请求范围不一致", "CANCELLED": "已取消",
     "UNKNOWN_OUTCOME": "提交结果未知，请先查看执行记录再决定是否重试", "MODEL_LIMIT": "本轮处理达到上限",
