@@ -157,18 +157,27 @@ _TASK_NOTE_ACTIONS = {
 
 def _task_note_request_error(request, action, proof):
     explicit = explicit_scope(request, include_update_aliases=True)
-    if ((proof and proof.annual_year is not None) or re.search(r"全年|全年度|整年|季度|半年", request)
-            or (explicit.get("year") and not explicit.get("month"))):
-        return tool_result("SCOPE_MISMATCH", error="用途待办仅支持 2026-09 单月，请明确本次待办范围")
-    if any(len(explicit.get(key, ())) > 1 for key in ("company_id", "year", "month", "periods")):
-        return tool_result("AMBIGUOUS", error="请明确单一企业和账期后再管理待办")
     verb = _TASK_NOTE_ACTIONS[action]
-    negated = re.search(r"(?:不要|不用|无需|别|暂不)\s*(?:(?:先|直接|自动|帮我|替我|再)\s*)*(?:" + verb + ")", request)
+    negated = re.search(r"(?:不要|不用|无需|别|暂不|不想|不)\s*(?:(?:先|直接|自动|帮我|替我|再)\s*)*"
+                        r"(?:(?:改为|改成|改到|按|把|将|给)[^，,。；;\n]{0,30})?(?:" + verb + ")", request)
     bare_change = action != "create" and re.fullmatch(
         r"\s*(?:请|帮我)?\s*(?:" + verb + r")\s*(?:这个|这条|当前)?(?:待办|任务)[。！!？?\s]*", request)
     if (not re.search(r"待办|任务|记一下", request) or not re.search(verb, request)
             or negated or bare_change):
-        return tool_result("AMBIGUOUS", error="请明确待办操作及本轮要保存的说明")
+        fields = [] if negated else ["note" if bare_change else "action"]
+        return tool_result("AMBIGUOUS", error="请明确待办操作及本轮要保存的说明",
+                           evidence={"missing_fields": fields})
+    if len(explicit.get("company_id", ())) > 1:
+        return tool_result("AMBIGUOUS", error="请明确单一企业后再管理待办")
+    annual = bool((proof and proof.annual_year is not None) or re.search(r"全年|全年度|整年", request)
+                  or (explicit.get("year") and not explicit.get("month")))
+    periods = explicit.get("periods", ())
+    if annual or re.search(r"季度|半年", request) or (len(periods) == 1 and periods[0] != (2026, 9)):
+        return tool_result("SCOPE_MISMATCH", error="用途待办仅支持 2026-09 单月，请明确本次待办范围",
+                           evidence={"scope_negotiation": {"reason": "purpose_task_period", "annual": annual},
+                                     "requested_scope": explicit})
+    if any(len(explicit.get(key, ())) > 1 for key in ("year", "month", "periods")):
+        return tool_result("AMBIGUOUS", error="请明确单一账期后再管理待办")
     return None
 
 
@@ -349,9 +358,18 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
             return prepare_invoice_update(db_path, update_session, **args, expected_scope=target)
         unfiltered = name == "list_invoice_directory" and (args["year"], args["month"]) == (0, 0)
         annual_directory = name == "list_invoice_directory" and is_annual_query(name, args)
+        task_request_error = None
+        if isinstance(management_proposals, ManagementProposals) and management_proposals.task_note_from_request:
+            if name == "manage_task" and args["action"] in _TASK_NOTE_ACTIONS:
+                task_request_error = _task_note_request_error(management_proposals.source_request, args["action"], provenance)
+            elif name == "check_missing_purpose" and provenance and provenance.annual_year is not None:
+                conflict = _task_note_request_error(management_proposals.source_request, "create", provenance)
+                if conflict and conflict["status"] == "SCOPE_MISMATCH":
+                    task_request_error = conflict
+        negotiation = (task_request_error or {}).get("evidence", {}).get("scope_negotiation")
         if annual_directory:
             queries._year_prefix(args["year"])
-        elif "month" in args and not unfiltered:
+        elif "month" in args and not unfiltered and not negotiation:
             queries._check_month(args["year"], args["month"])
         path = Path(db_path).resolve()
         connection = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
@@ -362,6 +380,17 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
             if not permission.allowed:
                 return tool_result("DENIED", error="没有读取权限")
             actual_scope = args
+            if negotiation:
+                company = args["company_id"]
+                if not check_permission(connection, user_id, company, "modify").allowed:
+                    return tool_result("DENIED", error="处理用途待办需要该企业的发票修改权限")
+                trusted_company = provenance and (
+                    (provenance.read_workspace or {}).get("company_id") == [company]
+                    or (provenance.values.get("company_id") == [company]
+                        and not validate_scope(provenance, user_id, "list_tasks", {"company_id": company})))
+                if args.get("action", "create") == "create" and trusted_company:
+                    negotiation["alternative_scope"] = {"company_id": company, "year": 2026, "month": 9}
+                return task_request_error
             if name in {'manage_task','manage_preference'} and management_intent is not None:
                 if management_intent.domain!=('task' if name=='manage_task' else 'preference') or (management_intent.action is not None and management_intent.action!=args['action']):
                     return tool_result('DENIED',error='不能改变可信管理入口的动作')
@@ -389,12 +418,8 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
             if expected_scope and scope_mismatch(expected_scope, actual_scope):
                 return tool_result("SCOPE_MISMATCH", evidence={"scope":actual_scope,"requested_scope":expected_scope,"source":"request_validation"},
                                    error="范围不一致：工具企业或年月与用户明确字面范围不同，请确认实际查询范围")
-            if (name == "manage_task" and args["action"] in _TASK_NOTE_ACTIONS
-                    and isinstance(management_proposals, ManagementProposals)
-                    and management_proposals.task_note_from_request):
-                rejected = _task_note_request_error(management_proposals.source_request, args["action"], provenance)
-                if rejected:
-                    return rejected
+            if task_request_error:
+                return task_request_error
             missing=validate_scope(provenance,user_id,name,actual_scope)
             if missing:return tool_result(**missing)
             if execution:

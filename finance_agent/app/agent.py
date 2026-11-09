@@ -8,7 +8,8 @@ from .tool_registry import (TOOLS, TEACHING_TOOLS, REGISTRY, handle_tool, tool_r
 from .trace import redact, write_trace, warn_trace_degraded
 from .write_coordination import WriteCoordinator
 from .updates import commit_invoice_update
-from .responses import explicit_scope, parse_final, render_information, render_clarification, render_reference_error, render_stopped
+from .responses import (explicit_scope, parse_final, render_information, render_clarification,
+                        render_reference_error, render_stopped, render_task_scope_negotiation)
 from .persistence import ManagementIntent, ManagementTurn, ManagementProposals
 from .context import ContextBuilder, ContextLimitError, reference_hint
 from .scheduler import BudgetPolicy, TurnExecution
@@ -27,6 +28,7 @@ context_data的prior_query_tools只是历史查询类型线索：当前轮仅更
 用 list_annual_bank_income 分页查年度银行收入流水，用 get_annual_finance_summary 查年度合计，用 list_annual_blank_purpose 查年度用途空值。
 对象混淆（例如“银行收入发票”）时，追问 missing_fields=["business_object"]，不要推测流水与发票的关系，不重复询问已确认范围。
 年度空值不是规则合规判断；不得猜年份、拆成任意月份或把 2026-09 的必填规则扩展到全年。
+用户要求全年用途待办时，可先查全年字段空值；不能替用户改成9月。待办建议需要用户下一轮明确同意具体企业、年月和动作，再按原流程请求可信确认。
 发票与银行收支的综合概览使用get_finance_summary，一次取得价税合计/数量、收入/支出/条数及R001；
 list_invoice_directory用于企业发票目录（所有发票无需月份），每次只返回一页；get_invoice用于已明确企业和发票号的详情。list_invoices/list_bank_transactions用于指定月份明细。不要用明细代替完整汇总。
 仅用户明确本次修改目标、purpose/remark与新内容时可调用prepare_invoice_update。模糊目标先追问，不猜用途。
@@ -555,6 +557,9 @@ class Agent:
                 self.messages.append(message)
                 self.trace("tool_result", {"request": call, "result": result})
             if stop:
+                guidance = render_task_scope_negotiation(stop_result, read_results)
+                if guidance:
+                    return finish(guidance, store=False, category="clarification")
                 if stop_result and stop_result.get('evidence',{}).get('missing_fields'):
                     return finish(render_clarification({'missing_fields':stop_result['evidence']['missing_fields']}),category='clarification')
                 if self.update_session.drafts:

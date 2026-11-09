@@ -171,6 +171,37 @@ def needs_progress_evidence(results):
                         for name, outcome in results))
 
 
+def render_task_scope_negotiation(stopped, results):
+    if not stopped or stopped["status"] != "SCOPE_MISMATCH":
+        return None
+    guidance = stopped["evidence"].get("scope_negotiation", {})
+    if guidance.get("reason") != "purpose_task_period":
+        return None
+    parts = []
+    if guidance["annual"]:
+        requested = stopped["evidence"].get("requested_scope", {})
+        if any(name == "list_annual_blank_purpose" and outcome["status"] in {"SUCCESS", "NO_DATA"}
+               and outcome["evidence"].get("source") == "current_sqlite"
+               and not scope_mismatch(requested, outcome["evidence"].get("scope", {}))
+               for name, outcome in results):
+            parts.append("本轮年度用途空值查询已完成。")
+        parts.append("全年空值只说明用途字段未填写，不能判定全年用途不合规。")
+    parts.append("当前仅支持2026年9月用途合规检查。本轮尚未创建待办。")
+    alternative = guidance.get("alternative_scope")
+    if alternative:
+        counts = {outcome["data"]["count"] for name, outcome in results
+                  if name == "check_missing_purpose" and outcome["status"] == "SUCCESS"
+                  and outcome["evidence"].get("source") == "current_sqlite"
+                  and outcome["evidence"].get("scope") == alternative}
+        if len(counts) == 1:
+            parts.append(f"本轮已核验该月有 {next(iter(counts))} 张必填用途缺失。")
+        parts.append("是否改为该月创建待办？请明确回复"
+                     f"「按 {alternative['company_id']} 2026年9月创建待办」。")
+    else:
+        parts.append("请明确要处理的企业与单月待办操作。")
+    return "\n".join(parts)
+
+
 def render_information(results):
     """保留执行摘要，从本轮真实证据按结构化范围合并说明。"""
     parts = []
