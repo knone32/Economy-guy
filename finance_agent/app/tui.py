@@ -22,7 +22,7 @@ from .cli_workspaces import company_access, invoice_history, missing_migrations,
 from .model_config import ModelConnection, ProfileError, load_profiles, resolve_connection
 from .persistence import ManagementIntent, ManagementTurn, confirm_management
 from .queries import QueryError, available_periods, get_invoice, invoice_directory
-from .responses import (directory_preview, display_rule_amounts, explicit_scope, needs_progress_evidence,
+from .responses import (display_rule_amounts, explicit_scope, needs_progress_evidence,
                         render_rule_history, render_scope, scope_key)
 from .rules import RuleError, check_missing_purpose
 from .session_store import workbook_identity
@@ -543,6 +543,7 @@ class AgentWorkspace(ConversationUI, App):
         self.agent = Agent(self.user, self.db, mode=self.mode, trace_path=self.trace_path,
                            management_confirmation=self.confirm_management,
                            display_preference=self.conversation.manage_detail if self.conversation else None, **options)
+        self.agent.defer_display_anchors = True
         self.agent.messages[0]["content"] += (
             "\n本工作台由运行时把本轮用户原话用作待办 create/update/correct 的备注。"
             "模型只提出明确请求的动作和对象，note 可传空字符串。范围或内容不明确时追问。")
@@ -1039,13 +1040,13 @@ class AgentWorkspace(ConversationUI, App):
             header = f"各次查询的总数或每页数量不一致，以目录重新读取为准。\n{details}"
         if route[1:] == (0, 0):
             header = "全部账期 · " + header
-        rows = directory_preview(pages)
-        preview = (f"预览第 {preferred['page']} 页（前 {len(rows)} 张）\n" + self.invoice_lines(rows)
-                   if rows else "本页没有发票。")
-        return "发票目录", header + "\n" + preview
+        rows = preferred["rows"]
+        page_text = f"第 {preferred['page']} 页（{len(rows)} 张）\n" + self.invoice_lines(rows)
+        return "发票目录", header + "\n" + page_text
 
     def show_turn_results(self, results):
         groups = {}
+        displayed = []
         directories = {}
         fallback_route = None
         for tool, outcome in results:
@@ -1064,6 +1065,7 @@ class AgentWorkspace(ConversationUI, App):
                     item = (data, self.directory_summary([data], route))
                     if item not in cards:
                         cards.append(item)
+                        displayed.append((tool, outcome))
                 continue
             card = self.business_card(tool, data, evidence)
             if card is None:
@@ -1077,6 +1079,7 @@ class AgentWorkspace(ConversationUI, App):
             item = (data, card)
             if item not in group[1]:
                 group[1].append(item)
+                displayed.append((tool, outcome))
             if tool == "list_bank_transactions" and "amount_rule" in evidence and "finance_summary" in evidence:
                 amount_basis = {**evidence, "rule": evidence["amount_rule"]}
                 totals = evidence["finance_summary"]
@@ -1091,12 +1094,16 @@ class AgentWorkspace(ConversationUI, App):
         routes = []
         for route, (evidence, pages) in directories.items():
             groups.setdefault(scope_key(evidence), (evidence, []))[1].append((None, self.directory_summary(pages, route)))
-            routes.append((*route, min(page["page"] for page in pages)))
+            preferred = min(pages, key=lambda page: page["page"])
+            routes.append((*route, preferred["page"]))
+            displayed.append(("list_invoice_directory", {"status": "SUCCESS", "evidence": evidence, "data": preferred}))
         self.chat_invoice_routes = tuple(routes) if routes else (fallback_route,) if fallback_route else ()
         for evidence, cards in groups.values():
             self.chat_message("查询与处理结果", render_scope(evidence, conversational=True))
             for _, (title, text) in cards:
                 self.chat_message(f"业务核验 / {title}", text)
+        if displayed and self.agent.record_query_display(displayed, full_directory=True) is None:
+            self.chat_message("Agent", "本轮结果已展示，但未能保存引用。请使用明确的企业和发票编号。")
         return bool(groups)
 
     def finish_turn(self, calls, receipt, verified, read_only=True):

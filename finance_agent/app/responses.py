@@ -10,7 +10,7 @@ def parse_final(content):
         json.dumps(value, ensure_ascii=False).encode("utf-8")
     except (TypeError, ValueError, RecursionError):
         return None
-    if type(value) is not dict or type(value.get("kind")) is not str or value["kind"] not in {"general", "information", "clarification"}:
+    if type(value) is not dict or type(value.get("kind")) is not str or value["kind"] not in {"general", "information", "clarification", "explanation"}:
         return None
     fields = {"kind", "text", "missing_fields"} if value["kind"] == "clarification" else {"kind", "text"}
     if set(value) != fields or type(value.get("text")) is not str or not value["text"].strip():
@@ -20,6 +20,32 @@ def parse_final(content):
         if not isinstance(missing, list) or not missing or any(type(v) is not str or not v.strip() for v in missing):
             return None
     return value
+
+
+def render_grounded_explanation(text, facts):
+    """Render a model-written explanation with values supplied by the Harness."""
+    if "annual_blank_purpose" in facts:
+        data = facts["annual_blank_purpose"]
+        when = "上一轮查询" if data["historical"] else "本轮查询"
+        year, month = data["compliance_period"]
+        boundary = f"字段为空本身不足以认定违规。当前支持的用途合规检查账期为 {year} 年 {month} 月。"
+        if data["rule"]:
+            boundary += f"该企业在该账期的依据为 {data['rule']['id']} v{data['rule']['version']}。"
+        slots = {"result": f"{when}中，{data['company_id']} {data['year']} 年用途为空的发票共 {data['total']} 张。",
+                 "boundary": boundary}
+    elif "bank_invoice_link" in facts:
+        slots = {"boundary": "当前账簿没有可靠的发票与银行流水关联，无法据此判断具体发票是否已付款。"}
+    else:
+        return None
+    token = r"\[\[([a-z_]+)\]\]"
+    if sorted(re.findall(token, text)) != sorted(slots):
+        return None
+    prose = re.sub(token, "", text)
+    if (not prose.strip() or re.search(
+            r"[\d¥￥$\[\]]|[零〇一二两三四五六七八九十百千万亿]+\s*(?:张|条|元|分|年|月)|"
+            r"金额|人民币|已(?:经)?(?:保存|提交|修改|付款|支付|确认|授权)|成功(?:保存|提交|修改)", prose)):
+        return None
+    return re.sub(token, lambda match: slots[match[1]], text)
 
 
 def explicit_scope(text, include_update_aliases=False):

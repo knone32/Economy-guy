@@ -1,4 +1,5 @@
 """轻量上下文选择与指代线索解析，不拥有任务、偏好或业务事实。"""
+from contextlib import closing
 import json
 import re
 import sqlite3
@@ -7,6 +8,9 @@ from .responses import directory_preview, explicit_scope, scope_mismatch
 from .tasks import list_tasks
 from .preferences import manage_preference
 from .provenance import ANNUAL, SOURCES, ScopeProof
+from .permissions import check_permission
+from .rules import RuleError, resolve_rule
+from .stage2_schema import open_existing
 
 
 class ContextLimitError(ValueError):
@@ -174,7 +178,7 @@ class ContextBuilder:
                     self.scope.pop(key, None)
                     self.sources.pop(key, None)
 
-    def record_displayed(self,results,display_id):
+    def record_displayed(self,results,display_id,*,full_directory=False):
         """调用方已经按实际结果渲染后，提取展示的有序联合键，不采信模型描述。"""
         readonly=ANNUAL | {"list_invoice_directory",'get_finance_summary','list_invoices','get_invoice','list_bank_transactions',
                   'check_missing_purpose','get_applicable_rules','list_tasks','resolve_invoice_reference'}
@@ -206,9 +210,10 @@ class ContextBuilder:
                 groups.append({"scope":outcome["evidence"]["scope"],"source":name,
                                "keys":[{"company_id":row["company_id"],"invoice_no":row["invoice_no"]} for row in rows]})
         for scope, pages in directories.values():
+            rows = min(pages, key=lambda page: page["page"])["rows"] if full_directory else directory_preview(pages)
             groups.append({"scope": scope, "source": "list_invoice_directory",
                            "keys": [{"company_id": row["company_id"], "invoice_no": row["invoice_no"]}
-                                    for row in directory_preview(pages)]})
+                                    for row in rows]})
         if not groups:
             return []
         if self.references_blocked:
@@ -218,6 +223,44 @@ class ContextBuilder:
             self.display_ids = [*self.display_ids[-63:], display_id]
         self.references_blocked = False
         return anchors
+
+    def explanation_facts(self, results, explicit, *, historical=False):
+        """Select verified evidence for explanation, without extending scope or authorizing writes."""
+        bank_read = False
+        bank_tools = {"get_finance_summary", "get_annual_finance_summary",
+                      "list_bank_transactions", "list_annual_bank_income"}
+        for tool, outcome in reversed(results):
+            evidence = outcome["evidence"]
+            scope = evidence.get("scope", {})
+            if (outcome["status"] not in {"SUCCESS", "NO_DATA"}
+                    or evidence.get("source") != "current_sqlite"
+                    or scope_mismatch(explicit, scope)):
+                continue
+            if tool in bank_tools:
+                bank_read = True
+            if tool != "list_annual_blank_purpose" or explicit.get("month"):
+                continue
+            company, year = scope["company_id"], scope["year"]
+            rule = None
+            try:
+                with closing(open_existing(self.db_path, readonly=True)) as connection:
+                    connection.execute("BEGIN")
+                    if not check_permission(connection, self.user_id, company, "read").allowed:
+                        continue
+                    if year == 2026:
+                        try:
+                            rule = resolve_rule(connection, self.user_id, company, "purpose", "2026-09-01")
+                        except RuleError:
+                            pass
+            except sqlite3.Error:
+                continue
+            return {"annual_blank_purpose": {
+                "company_id": company, "year": year, "total": outcome["data"]["total"],
+                "historical": historical, "compliance_period": [2026, 9],
+                "rule": {"id": rule.rule_id, "version": rule.version} if rule else None,
+            }}
+        # This is the data-model boundary, not a historical transaction or payment fact.
+        return {"bank_invoice_link": False} if bank_read else {}
 
     def _data(self, read_workspace=None):
         """按企业/年月筛选任务和偏好；描述始终是低信任数据。"""
@@ -255,7 +298,8 @@ class ContextBuilder:
             data["reference_status"] = "unavailable"
         return data
 
-    def build(self,messages,history_event=None,reference=None,execution=None,measure=None,read_workspace=None):
+    def build(self,messages,history_event=None,reference=None,execution=None,measure=None,read_workspace=None,
+              explanation_facts=None):
         """以序列化消息字符数限长；保留本轮整段及tool_call_id配对，旧轮整段取舍。"""
         size = measure or (lambda value: len(json.dumps(value,ensure_ascii=False)))
         last_user = max((i for i,m in enumerate(messages) if m["role"]=="user"),default=len(messages))
@@ -272,7 +316,11 @@ class ContextBuilder:
         data_origins = data["origins"]
         if read_workspace:
             data["read_workspace"] = {"scope": read_workspace, "usage": "仅供本轮只读查询，用户明确要求优先，不授予任何写入权限。"}
-        extras = [{"role":"user","name":"context_data","content":json.dumps(data,ensure_ascii=False)}] if self.scope or read_workspace or data.get("references") or data.get("personal_display") else []
+        if explanation_facts:
+            data["explanation_facts"] = explanation_facts
+            data_origins["explanation_facts"] = "runtime.verified_read_results"
+        extras = [{"role":"user","name":"context_data","content":json.dumps(data,ensure_ascii=False)}] if (
+            self.scope or read_workspace or explanation_facts or data.get("references") or data.get("personal_display")) else []
         if self.restored_turns and self.history_start == 1:
             extras.append({"role":"assistant","name":"harness_history","content":json.dumps({
                 "source":"local_session","historical":True,
@@ -289,8 +337,9 @@ class ContextBuilder:
                 selected = candidate
                 sources.append(extra["name"])
             else:
-                if extra["name"] == "context_data" and read_workspace:
-                    minimal = {**extra, "content": json.dumps({"read_workspace":data["read_workspace"]}, ensure_ascii=False)}
+                if extra["name"] == "context_data" and (read_workspace or explanation_facts):
+                    essential = {key: data[key] for key in ("read_workspace", "explanation_facts") if key in data}
+                    minimal = {**extra, "content": json.dumps(essential, ensure_ascii=False)}
                     candidate = [selected[0],minimal,*selected[1:]]
                     if size(candidate) > self.max_chars:
                         raise ContextLimitError("当前输入与可信查询范围超过上下文上限")
