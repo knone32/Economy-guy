@@ -1,5 +1,6 @@
 """工具声明、严格参数校验与受控分发。"""
 import json
+import re
 from pathlib import Path
 import sqlite3
 from dataclasses import asdict
@@ -145,6 +146,30 @@ def _management_context(intent, proposals, user_id, domain, action):
     if intent is None and isinstance(proposals,ManagementProposals):
         return ManagementCandidate(user_id,domain,proposals.source_request,action,proposals)
     return intent
+
+
+_TASK_NOTE_ACTIONS = {
+    "create": r"新建|创建|新增|建立|建(?:个|一[个条])|记成|记为|记(?:个|一[个条]|一下)|列为|设为|加[个一条]|添加|保存为",
+    "update": r"补充|追加|更新|修改|改成|改为|加上",
+    "correct": r"更正|纠正|修正|改为|改成",
+}
+
+
+def _task_note_request_error(request, action, proof):
+    explicit = explicit_scope(request, include_update_aliases=True)
+    if ((proof and proof.annual_year is not None) or re.search(r"全年|全年度|整年|季度|半年", request)
+            or (explicit.get("year") and not explicit.get("month"))):
+        return tool_result("SCOPE_MISMATCH", error="用途待办仅支持 2026-09 单月，请明确本次待办范围")
+    if any(len(explicit.get(key, ())) > 1 for key in ("company_id", "year", "month", "periods")):
+        return tool_result("AMBIGUOUS", error="请明确单一企业和账期后再管理待办")
+    verb = _TASK_NOTE_ACTIONS[action]
+    negated = re.search(r"(?:不要|不用|无需|别|暂不)\s*(?:(?:先|直接|自动|帮我|替我|再)\s*)*(?:" + verb + ")", request)
+    bare_change = action != "create" and re.fullmatch(
+        r"\s*(?:请|帮我)?\s*(?:" + verb + r")\s*(?:这个|这条|当前)?(?:待办|任务)[。！!？?\s]*", request)
+    if (not re.search(r"待办|任务|记一下", request) or not re.search(verb, request)
+            or negated or bare_change):
+        return tool_result("AMBIGUOUS", error="请明确待办操作及本轮要保存的说明")
+    return None
 
 
 def _set_schedule(args,user_id,db_path,execution,permitted,session,expected,intent,proposals=None,provenance=None):
@@ -364,6 +389,12 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
             if expected_scope and scope_mismatch(expected_scope, actual_scope):
                 return tool_result("SCOPE_MISMATCH", evidence={"scope":actual_scope,"requested_scope":expected_scope,"source":"request_validation"},
                                    error="范围不一致：工具企业或年月与用户明确字面范围不同，请确认实际查询范围")
+            if (name == "manage_task" and args["action"] in _TASK_NOTE_ACTIONS
+                    and isinstance(management_proposals, ManagementProposals)
+                    and management_proposals.task_note_from_request):
+                rejected = _task_note_request_error(management_proposals.source_request, args["action"], provenance)
+                if rejected:
+                    return rejected
             missing=validate_scope(provenance,user_id,name,actual_scope)
             if missing:return tool_result(**missing)
             if execution:
@@ -389,6 +420,10 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
                 if name == "list_tasks":
                     outcome = list_tasks(db_path,user_id,**args)
                 elif name == "manage_task":
+                    if (isinstance(intent, ManagementCandidate) and intent.turn.task_note_from_request
+                            and args["action"] in _TASK_NOTE_ACTIONS):
+                        # The preview and the transaction use the same trusted payload.
+                        args = {**args, "note": intent.source_request}
                     outcome = manage_task(db_path,user_id,**args,intent=intent)
                 else:
                     outcome = manage_preference(db_path,user_id,**args,intent=intent)

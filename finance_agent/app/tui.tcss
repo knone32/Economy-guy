@@ -80,6 +80,7 @@ Dialog > VerticalScroll, Dialog > Vertical {
 #settings-tabs Button { width: 1fr; min-width: 0; padding: 0; }
 #settings-groups { height: 1fr; }
 #settings-groups > VerticalScroll { height: 1fr; padding-right: 1; }
+#model-list { height: auto; }
 
 #query-scope { height: 1; text-align: left; }
 #workbook-tree { height: 1fr; }

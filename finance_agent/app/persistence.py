@@ -13,6 +13,7 @@ class ManagementProposals:
     source_request: str
     turn_id: str = field(default_factory=lambda:uuid4().hex)
     active: bool = True
+    task_note_from_request: bool = False
 
 
 @dataclass(frozen=True)

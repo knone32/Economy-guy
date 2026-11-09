@@ -32,7 +32,9 @@ class ModelTransport:
     def __call__(self,messages,tools):
         from openai import OpenAI
         messages=self.protocol.wire(messages,bool(tools))
-        json_mode=self.connection.profile.provider=='deepseek' and self.connection.profile.base_url.rstrip('/')=='https://api.deepseek.com'
+        profile = self.connection.profile
+        json_mode = ((profile.provider == "deepseek" and profile.base_url.rstrip("/") == "https://api.deepseek.com")
+                     or (self.official_qwen and profile.protocol == "standard"))
         timeout=60 if self.connection.profile.provider=='deepseek' else 30
         self.attempts+=1
         self.emit('api.request',{'attempt':self.attempts,'message_chars':len(json.dumps(messages,ensure_ascii=False)),

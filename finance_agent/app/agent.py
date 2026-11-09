@@ -234,10 +234,12 @@ class Agent:
             if first_failure:
                 warn_trace_degraded()
 
-    def ask(self, text, allow_prepare=False, continue_edit=False, management=None, management_action=None, *, edit_scope=None, edit_correction=False, read_workspace=None):
+    def ask(self, text, allow_prepare=False, continue_edit=False, management=None, management_action=None, *,
+            edit_scope=None, edit_correction=False, read_workspace=None, task_note_from_request=False):
         if self._active or self._retired: raise ProfileError('Agent正在运行或已结束，不能重入')
         self._active=True
-        try: return self._ask(text,allow_prepare,continue_edit,management,management_action,edit_scope,edit_correction,read_workspace)
+        try: return self._ask(text,allow_prepare,continue_edit,management,management_action,edit_scope,edit_correction,
+                              read_workspace,task_note_from_request)
         finally: self._active=False
 
     def switch_model(self,connection):
@@ -306,7 +308,8 @@ class Agent:
                 return render_task_closure(data)
         return "待办或缺项可能已变化，请打开待办重新核对当前进度。"
 
-    def _ask(self, text, allow_prepare=False, continue_edit=False, management=None, management_action=None, edit_scope=None, edit_correction=False, read_workspace=None):
+    def _ask(self, text, allow_prepare=False, continue_edit=False, management=None, management_action=None,
+             edit_scope=None, edit_correction=False, read_workspace=None, task_note_from_request=False):
         """执行一轮有界请求；每个 tool_call 都配对结果后才停止。"""
         self._check_identity()
         if self.workbook_guard:
@@ -318,7 +321,7 @@ class Agent:
         if self.management_proposals:
             self.management_proposals.active=False
         self.management_turn=None
-        self.management_proposals=ManagementProposals(self.user_id,text)
+        self.management_proposals = ManagementProposals(self.user_id, text, task_note_from_request=task_note_from_request)
         self.messages.append({"role": "user", "content": text})
         allow_prepare = self.coordinator.begin(text, allow_prepare, continue_edit, edit_scope, edit_correction)
         # 只读轮不向模型提供写草稿能力；执行白名单仍会拒绝伪造调用。

@@ -542,8 +542,8 @@ class AgentWorkspace(ConversationUI, App):
                            management_confirmation=self.confirm_management,
                            display_preference=self.conversation.manage_detail if self.conversation else None, **options)
         self.agent.messages[0]["content"] += (
-            "\n本工作台内，待办 create/update/correct 的 note 必须逐字保留当前用户原始要求，"
-            "不补造任务内容、期限或目标。明确缺失参数时追问。")
+            "\n本工作台由运行时把本轮用户原话用作待办 create/update/correct 的备注。"
+            "模型只提出明确请求的动作和对象，note 可传空字符串。范围或内容不明确时追问。")
         if self.session_path is not None:
             self.agent.context.display_ids = list(self.resume_displays)
         if not self.read_workspace and self.resume_focus and self.resume_focus[2] == 0:
@@ -861,9 +861,8 @@ class AgentWorkspace(ConversationUI, App):
             return False
         p = proposal["proposal"]
         if proposal["domain"] == "task":
-            if p["action"] in {"create", "update", "correct"} and p["note"].strip() != proposal["original_request"].strip():
-                self.call_from_thread(self.chat_message, "待办未保存", "候选备注与原始要求不同。请重述待办内容后再试。")
-                return False
+            if p["action"] in {"create", "update", "correct"} and p["note"] != proposal["original_request"]:
+                return False  # A workbench preview must already contain the trusted note.
             current = proposal.get("current") or {}
             old_note = current.get("context", {}).get("note") or "（无）"
             new_note = p.get("note") or old_note
@@ -902,7 +901,7 @@ class AgentWorkspace(ConversationUI, App):
         offset = len(agent.messages)
         receipt = None
         try:
-            agent.ask(message, read_workspace=read_workspace, **args)
+            agent.ask(message, read_workspace=read_workspace, task_note_from_request=True, **args)
             if agent.update_session.drafts:
                 draft, = agent.update_session.drafts.values()
                 fields = asdict(draft)
