@@ -41,4 +41,4 @@ Stage 3A 管理持久任务和明确保存的企业偏好。Stage 3B Context Bui
 
 规则版本、工具调用、审计编号和回读使失败能够定位到具体层。独立模拟管理员管理规则，业务查询和用途检查共享同一规则判定。SQLite 的事务审计用于确认提交，脱敏 Trace 用于核查当时调用了什么、为什么停止。评审可独立更换虚构样例库、查看规则来源或重启核对，界面显示与业务状态可以分别验证。
 
-这是比赛模拟身份下的可运行原型。离线测试、Mock 演示和真实模型验收分别记录。真实 DeepSeek 已验证部分场景，正式评审模型兼容性与完整真实 TUI A/B/C 仍待核查。见[验收与提交清单](SUBMISSION-CHECKLIST.md)和[现行架构](../ARCHITECTURE.md)。
+这是比赛模拟身份下的可运行原型。离线测试、Mock 演示和真实模型验收分别记录。核心业务和 C/D 多轮交互已有用户真人 Qwen Windows TUI 证据。近期新增的排序和一级新对话，以及评审机器与账号环境仍待独立确认。见[真人 Live 记录](LIVE-ACCEPTANCE.md)和[现行架构](https://github.com/knone32/Economy-guy/blob/preliminary-2026-v1.0.0/docs/ARCHITECTURE.md)。

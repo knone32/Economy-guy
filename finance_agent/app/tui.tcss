@@ -44,6 +44,7 @@ SelectOverlay > .option-list--option-highlighted {
 #layout { height: 1fr; }
 #rail { width: 13; height: 1fr; background: $canvas; border-right: solid $line; }
 #rail TextAction { width: 100%; min-width: 4; padding: 0; margin: 0; }
+#rail #new-chat { height: 2; }
 #rail-spacer { height: 1fr; }
 #panes { width: 1fr; height: 1fr; }
 #chat { height: 1fr; padding: 0 2; }

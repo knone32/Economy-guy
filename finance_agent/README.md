@@ -17,6 +17,10 @@ python main.py --db data/review-cli.sqlite3
 
 不指定 `--excel` 时，`init` 使用仓库已有的虚构夹具。导入拒绝覆盖现有库。已有账簿推荐用 TUI「查看升级内容 → 备份并升级」。也可先备份，再执行上述三个迁移。对缺少种子规则的隔离样例库，单独运行 `rules seed`。规则管理员模拟授权独立于发票修改权限。`rules find`、`rules import` 和 `rules disable` 的参数见 `python main.py rules --help`。
 
+## 工作台与真实 Qwen
+
+首次运行按项目首页导入官方虚构 Excel。使用 U001 和本机百炼凭据，选择 OpenAI 兼容的 Qwen 快照 qwen3.8-max-0902 及标准协议。选「＋ 新对话」或按 Ctrl+N 开启会话，从「账户 → 我的对话」重开历史。目录可按日期或原始金额排序，详情和翻页按同一账簿与权限重查。真人已验收的范围及近期新增项见[真人 Live 记录](../docs/delivery/LIVE-ACCEPTANCE.md)。
+
 ## 入口与证据
 
 | 用途 | 入口 |
@@ -28,11 +32,11 @@ python main.py --db data/review-cli.sqlite3
 | A/B/C 演示 | `python scripts/demo_stepper.py --mode mock --scenario all`。固定提案验证业务与交互，真实模式须明确选用。 |
 | 连续 CLI 对话 | `python main.py --db data/review-cli.sqlite3 chat --mode mock --user U001`。CLI Mock 用固定查询提案，TUI 的「固定脚本测试」提供有限查询示例。 |
 
-Stage 3A 的持久待办和企业偏好保存在业务库。P0.5 工作台可从独立本机会话库恢复聊天及必要只读线索，并重新校验账簿和当前权限。Context Builder 在预算内选择上下文，Reference Resolver 只对实际展示过的对象重查当前数据库。模型循环单轮硬限为 9 次模型请求、12 次实际 Handler 调用、2 次续期、1 次显式重规划。见[现行架构](../docs/ARCHITECTURE.md)。
+Stage 3A 的持久待办和企业偏好保存在业务库。P0.5 工作台可从独立本机会话库恢复聊天及必要只读线索，并重新校验账簿和当前权限。Context Builder 在预算内选择上下文，Reference Resolver 只对实际展示过的对象重查当前数据库。模型循环单轮硬限为 9 次模型请求、12 次实际 Handler 调用、2 次续期、1 次显式重规划。见[现行架构](https://github.com/knone32/Economy-guy/blob/preliminary-2026-v1.0.0/docs/ARCHITECTURE.md)。
 
 普通对话和演示分别保存脱敏 Trace。Trace 能用于解释执行过程，提交状态以当前 SQLite 的成功审计与回读为准。遇到未知结果，应先核查历史请求编号。
 
-## 离线复核
+## 离线复核（仅开发源码包）
 
 ```powershell
 python -m unittest discover -s tests -q

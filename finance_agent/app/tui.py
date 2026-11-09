@@ -182,7 +182,7 @@ class AgentWorkspace(ConversationUI, App):
         yield TextAction("选择查询企业和账期", id="query-scope", classes="text-link")
         with Horizontal(id="layout"):
             with Vertical(id="rail"):
-                yield TextAction("＋ 新建对话", id="new-chat", variant="primary")
+                yield TextAction("＋ 新对话", id="new-chat", classes="text-link", variant="primary")
                 for key, label in self.NAV_ITEMS:
                     if key == "account":
                         yield Static("", id="rail-spacer")
@@ -488,11 +488,12 @@ class AgentWorkspace(ConversationUI, App):
             recent = "无"
         focus = self.task_focus_label()
         state, title, detail = self.model_state()
-        self.workspace_widget("#status", Static).update(safe_text(
+        self.workspace_widget("#status", Static).update(Text(safe_text(
             f"Economy-guy / 财税工作台 · 比赛模拟 · {self.user or '未登录'} · {title}\n"
             f"最近可信查询焦点：{recent}\n"
-            f"当前待办 · 任务焦点：{focus}"))
-        self.workspace_widget("#query-scope", Button).label = Text(safe_text(f"预选只读范围 · 当前查询企业：{query}"))
+            f"当前待办 · 任务焦点：{focus}"), no_wrap=True, overflow="ellipsis"))
+        self.workspace_widget("#query-scope", Button).label = Text(
+            safe_text(f"预选只读范围 · 当前查询企业：{query}"), no_wrap=True, overflow="ellipsis")
         self.workspace_widget("#ai-guide-text", Static).update(safe_text(f"{title}\n{detail}"))
         self.workspace_widget("#ai-guide").display = state in {"unconfigured", "missing-key", "unverified", "failed"}
 
