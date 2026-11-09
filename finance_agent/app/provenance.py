@@ -20,6 +20,8 @@ class ScopeProof:
     sources: dict
     read_workspace: dict | None = None
     annual_year: int | None = None
+    directory_scope: tuple[str, int, int] | None = None
+    directory_sort: tuple[str, str] | None = None
 
     def metadata(self):
         """可记录的来源，不含凭据或模型自报权限。"""
@@ -34,6 +36,13 @@ def validate_scope(proof,user_id,name,args,partial=False):
         return {'status':'DENIED','error':'可信范围身份不一致','evidence':{}}
     accepted_sources = SOURCES
     directory = name == 'list_invoice_directory'
+    if directory and proof.directory_scope is not None:
+        company, year, month = proof.directory_scope
+        requested = (args.get("company_id", company), args.get("year", 0), args.get("month", 0))
+        if requested != (company, year, month):
+            return {"status": "SCOPE_MISMATCH", "error": "目录参数与已核验的上一轮范围不一致",
+                    "evidence": {"scope": args, "prior_directory_scope": proof.directory_scope}}
+        return None
     filtered = directory and args.get('year', 0) != 0 and args.get('month', 0) != 0
     if is_annual_query(name, args):
         company = (proof.read_workspace or {}).get("company_id") or proof.values.get("company_id")

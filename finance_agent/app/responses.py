@@ -279,6 +279,14 @@ def render_task_scope_negotiation(stopped, results):
     return "\n".join(parts)
 
 
+DIRECTORY_SORT_LABELS = {
+    ("date", "asc"): "按日期从早到晚排序",
+    ("date", "desc"): "按日期从晚到早排序",
+    ("amount", "asc"): "按金额从低到高排序",
+    ("amount", "desc"): "按金额从高到低排序",
+}
+
+
 def directory_preview(pages):
     return min(pages, key=lambda page: page["page"])["rows"][:3]
 
@@ -337,6 +345,11 @@ def render_information(results):
             parts.append(f"当前适用规则 {data['rule_id']} v{data['version']}：" + display_rule_amounts(data["content"]))
         elif name == "list_rule_versions":
             parts.append(render_rule_history(data))
+        elif name == "list_invoice_directory":
+            order = (data.get("sort_by", "date"), data.get("sort_order", "asc"))
+            parts.append(f"发票目录 · {DIRECTORY_SORT_LABELS[order]} · 共 {data['total']} 张 · "
+                         f"第 {data['page']} 页 · 每页 {data['page_size']} 张。")
+            parts.append(json.dumps(data["rows"], ensure_ascii=False))
         elif name == "list_annual_blank_purpose":
             parts.append(f"全年用途字段为空的发票共 {data['total']} 张（仅检查字段值）。"
                          + f"第 {data['page']} 页：" + "、".join(row["invoice_no"] for row in data["rows"]))

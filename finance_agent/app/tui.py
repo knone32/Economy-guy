@@ -22,7 +22,7 @@ from .cli_workspaces import company_access, invoice_history, missing_migrations,
 from .model_config import ModelConnection, ProfileError, load_profiles, resolve_connection
 from .persistence import ManagementIntent, ManagementTurn, confirm_management
 from .queries import QueryError, available_periods, get_invoice, invoice_directory
-from .responses import (display_rule_amounts, explicit_scope, needs_progress_evidence,
+from .responses import (DIRECTORY_SORT_LABELS, display_rule_amounts, explicit_scope, needs_progress_evidence,
                         render_rule_history, render_scope, scope_key)
 from .rules import RuleError, check_missing_purpose
 from .session_store import workbook_identity
@@ -130,7 +130,8 @@ class AgentWorkspace(ConversationUI, App):
     NAV_ITEMS = (("go-chat", "对话"), ("go-tasks", "待办"), ("go-finance", "发票"),
                  ("go-records", "记录"), ("account", "账户"))
     BINDINGS = [("f2", "navigation", "导航"), ("f3", "account", "账户"),
-                ("f4", "cancel_edit", "取消未提交操作"), ("ctrl+q", "quit_safe", "退出")]
+                ("f4", "cancel_edit", "取消未提交操作"), ("ctrl+n", "new_chat", "新建对话"),
+                ("ctrl+q", "quit_safe", "退出")]
 
     def __init__(self, db, template, local, *, model=None, trace_path=None, recent_path=None, restore_recent=False, vault=None, session_path=None):
         super().__init__()
@@ -167,6 +168,7 @@ class AgentWorkspace(ConversationUI, App):
         self.task_route = None
         self.task_focus = None
         self.invoice_route = None
+        self.invoice_sort = ("date", "asc")
         self.chat_invoice_routes = ()
         self.invoice_page = 1
         self.session_epoch = 0
@@ -180,6 +182,7 @@ class AgentWorkspace(ConversationUI, App):
         yield TextAction("选择查询企业和账期", id="query-scope", classes="text-link")
         with Horizontal(id="layout"):
             with Vertical(id="rail"):
+                yield TextAction("＋ 新建对话", id="new-chat", variant="primary")
                 for key, label in self.NAV_ITEMS:
                     if key == "account":
                         yield Static("", id="rail-spacer")
@@ -692,6 +695,10 @@ class AgentWorkspace(ConversationUI, App):
             self.show("chat")
             self.note("已切换对话。显示为历史记录，当前业务将重新查询。")
 
+    def action_new_chat(self):
+        if self.screen is self.screen_stack[0]:
+            self.request_new_chat()
+
     def request_new_chat(self):
         # The legacy in-memory reset can explicitly discard a draft; persisted chats cannot switch with one.
         local_only = self.session_path is None
@@ -754,6 +761,8 @@ class AgentWorkspace(ConversationUI, App):
         key = event.button.id or ""
         if key.startswith("go-"):
             self.show(key.removeprefix("go-"))
+        elif key == "new-chat":
+            self.action_new_chat()
         elif key == "account":
             self.action_account()
         elif key == "query-scope":
@@ -1018,6 +1027,10 @@ class AgentWorkspace(ConversationUI, App):
         if (not isinstance(company, str) or not company or type(year) is not int or not 0 <= year <= 9999
                 or type(month) is not int or not 0 <= month <= 12 or (month and not year)):
             return None
+        sort_by, sort_order = data.get("sort_by", "date"), data.get("sort_order", "asc")
+        if (type(sort_by) is not str or type(sort_order) is not str
+                or (sort_by, sort_order) not in DIRECTORY_SORT_LABELS):
+            return None
         page, total, size, rows = (data.get(key) for key in ("page", "total", "page_size", "rows"))
         if (any(type(value) is not int for value in (page, total, size))
                 or page < 1 or total < 0 or size < 1 or not isinstance(rows, list)
@@ -1043,7 +1056,8 @@ class AgentWorkspace(ConversationUI, App):
             header = "全部账期 · " + header
         rows = preferred["rows"]
         page_text = f"第 {preferred['page']} 页（{len(rows)} 张）\n" + self.invoice_lines(rows)
-        return "发票目录", header + "\n" + page_text
+        order = (preferred.get("sort_by", "date"), preferred.get("sort_order", "asc"))
+        return f"发票目录 · {DIRECTORY_SORT_LABELS[order]}", header + "\n" + page_text
 
     def show_turn_results(self, results):
         groups = {}
@@ -1060,7 +1074,8 @@ class AgentWorkspace(ConversationUI, App):
                 if route is None:
                     self.chat_message("Agent", "发票目录结果格式异常，请重新查询。")
                 elif outcome["status"] == "SUCCESS":
-                    directories.setdefault(route, (evidence, []))[1].append(data)
+                    order = (data.get("sort_by", "date"), data.get("sort_order", "asc"))
+                    directories.setdefault((*route, *order), (evidence, []))[1].append(data)
                 else:
                     cards = groups.setdefault(scope_key(evidence), (evidence, []))[1]
                     item = (data, self.directory_summary([data], route))
@@ -1093,10 +1108,12 @@ class AgentWorkspace(ConversationUI, App):
                 scope = evidence["scope"]
                 fallback_route = (scope["company_id"], scope.get("year", 0), scope.get("month", 0), 1)
         routes = []
-        for route, (evidence, pages) in directories.items():
+        for route_and_order, (evidence, pages) in directories.items():
+            route, order = route_and_order[:3], route_and_order[3:]
             groups.setdefault(scope_key(evidence), (evidence, []))[1].append((None, self.directory_summary(pages, route)))
             preferred = min(pages, key=lambda page: page["page"])
-            routes.append((*route, preferred["page"]))
+            target = (*route, preferred["page"])
+            routes.append(target if order == ("date", "asc") else (*target, *order))
             displayed.append(("list_invoice_directory", {"status": "SUCCESS", "evidence": evidence, "data": preferred}))
         self.chat_invoice_routes = tuple(routes) if routes else (fallback_route,) if fallback_route else ()
         for evidence, cards in groups.values():
@@ -1451,14 +1468,18 @@ class AgentWorkspace(ConversationUI, App):
             if route in self.chat_invoice_routes and not self.busy:
                 self.show_invoice_directory(*route)
 
-        self.push_screen(Choices("选择本轮发票目录", [
-            (f"{company} · {self.invoice_period_label(year, month)} · 第 {page} 页", (company, year, month, page))
-            for company, year, month, page in routes
-        ]), selected)
+        choices = []
+        for route in routes:
+            company, year, month, page = route[:4]
+            order = route[4:] or ("date", "asc")
+            choices.append((f"{company} · {self.invoice_period_label(year, month)} · 第 {page} 页 · "
+                            f"{DIRECTORY_SORT_LABELS[order]}", route))
+        self.push_screen(Choices("选择本轮发票目录", choices), selected)
 
-    def show_invoice_directory(self, company, year, month, page=1):
+    def show_invoice_directory(self, company, year, month, page=1, sort_by="date", sort_order="asc"):
         self.task_route = None
         self.invoice_route = (company, year, month)
+        self.invoice_sort = (sort_by, sort_order)
         self.invoice_page = page
         self.select_pane("finance")
         self.call_later(self.refresh_pane, "finance")
@@ -1470,6 +1491,7 @@ class AgentWorkspace(ConversationUI, App):
             TextAction("按企业和账期查看", id="choose-finance"),
         ]
         detail = ""
+        order = ("date", "asc")
         if self.task_route:
             outcome = task_details(self.db, self.user, *self.task_route)
             actions = [TextAction("返回待办详情", id="back-detail")]
@@ -1484,6 +1506,7 @@ class AgentWorkspace(ConversationUI, App):
                 detail = f" · {outcome['data']['problem']}"
         elif self.invoice_route:
             company, year, month = self.invoice_route
+            order = self.invoice_sort
         elif self.company:
             company, (year, month) = self.company, self.period or (0, 0)
         else:
@@ -1491,7 +1514,7 @@ class AgentWorkspace(ConversationUI, App):
         try:
             with closing(open_existing(self.db, readonly=True)) as db, db:
                 db.execute("BEGIN")
-                data = invoice_directory(db, self.user, company, year, month, self.invoice_page)
+                data = invoice_directory(db, self.user, company, year, month, self.invoice_page, *order)
         except QueryError:
             return [*actions, Static("当前账号没有读取该企业发票的权限。", markup=False)]
         self.invoice_rows = data["rows"]
@@ -1510,7 +1533,8 @@ class AgentWorkspace(ConversationUI, App):
                           classes="dialog-actions")
         return [Horizontal(*actions, classes="dialog-actions"),
                 Static(safe_text(f"{self.company_name(company)} · {period} · 共 {data['total']} 张"
-                                 f" · {self.invoice_page}/{pages} 页{detail}"), markup=False), table, page,
+                                 f" · 第 {self.invoice_page}/{pages} 页 · 每页 {data['page_size']} 张"
+                                 f" · {DIRECTORY_SORT_LABELS[order]}{detail}"), markup=False), table, page,
                 Static("选择发票编号查看详情。" if self.invoice_rows else "本页没有发票。", markup=False)]
 
     @on(DataTable.RowSelected, "#invoice-table")

@@ -16,13 +16,15 @@ from .references import resolve_reference
 from .persistence import can_manage, can_propose, confirm_management, ManagementIntent, ManagementCandidate, ManagementProposals
 from contextlib import closing
 from copy import deepcopy
-from .provenance import ANNUAL, MONTHLY, is_annual_query, validate_scope
+from .provenance import ANNUAL, MONTHLY, ScopeProof, is_annual_query, validate_scope
 
 YEAR = {"company_id": "string", "year": "integer"}
 MONTH = {**YEAR, "month": "integer"}
+DIRECTORY_SORT_FIELDS = {"sort_by": ("date", "amount"), "sort_order": ("asc", "desc")}
+OPTIONAL_FIELDS = {"list_invoice_directory": DIRECTORY_SORT_FIELDS.keys()}
 REGISTRY = {
     "list_invoices": (queries.list_invoices, MONTH),
-    "list_invoice_directory": (queries.invoice_directory, {**MONTH, "page": "integer"}),
+    "list_invoice_directory": (queries.invoice_directory, {**MONTH, "page": "integer", "sort_by": "string", "sort_order": "string"}),
     "get_invoice": (queries.get_invoice, {"company_id": "string", "invoice_no": "string"}),
     "list_bank_transactions": (queries.list_bank_transactions, MONTH),
     "invoice_total": (finance.invoice_total, MONTH),
@@ -48,7 +50,7 @@ REGISTRY = {
 TOOLS = [{"type": "function", "function": {"name": name,
           "description": ("仅准备草稿，不保存；需可信CLI最终确认：" if name == "prepare_invoice_update" else "查询当前数据库：") + name,
           "parameters": {"type": "object", "properties": {key: {"type": kind} for key, kind in fields.items()},
-                         "required": list(fields), "additionalProperties": False}}}
+                         "required": [key for key in fields if key not in OPTIONAL_FIELDS.get(name, ())], "additionalProperties": False}}}
          for name, (_, fields) in REGISTRY.items()]
 TEACHING_TOOLS = TOOLS
 TOOLS = [tool for tool in TOOLS if tool["function"]["name"] in ANNUAL | {
@@ -61,7 +63,7 @@ DESCRIPTIONS = {
     "list_annual_bank_income":"按可信完整年度分页查询银行收入流水明细，每页10条；不判断对应发票。",
     "get_finance_summary":"发票和银行收支综合查询首选：一次返回指定企业年月的价税合计/张数、收入/支出总额/分别条数和R001版本；补充月份后沿用原综合目标。无记录明确返回零，无需额外计划。",
     "list_invoices":"查询指定企业月份的发票明细；大列表优先使用分页目录。",
-    "list_invoice_directory":"分页列出发票目录和总数，每页10条。全年目录传可信year及month=0；全账簿目录才使用year=0、month=0；月度传完整年月。",
+    "list_invoice_directory":"按企业和账期重新读取、排序并分页，每页10条。年度用year及month=0；全账簿用year=0、month=0；月度传完整年月。未指定方向时升序，未指定字段时按日期。",
     "get_invoice":"企业编号和发票号联合定位当前发票，不猜测模糊指代。",
     "list_bank_transactions":"查询指定企业年月的银行流水，只读，不推断发票已付款。",
     "check_missing_purpose":"用户问哪些发票用途未填写、还剩多少缺项时，使用本工具。采用可信只读账期或当前明确范围，按有效规则返回实际缺项和发票编号；不要改为财务汇总。备注不代替用途。",
@@ -76,7 +78,8 @@ DESCRIPTIONS = {
     "set_schedule":"仅真正多步依赖时提出本轮粗计划；不是长期任务或授权。再次调用为一次显式重规划，不创造进展或预算。简单查询直接调用业务工具。",
 }
 PARAMETERS = {"company_id":"企业编号，例如C001；不能凭空猜测。", "year":"明确的业务年份。",
-              "month":"业务月份，1到12。", "page":"目录页码，从1开始。", "invoice_no":"与企业共同确定发票的精确编号。",
+              "month":"业务月份，1到12。", "page":"目录页码，从1开始。",
+              "sort_by":"date 按日期，amount 按金额。", "sort_order":"asc 升序，desc 降序。", "invoice_no":"与企业共同确定发票的精确编号。",
               "field":"只允许purpose或remark。", "new_value":"用户明确的新内容，空字符串表示清空。",
               "rule_id":"规则编号，如R002。", "rule_type":"amount、purpose或bank。", "business_date":"YYYY-MM-DD业务日期。",
               "action":"该管理工具支持的操作名称。", "task_id":"已有任务ID；create使用空字符串。",
@@ -92,6 +95,9 @@ for tool in TOOLS:
         if tool["function"]["name"] == "list_invoice_directory" and key in {"year", "month"}:
             schema["description"] += " 年度目录只将月份设为0；全账簿目录年份和月份都设为0。"
 for tool in TOOLS:
+    if tool["function"]["name"] == "list_invoice_directory":
+        for key, choices in DIRECTORY_SORT_FIELDS.items():
+            tool["function"]["parameters"]["properties"][key]["enum"] = list(choices)
     if tool["function"]["name"] == "prepare_invoice_update":
         tool["function"]["parameters"]["properties"]["field"]["enum"] = ["purpose", "remark"]
     if tool["function"]["name"] == "manage_task":
@@ -113,7 +119,7 @@ def tool_result(status, data=None, evidence=None, error=None):
             "data": data, "evidence": evidence or {}, "error": error}
 
 
-def validate_arguments(name, raw_arguments, partial=False):
+def validate_arguments(name, raw_arguments, partial=False, *, directory_sort=None):
     """实际调用与计划约束共用JSON字段/类型检查；partial只允许计划暂缺业务参数。"""
     def unique_object(pairs):
         result = {}
@@ -129,7 +135,8 @@ def validate_arguments(name, raw_arguments, partial=False):
     except (RecursionError, UnicodeEncodeError):
         raise ValueError("JSON参数嵌套过深或包含无效Unicode") from None
     fields = REGISTRY[name][1]
-    if type(args) is not dict or not set(args)<=set(fields) or (not partial and set(args)!=set(fields)):
+    required = set(fields) - set(OPTIONAL_FIELDS.get(name, ()))
+    if type(args) is not dict or not set(args) <= set(fields) or (not partial and not required <= set(args)):
         raise ValueError("缺失或多余参数")
     for key,value in args.items():
         kind = fields[key]
@@ -140,6 +147,10 @@ def validate_arguments(name, raw_arguments, partial=False):
         choices=ARGUMENT_SCHEMAS[name][key].get("enum")
         if choices and value not in choices:
             raise ValueError("参数不在允许取值中："+key)
+    if name == "list_invoice_directory" and directory_sort and "sort_by" not in args:
+        # Paging a verified directory with omitted sort parameters retains the previous order.
+        args["sort_by"] = directory_sort[0]
+        args.setdefault("sort_order", directory_sort[1])
     return args
 
 
@@ -309,7 +320,8 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
         permitted = {tool["function"]["name"] for tool in TOOLS} if allowed_tools is None else allowed_tools
         if name not in permitted:
             return tool_result("DENIED", error="工具未授权给当前运行上下文")
-        args = validate_arguments(name,raw_arguments)
+        directory_sort = provenance.directory_sort if isinstance(provenance, ScopeProof) and provenance.actor == user_id else None
+        args = validate_arguments(name, raw_arguments, directory_sort=directory_sort)
         function = REGISTRY[name][0]
         if name=="set_schedule":
             return _set_schedule(args,user_id,db_path,execution,permitted,update_session,expected_scope,management_intent,management_proposals,provenance)

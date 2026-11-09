@@ -54,11 +54,17 @@ def available_periods(connection, user_id, company_id):
 
 
 INVOICE_PAGE_SIZE = 10
+_INVOICE_ORDER = {
+    ("date", "asc"): "invoice_date ASC, invoice_no ASC",
+    ("date", "desc"): "invoice_date DESC, invoice_no ASC",
+    ("amount", "asc"): "amount_cents ASC, invoice_date ASC, invoice_no ASC",
+    ("amount", "desc"): "amount_cents DESC, invoice_date ASC, invoice_no ASC",
+}
 # Match Python str.strip() for invoice purposes, including full-width spaces.
 PURPOSE_WHITESPACE = "".join(chr(code) for code in range(0x3001) if chr(code).isspace())
 
 
-def invoice_directory(connection, user_id, company_id, year, month, page):
+def invoice_directory(connection, user_id, company_id, year, month, page, sort_by="date", sort_order="asc"):
     """A stable, bounded invoice directory with a count from the same transaction."""
     _authorize(connection, user_id, company_id)
     filters = "company_id = ?"
@@ -66,7 +72,8 @@ def invoice_directory(connection, user_id, company_id, year, month, page):
     if (year, month) != (0, 0):
         filters += " AND invoice_date LIKE ?"
         values.append(_year_prefix(year) if month == 0 else _check_month(year, month) + "%")
-    return _invoice_page(connection, company_id, filters, values, page)
+    data = _invoice_page(connection, company_id, filters, values, page, sort_by=sort_by, sort_order=sort_order)
+    return {**data, "sort_by": sort_by, "sort_order": sort_order}
 
 
 def list_annual_blank_purpose(connection, user_id, company_id, year, page):
@@ -83,12 +90,15 @@ def _page_offset(page):
     return (page - 1) * INVOICE_PAGE_SIZE
 
 
-def _invoice_page(connection, company_id, filters, values, page):
+def _invoice_page(connection, company_id, filters, values, page, *, sort_by="date", sort_order="asc"):
+    if type(sort_by) is not str or type(sort_order) is not str or (sort_by, sort_order) not in _INVOICE_ORDER:
+        raise QueryError("发票目录排序参数不受支持")
+    order = _INVOICE_ORDER[sort_by, sort_order]
     offset = _page_offset(page)
     total = connection.execute(f"SELECT count(*) FROM invoices WHERE {filters}", values).fetchone()[0]
     rows = connection.execute(
         f"""SELECT invoice_no, invoice_date, amount_cents, purpose
-              FROM invoices WHERE {filters} ORDER BY invoice_date, invoice_no LIMIT ? OFFSET ?""",
+              FROM invoices WHERE {filters} ORDER BY {order} LIMIT ? OFFSET ?""",
         [*values, INVOICE_PAGE_SIZE, offset],
     )
     return {"total": total, "page": page, "page_size": INVOICE_PAGE_SIZE,

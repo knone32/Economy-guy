@@ -34,7 +34,10 @@ context_data的prior_query_tools只是历史查询类型线索：当前轮仅更
 银行流水和发票没有可靠的逐条关联，不能凭流水推断某张发票是否付款。
 用户要求全年用途待办时，可先查全年字段空值；不能替用户改成9月。待办建议需要用户下一轮明确同意具体企业、年月和动作，再按原流程请求可信确认。
 发票与银行收支的综合概览使用get_finance_summary，一次取得价税合计/数量、收入/支出/条数及R001；
-list_invoice_directory用于企业发票目录（所有发票无需月份），每次只返回一页；get_invoice用于已明确企业和发票号的详情。list_invoices/list_bank_transactions用于指定月份明细。不要用明细代替完整汇总。
+list_invoice_directory用于企业发票目录，每次只返回一页。目录排序必须用此工具重新读取整个查询范围，由数据库先排序再分页。
+当前问题在延续同一目录时，可从 context_data.previous_invoice_directory 取上一轮已核验的企业与账期。没有唯一目录则追问，不猜范围。
+金额排序用sort_by=amount，日期排序用sort_by=date，方向不明时用asc。改变排序从第1页开始，继续翻页沿用相同排序。
+本轮明确的企业与账期优先。get_invoice用于已明确企业和发票号的详情。list_invoices/list_bank_transactions用于指定月份明细。不要用明细代替完整汇总。
 仅用户明确本次修改目标、purpose/remark与新内容时可调用prepare_invoice_update。模糊目标先追问，不猜用途。
 Prepare只是草稿；等待可信CLI确认，不能声称已保存。禁止调用Commit或自行确认。
 工具 status=NO_DATA 表示无记录，金额为0.00；DENIED/INVALID_ARGUMENTS/ERROR不能当作零或成功。金额单位元。
@@ -214,7 +217,7 @@ class Agent:
                 scope["annual_year"] = [year]
         return scope
 
-    def model_messages(self,reference=None,read_workspace=None,*,explanation_facts=None):
+    def model_messages(self,reference=None,read_workspace=None,*,explanation_facts=None,previous_directory=None):
         """历史事件明确标记程序来源；不编造模型Tool Call或执行记录。"""
         self._check_identity()
         if self._connection_error and self.model is _BUILTIN_LIVE_MODEL:
@@ -232,7 +235,7 @@ class Agent:
         messages,selection = self.context.build(self.messages,history,reference,
             self.execution.snapshot() if self.execution and self.execution.schedule else None,
             measure=self.protocol.size if self.protocol.enabled else None, read_workspace=read_workspace,
-            explanation_facts=explanation_facts)
+            explanation_facts=explanation_facts, previous_directory=previous_directory)
         self.trace("context.selected",selection)
         messages=self.protocol.wire(messages,bool(self.tools))
         self.trace('protocol.selected',self.protocol.metadata(messages))
@@ -399,6 +402,14 @@ class Agent:
             re.search(r"(?:所有|全部|全量|完整)的?发票|发票(?:的)?(?:完整目录|全部目录)", text))
         exact_invoice = (not reference and not has_dates and
                          len(explicit.get("company_id", [])) == len(explicit.get("invoice_no", [])) == 1)
+        previous_directory = None
+        directory_scope = None
+        if read_only and not (explicit or has_dates or reference):
+            previous_directory = self.context.previous_directory((self.last_response or {}).get("tool_results", ()))
+            if previous_directory:
+                directory_scope = tuple(previous_directory[key] for key in ("company_id", "year", "month"))
+                if read_workspace and read_workspace != directory_scope:
+                    previous_directory = directory_scope = None
         selection = self.context.annual_focus or read_workspace or (prior_annual_focus if has_dates else None)
         read_workspace = self._workspace_read_scope(selection, text) if not (allow_prepare or management or reference) else None
         annual_year = None
@@ -503,7 +514,8 @@ class Agent:
                 facts = previous_facts
                 if read_only and read_results:
                     facts = self.context.explanation_facts(read_results, explicit)
-                context = self.model_messages(reference, read_workspace, explanation_facts=facts)
+                context = self.model_messages(reference, read_workspace, explanation_facts=facts,
+                                              previous_directory=previous_directory)
             except ContextLimitError as error:
                 self.coordinator.pending = None
                 self.trace("context.limit",{"error":str(error),"max_chars":self.context.max_chars})
@@ -589,10 +601,9 @@ class Agent:
                     return finish(render_information(read_results) + "\n" + notice, store=False, category="database_query", chat_notice=notice)
                 # One bounded repair, using the same loop, budget and authorization guards.
                 needs_retrieval = (not read_results and not allow_prepare and not management and not self.teaching
-                    and bool(expected_scope or read_workspace)
-                    and bool(re.search(r"查|汇总|财务|发票|金额|流水|收支|用途|规则|R00[1-4]", text, re.I))
-                    and (natural is not None and natural["kind"] == "information"
-                         or natural is None and bool(expected_scope or read_workspace)))
+                    and bool(expected_scope or read_workspace or previous_directory)
+                    and (previous_directory or re.search(r"查|汇总|财务|发票|金额|流水|收支|用途|规则|R00[1-4]", text, re.I))
+                    and (natural is None or natural["kind"] == "information"))
                 if needs_retrieval and not retrieval_corrected and execution.model_requests < min(execution.block_limit, self.max_requests):
                     self.messages.pop()
                     retrieval_corrected = True
@@ -659,7 +670,12 @@ class Agent:
                         stop = True
                     else:
                         tool_scope = expected_scope
-                        if ((fn.get("name") == "list_invoice_directory" and all_invoices and annual_year is None) or
+                        tool_proof = self.context.proof(read_workspace, annual_year=annual_year)
+                        if fn.get("name") == "list_invoice_directory" and directory_scope:
+                            tool_scope = {}
+                            directory_sort = (previous_directory["sort_by"], previous_directory["sort_order"])
+                            tool_proof = self.context.proof(directory_scope=directory_scope, directory_sort=directory_sort)
+                        elif ((fn.get("name") == "list_invoice_directory" and all_invoices and annual_year is None) or
                                 (fn.get("name") == "get_invoice" and exact_invoice)):
                             tool_scope = {key: values for key, values in expected_scope.items()
                                           if key not in {"year", "month", "periods"}}
@@ -670,7 +686,7 @@ class Agent:
                                              reference_context=reference_context,execution=execution,
                                              management_confirmation=confirm_proposal if self.management_confirmation else None,
                                              management_proposals=self.management_proposals if management is None else None,
-                                             provenance=self.context.proof(read_workspace, annual_year=annual_year),
+                                             provenance=tool_proof,
                                              display_preference=self.display_preference)
                         if fn.get('name') in {'manage_task','list_tasks'}:self.context.accept_task(result)
                         if fn.get("name") == "prepare_invoice_update":
@@ -678,7 +694,8 @@ class Agent:
                         if result["status"] == "INVALID_ARGUMENTS":
                             execution.stop("INVALID_ARGUMENTS")
                         else:
-                            args = validate_arguments(fn.get("name"), fn.get("arguments"))
+                            args = validate_arguments(fn.get("name"), fn.get("arguments"),
+                                                      directory_sort=tool_proof.directory_sort)
                             execution.observe(fn.get("name"), args, result)
                         stop = bool(execution.stop_reason)
                 if stop and stop_result is None:

@@ -122,10 +122,11 @@ class ContextBuilder:
             self.sources.pop("invoice_no", None)
         return dict(self.scope) if explicit else {}
 
-    def proof(self, read_workspace=None, *, annual_year=None):
+    def proof(self, read_workspace=None, *, annual_year=None, directory_scope=None, directory_sort=None):
         """不采信模型或旧SQL汇总的年月。"""
         from copy import deepcopy
-        return ScopeProof(self.user_id,deepcopy(self.scope),dict(self.sources),read_workspace,annual_year)
+        return ScopeProof(self.user_id, deepcopy(self.scope), dict(self.sources), read_workspace, annual_year,
+                          directory_scope, directory_sort)
 
     def accept_reference(self,evidence):
         """仅在真实引用解析成功后绑定来源。"""
@@ -189,6 +190,21 @@ class ContextBuilder:
                     self.scope.pop(key, None)
                     self.sources.pop(key, None)
 
+    @staticmethod
+    def previous_directory(results):
+        """Only actual, uniquely scoped directory reads can seed a follow-up."""
+        directories = set()
+        for name, outcome in results:
+            evidence = outcome["evidence"]
+            if (name == "list_invoice_directory" and outcome["status"] in {"SUCCESS", "NO_DATA"}
+                    and evidence.get("source") == "current_sqlite"):
+                scope, data = evidence["scope"], outcome["data"]
+                directories.add((scope["company_id"], scope.get("year", 0), scope.get("month", 0),
+                                 data.get("sort_by", "date"), data.get("sort_order", "asc")))
+        if len(directories) == 1:
+            return dict(zip(("company_id", "year", "month", "sort_by", "sort_order"), next(iter(directories))))
+        return None
+
     def record_displayed(self,results,display_id,*,full_directory=False):
         """调用方已经按实际结果渲染后，提取展示的有序联合键，不采信模型描述。"""
         readonly=ANNUAL | {"list_invoice_directory",'get_finance_summary','list_invoices','get_invoice','list_bank_transactions',
@@ -206,7 +222,8 @@ class ContextBuilder:
                 evidence = outcome["evidence"]
                 if evidence.get("source") == "current_sqlite":
                     scope = evidence["scope"]
-                    key = (scope["company_id"], scope.get("year"), scope.get("month"))
+                    key = (scope["company_id"], scope.get("year"), scope.get("month"),
+                           data.get("sort_by", "date"), data.get("sort_order", "asc"))
                     directories.setdefault(key, (scope, []))[1].append(data)
                 continue
             if name=="list_invoices":
@@ -310,7 +327,7 @@ class ContextBuilder:
         return data
 
     def build(self,messages,history_event=None,reference=None,execution=None,measure=None,read_workspace=None,
-              explanation_facts=None):
+              explanation_facts=None, previous_directory=None):
         """以序列化消息字符数限长；保留本轮整段及tool_call_id配对，旧轮整段取舍。"""
         size = measure or (lambda value: len(json.dumps(value,ensure_ascii=False)))
         last_user = max((i for i,m in enumerate(messages) if m["role"]=="user"),default=len(messages))
@@ -327,11 +344,14 @@ class ContextBuilder:
         data_origins = data["origins"]
         if read_workspace:
             data["read_workspace"] = {"scope": read_workspace, "usage": "仅供本轮只读查询，用户明确要求优先，不授予任何写入权限。"}
+        if previous_directory:
+            data["previous_invoice_directory"] = previous_directory
+            data_origins["previous_invoice_directory"] = "runtime.verified_directory_read"
         if explanation_facts:
             data["explanation_facts"] = explanation_facts
             data_origins["explanation_facts"] = "runtime.verified_read_results"
         extras = [{"role":"user","name":"context_data","content":json.dumps(data,ensure_ascii=False)}] if (
-            self.scope or read_workspace or explanation_facts or data.get("references") or data.get("personal_display")) else []
+            self.scope or read_workspace or explanation_facts or previous_directory or data.get("references") or data.get("personal_display")) else []
         if self.restored_turns and self.history_start == 1:
             extras.append({"role":"assistant","name":"harness_history","content":json.dumps({
                 "source":"local_session","historical":True,
@@ -348,8 +368,9 @@ class ContextBuilder:
                 selected = candidate
                 sources.append(extra["name"])
             else:
-                if extra["name"] == "context_data" and (read_workspace or explanation_facts):
-                    essential = {key: data[key] for key in ("read_workspace", "explanation_facts") if key in data}
+                if extra["name"] == "context_data" and (read_workspace or explanation_facts or previous_directory):
+                    essential = {key: data[key] for key in ("read_workspace", "explanation_facts", "previous_invoice_directory")
+                                 if key in data}
                     minimal = {**extra, "content": json.dumps(essential, ensure_ascii=False)}
                     candidate = [selected[0],minimal,*selected[1:]]
                     if size(candidate) > self.max_chars:
