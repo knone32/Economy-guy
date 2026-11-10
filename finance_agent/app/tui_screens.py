@@ -4,9 +4,10 @@ from hashlib import sha256
 from pathlib import Path
 import re
 import sqlite3
+from uuid import uuid4
 
 from rich.text import Text
-from textual import on
+from textual import on, work
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
@@ -14,7 +15,8 @@ from textual.widgets import Button, Collapsible, ContentSwitcher, DirectoryTree,
 
 from .cli_workspaces import company_access, import_workspace, missing_migrations, rules_available, upgrade_workspace, workspace_users
 from .model_config import Profile, ProfileError, add_profile, update_user_profile, validate_profile, visible_profiles
-from .trace import redact
+from .model_transport import ModelTransport
+from .trace import redact, write_trace
 from .tui_local import recent_workbooks
 from .win_vault import CredentialError
 
@@ -571,6 +573,14 @@ class TaskNote(Dialog):
 PROVIDERS = {"deepseek": "DeepSeek", "openai": "OpenAI", "openai-compatible": "OpenAI 兼容"}
 ENDPOINT_DEFAULTS = {"deepseek": "https://api.deepseek.com", "openai": "https://api.openai.com/v1",
                      "openai-compatible": ""}
+ENDPOINT_PRESETS = {
+    "硅基流动（国内）": "https://api.siliconflow.cn/v1",
+    "SiliconFlow（国际）": "https://api.siliconflow.com/v1",
+    "DeepSeek 官方": ENDPOINT_DEFAULTS["deepseek"],
+    "阿里百炼（北京）": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "阿里百炼（新加坡）": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+    "OpenAI 官方": ENDPOINT_DEFAULTS["openai"],
+}
 
 
 def provider_label(provider):
@@ -620,6 +630,9 @@ class ProfileDetails(Dialog):
             yield Static(f"{key_state}。{app.key_status(p)}", classes="field-hint", markup=False)
             yield Static("", id="detail-feedback", classes="field-error", markup=False)
             yield TextAction("使用此 AI", id="use-profile", variant="primary")
+            yield TextAction("检测连接", id="check-connection")
+            yield Static("主动检测最多发送两次请求，可能计费。只测试文本与工具调用格式。",
+                         classes="field-hint", markup=False)
             yield TextAction("编辑配置", id="edit-profile", disabled=p.scope != "user")
             yield TextAction("设置 / 更换密钥", id="set-key")
             yield TextAction("忘记已保存密钥", id="forget-key")
@@ -646,7 +659,16 @@ class ProfileDetails(Dialog):
         except ProfileError as error:
             self.feedback(str(error))
             return
-        if action == "edit-profile" and p.scope == "user":
+        if action == "check-connection":
+            try:
+                connection = app.resolve_profile(require_key=True, selection=p.profile_name)
+            except ProfileError as error:
+                self.feedback(str(error))
+                return
+            event.button.disabled = True
+            self.feedback("正在检测基础连接…")
+            self.check_connection(connection)
+        elif action == "edit-profile" and p.scope == "user":
             app.push_screen(NewUserProfile(self.actor, previous=p), self.edited)
         elif action == "set-key":
             app.push_screen(ProfileKey(self.actor, p), self.edited)
@@ -672,6 +694,37 @@ class ProfileDetails(Dialog):
                     return
                 self.dismiss("已移除此配置的 Windows 密钥和本次输入。环境变量如有设置，仍可用。")
             app.push_screen(Approval("忘记已保存密钥", f"模型 {p.model}。移除后将重新核对连接状态。", "确认忘记"), forget)
+
+    @work(thread=True, group="profile-diagnostic", exit_on_error=False)
+    def check_connection(self, connection):
+        app = self.app
+        trace_id = uuid4().hex
+
+        def still_current():
+            if not self.is_mounted or app.screen is not self:
+                return False
+            try:
+                self.check_profile()
+            except ProfileError:
+                return False
+            return app.current_key(connection.profile) == connection.api_key
+
+        def trace(event, data):
+            write_trace(app.trace_path, "profile-diagnostic", trace_id, event, data, metadata={"actor": self.actor})
+
+        if app.call_from_thread(still_current):
+            result = ModelTransport(connection, trace).probe(lambda: app.call_from_thread(still_current))
+        else:
+            result = None
+
+        def publish():
+            if not self.is_mounted:
+                return
+            self.query_one("#check-connection", Button).disabled = False
+            if still_current() and result:
+                self.feedback(result)
+
+        app.call_from_thread(publish)
 
     def edited(self, feedback):
         if feedback:
@@ -741,7 +794,7 @@ class NewUserProfile(Dialog):
         with VerticalScroll():
             yield Label("编辑个人 AI 配置" if previous else "新建 AI 配置", classes="dialog-title")
             yield Label("配置名称", classes="field-label")
-            yield Input(value=previous.profile_name if previous else "", placeholder="自定义名称，例如 finance-ai",
+            yield Input(value=previous.profile_name if previous else "", placeholder="例如 财务助手 或 finance-ai",
                         disabled=previous is not None, id="profile-name")
             yield Label("服务商", classes="field-label")
             yield Select([(label, key) for key, label in PROVIDERS.items()], value=self.provider, allow_blank=False, id="provider")
@@ -755,17 +808,22 @@ class NewUserProfile(Dialog):
             manual = Input(value=model, placeholder="填写服务商提供的模型 ID", id="model-name")
             manual.display = self.provider != "deepseek" or preset == "custom"
             yield manual
-            yield Static("只离线校验配置。模型是否可用，要在发送消息后才能验证。", classes="field-hint", markup=False)
+            yield Label("服务地址（HTTPS）", classes="field-label")
+            endpoint = previous.base_url if previous else ENDPOINT_DEFAULTS[self.provider]
+            addresses = list(ENDPOINT_PRESETS.values())
+            yield Select([*ENDPOINT_PRESETS.items(), ("自定义地址", "custom")],
+                         value=endpoint if endpoint in addresses else "custom", allow_blank=False, id="endpoint-preset")
+            yield Input(value=endpoint, placeholder="服务商提供的 HTTPS SDK Base URL", id="endpoint")
+            yield Static("填写 SDK Base URL，末尾无需 /chat/completions。保存只校验配置，可在详情主动检测连接。",
+                         classes="field-hint", markup=False)
             if not previous:
                 yield from credential_fields()
                 yield Static("可留空先保存配置，稍后从详情设置密钥。", classes="field-hint", markup=False)
             with Collapsible(title="高级设置", collapsed=True, id="profile-advanced"):
-                yield Label("服务地址（HTTPS）", classes="field-label")
-                yield Input(value=previous.base_url if previous else ENDPOINT_DEFAULTS[self.provider], id="endpoint")
                 yield Label("凭据环境变量引用", classes="field-label")
                 yield Input(value=previous.api_key_env if previous else "", placeholder="留空生成独立引用", id="key-env")
                 yield Label("服务账户逻辑引用", classes="field-label")
-                yield Input(value=previous.service_account_ref if previous else "", placeholder="留空使用配置名称", id="account-ref")
+                yield Input(value=previous.service_account_ref if previous else "", placeholder="新建时留空生成 ASCII 标识", id="account-ref")
                 yield Label("消息协议", classes="field-label")
                 yield Select([("自动", "auto"), ("标准", "standard"), ("DeepSeek Thinking", "deepseek-thinking"),
                               ("Qwen 低力度思考预检", "qwen-thinking-preflight")],
@@ -792,6 +850,13 @@ class NewUserProfile(Dialog):
             manual.value = picker.value
         self.update_model_fields()
 
+    @on(Select.Changed, "#endpoint-preset")
+    def endpoint_preset_changed(self, event):
+        endpoint = self.query_one("#endpoint", Input)
+        if event.value in ENDPOINT_PRESETS.values() and endpoint.value != event.value:
+            self.auto_endpoint = False
+            endpoint.value = event.value
+
     @on(Select.Changed, "#deepseek-model")
     def preset_changed(self):
         self.update_model_fields()
@@ -805,27 +870,30 @@ class NewUserProfile(Dialog):
         def value(field):
             return self.query_one("#" + field, Input).value.strip()
 
-        name, model, endpoint = value("profile-name"), value("model-name"), value("endpoint")
+        name = self.query_one("#profile-name", Input).value
+        model, endpoint = value("model-name"), value("endpoint")
         preset = self.query_one("#deepseek-model", Select).value
         if self.provider == "deepseek" and preset in DEEPSEEK_MODELS:
             model = preset
         if not name:
-            raise ProfileError("请填写配置名称，可用英文字母、数字、点、下划线或短横线。")
+            raise ProfileError("请填写配置名称，可用中文、英文字母和数字。")
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/@-]{0,199}", model):
             raise ProfileError("请填写有效的模型 ID，并向服务商核对名称。")
         if not endpoint:
-            raise ProfileError("请在高级设置填写服务商的 HTTPS 地址。")
+            raise ProfileError("请填写服务商的 HTTPS SDK Base URL。")
+        if endpoint.rstrip("/").lower().endswith("/chat/completions"):
+            raise ProfileError("请填写 SDK Base URL，去掉末尾的 /chat/completions。")
         env = value("key-env")
         if not env:
             identity = f"{self.actor}/{name}/{endpoint.rstrip('/')}"
             env = "ECONOMY_PROFILE_" + sha256(identity.encode()).hexdigest()[:20].upper()
         data = {"profile_name": name, "scope": "user", "owner_user_id": self.actor,
                 "provider": self.query_one("#provider", Select).value, "model": model,
-                "base_url": endpoint, "api_key_env": env, "service_account_ref": value("account-ref") or name,
+                "base_url": endpoint, "api_key_env": env, "service_account_ref": value("account-ref"),
                 "protocol": self.query_one("#protocol", Select).value}
         if redact(data) != data or (secret and secret in data.values()):
             raise ProfileError("请将密钥只填在 API Key 输入框。")
-        return validate_profile(data)
+        return validate_profile(data, new=self.previous is None)
 
     @on(Button.Pressed)
     def pressed(self, event):

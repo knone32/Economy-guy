@@ -21,6 +21,7 @@ from .cli_chat import safe_text, turn_tools
 from .cli_workspaces import company_access, invoice_history, missing_migrations, workspace_users
 from .invoice_batch import run_invoice_batch
 from .model_config import ModelConnection, ProfileError, load_profiles, resolve_connection
+from .model_transport import describe_failure
 from .persistence import ManagementIntent, ManagementTurn, confirm_management, task_note_from_request
 from .queries import QueryError, available_periods, get_invoice, invoice_directory
 from .responses import (DIRECTORY_SORT_LABELS, display_rule_amounts, explicit_scope, needs_progress_evidence,
@@ -483,10 +484,9 @@ class AgentWorkspace(ConversationUI, App):
         if self.last_api_ok is True:
             return "connected", "真实 AI 已响应", profile.model
         if self.last_api_ok is False:
-            detail = ("服务未找到模型或端点（HTTP 404），请核对模型 ID 与 HTTPS 地址。"
-                      if self.last_api_status.endswith("HTTP 404") else "请核对网络和 AI 配置，详情见执行记录。")
-            return "failed", "最近模型请求失败", f"{profile.model} · {detail}"
-        return "unverified", "连接尚未验证", f"{profile.model} 的密钥已设置。发送消息后才会联网。"
+            detail = self.last_api_status or "请核对网络和 AI 配置，详情见执行记录。"
+            return "failed", "最近模型请求失败", detail
+        return "unverified", "连接尚未验证", f"{profile.model} 的密钥已设置。可在详情检测连接或发送消息。"
 
     def profile_status(self):
         _, title, detail = self.model_state()
@@ -602,7 +602,7 @@ class AgentWorkspace(ConversationUI, App):
                 if event == "api.response":
                     self.last_api_ok = data["success"] is True
                     self.last_api_status = ("已收到模型响应" if data["success"] else
-                                            f"{data['http_category']} HTTP {data['http_status'] or '无响应'}")
+                                            describe_failure(data))
                 trace(event, data)
 
             self.agent.transport.trace = observe
@@ -1352,7 +1352,9 @@ class AgentWorkspace(ConversationUI, App):
         if self.agent.transport and stop == "INVALID_RESPONSE" and self.last_api_ok is True:
             self.last_api_status = FINAL_FORMAT_ERROR
         elif self.agent.transport and stop in {"API_OR_RESPONSE_ERROR", "INVALID_RESPONSE", "PROTOCOL_ERROR"}:
-            if self.last_api_ok is not False:
+            if self.last_api_ok is True and api and api["attempts"]:
+                self.last_api_status = "HTTP 成功 · 模型回复不符合 Agent 协议"
+            elif self.last_api_ok is not False:
                 self.last_api_status = "模型响应或协议校验失败"
             self.last_api_ok = False
         observed = self.last_api_status if api and api["attempts"] else ""

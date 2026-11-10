@@ -1,6 +1,7 @@
 """可信本地模型Profile与凭据引用；不读写业务SQLite，不提供LLM工具。"""
 from collections import Counter
 from dataclasses import dataclass,field,asdict
+from hashlib import sha256
 import ipaddress
 import json
 import os
@@ -89,17 +90,20 @@ def is_official_qwen(profile):
         r"ap-northeast-1|cn-hongkong)\.maas\.aliyuncs\.com", host))
 
 
-def validate_profile(data):
+def validate_profile(data, *, new=False):
     """所有存储来源使用同一白名单；只保存环境变量名称。"""
-    fields=set(Profile.__dataclass_fields__)
-    if type(data) is not dict or set(data)-fields or fields-{'protocol','owner_user_id'}-set(data):
+    fields = set(Profile.__dataclass_fields__)
+    optional = {"protocol", "owner_user_id"} | ({"service_account_ref"} if new else set())
+    if type(data) is not dict or set(data)-fields or fields-optional-set(data):
         raise ProfileError('Profile字段缺失或含不支持字段；不接受明文凭据')
     values={**data,'owner_user_id':data.get('owner_user_id'),'protocol':data.get('protocol','auto')}
-    for key in ('profile_name','provider','service_account_ref','model','api_key_env','base_url','protocol','scope'):
+    for key in ('profile_name','provider','model','api_key_env','base_url','protocol','scope'):
         if type(values[key]) is not str or not values[key].strip():
             raise ProfileError('Profile必要字段必须明确')
-    if any(not re.fullmatch(r'[A-Za-z0-9_.-]{1,64}',values[k]) for k in ('profile_name','service_account_ref')):
-        raise ProfileError('Profile名称或服务账户逻辑引用格式无效')
+    name = values["profile_name"]
+    if (len(name) > 64 or name != name.strip()
+            or not all(char.isalnum() or char in " ._-" for char in name)):
+        raise ProfileError("配置名称须为 1–64 个字符，可用中文、字母、数字、内部空格、点、下划线或短横线。")
     if not re.fullmatch(r'[A-Z][A-Z0-9_]{0,95}',values['api_key_env']):
         raise ProfileError('api_key_env必须是环境变量名称，不是实际Key')
     if values['provider'] not in {'deepseek','openai','openai-compatible'} or values['protocol'] not in PROFILE_PROTOCOLS:
@@ -109,13 +113,22 @@ def validate_profile(data):
     if values['scope']=='user' and (type(values['owner_user_id']) is not str or not re.fullmatch(r'U\d{3,}',values['owner_user_id'])):
         raise ProfileError('User Profile必须绑定可信模拟用户')
     values['base_url']=safe_url(values['base_url'])
-    p=Profile(**values)
+    if new and values["base_url"].lower().endswith("/chat/completions"):
+        raise ProfileError("请填写 SDK Base URL，去掉末尾的 /chat/completions。")
+    ref = values.get("service_account_ref")
+    if new and ref in (None, ""):
+        identity = json.dumps([values["scope"], values["owner_user_id"], name, values["base_url"]], ensure_ascii=False)
+        ref = "acct_" + sha256(identity.encode("utf-8")).hexdigest()[:24]
+    if type(ref) is not str or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", ref):
+        raise ProfileError("服务账户逻辑引用须使用 ASCII 字母、数字、点、下划线或短横线。")
+    p = Profile(**{**values, "service_account_ref": ref})
     if p.protocol == QWEN_PREFLIGHT and not is_official_qwen(p):
         raise ProfileError("Qwen 思考预检仅支持指定快照和百炼官方端点")
-    # 协议配置不会给自定义代理猜测DeepSeek兼容性。
+    # 兼容代理在 auto 下走标准协议。只有显式选择 Thinking 才校验该专用能力。
     from .thinking_protocol import ThinkingProtocol
-    protocol=ThinkingProtocol(p.base_url,p.model,thinking=p.protocol!='standard',bind_environment=False)
-    if protocol.ambiguous or (p.protocol=='deepseek-thinking' and not protocol.enabled):
+    if p.protocol == "deepseek-thinking" and not ThinkingProtocol(
+        p.base_url, p.model, bind_environment=False
+    ).enabled:
         raise ProfileError('该端点/模型尚无已验证Thinking协议配置')
     return p
 
@@ -168,7 +181,7 @@ def visible_profiles(user_id,template=DEFAULT_TEMPLATE,local=DEFAULT_LOCAL):
 def add_profile(data,user_id=None,simulate_manager=False,template=DEFAULT_TEMPLATE,local=DEFAULT_LOCAL, *,
                 isolated_credentials=False):
     """仅可信CLI添加；锁内校验、fsync后原子替换，不覆盖同名配置。"""
-    p=validate_profile(data)
+    p = validate_profile(data, new=True)
     if p.scope=='global' and not simulate_manager:
         raise ProfileError('Global新增需要显式模拟profile.manage管理入口；不是U001默认权限')
     if p.scope=='user' and p.owner_user_id!=user_id:

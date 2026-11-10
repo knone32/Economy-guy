@@ -419,11 +419,11 @@ class Home:
             raise PermissionError("Global Profile 需要独立的模拟管理员入口。")
         owner = self.require_user() if scope == "user" else None
         print("Profile 只保存凭据环境变量名。可用 Provider 为 deepseek、openai、openai-compatible。")
-        prompts = {"profile_name": "名称", "provider": "Provider", "service_account_ref": "服务账户逻辑名称",
+        prompts = {"profile_name": "名称", "provider": "Provider", "service_account_ref": "服务账户逻辑名称（留空生成）",
                    "model": "模型名称", "base_url": "HTTPS 端点", "api_key_env": "凭据环境变量名"}
         fields = {key: self.prompt(label + "：") for key, label in prompts.items()}
         protocol = self.prompt("协议 auto / standard / deepseek-thinking（留空 auto）：") or "auto"
-        profile = validate_profile(dict(**fields, scope=scope, owner_user_id=owner, protocol=protocol))
+        profile = validate_profile(dict(**fields, scope=scope, owner_user_id=owner, protocol=protocol), new=True)
         profiles, _ = load_profiles(**self.options)
         if any(other.api_key_env == profile.api_key_env and other.base_url != profile.base_url
                for other in profiles.values()):

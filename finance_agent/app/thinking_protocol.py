@@ -23,16 +23,20 @@ def settings():
             os.getenv('OPENAI_MODEL') or os.getenv('MODEL') or '')
 
 
+def is_official_deepseek_endpoint(url):
+    parsed = urlsplit(url)
+    return (parsed.scheme == "https" and parsed.hostname == "api.deepseek.com"
+            and parsed.port in (None, 443) and not parsed.username and not parsed.password
+            and parsed.path.rstrip("/") in ("", "/v1") and not parsed.query and not parsed.fragment)
+
+
 class ThinkingProtocol:
     """协议状态随消息对象存活；只在构造API输入时还原。"""
     def __init__(self,base_url=None,model=None,thinking=True,bind_environment=True):
         self.binding=settings() if base_url is None else (base_url,model)
         self.bind_environment=bind_environment
         url,name=self.binding
-        parsed=urlsplit(url)
-        official=(parsed.scheme=='https' and parsed.hostname=='api.deepseek.com'
-                  and parsed.port in (None,443) and not parsed.username and not parsed.password
-                  and parsed.path.rstrip('/') in ('','/v1') and not parsed.query and not parsed.fragment)
+        official = is_official_deepseek_endpoint(url)
         known=name in {'deepseek-flash','deepseek-v4-pro'}
         self.ambiguous=bool(thinking and known and not official)
         self.enabled=bool(official and known and thinking)
@@ -57,6 +61,12 @@ class ThinkingProtocol:
         output=[]
         for message in messages:
             value={k:v for k,v in message.items() if k!='reasoning_content'}
+            if value.get("role") == "assistant" and value.get("tool_calls"):
+                value["tool_calls"] = [
+                    {**{key: call[key] for key in ("id", "type") if key in call},
+                     "function": {key: call["function"][key] for key in ("name", "arguments") if key in call["function"]}}
+                    for call in value["tool_calls"]
+                ]
             if self.enabled and tools and message.get('role')=='assistant':
                 if isinstance(message,PrivateAssistant):
                     reasoning=message.reasoning
