@@ -1,6 +1,7 @@
 """模型信息与权威操作状态分开；不尝试用关键词判断任意文本真假。"""
 import json
 import re
+from decimal import Decimal, InvalidOperation
 
 
 def parse_final(content):
@@ -151,7 +152,7 @@ def query_goal(text):
         return "directory"
     if "发票" in text and re.search(r"银行|收支", text):
         return "finance"
-    if re.search(r"银行.{0,8}收入", text):
+    if re.search(r"银行.{0,8}(?:收入|进账)|(?:银行进账|银行入账)", text):
         return "bank_income"
     if re.search(r"收支|综合金额|财务汇总", text):
         return "finance"
@@ -172,6 +173,47 @@ def verified_query_goal(goal, company, year, month, results):
             continue
         return True
     return False
+
+
+def render_bank_income_comparison(results, goals):
+    """Compare only two verified, independent, same-period SQLite bank totals."""
+    targets = {(company, year, month) for goal, company, year, month in goals
+               if goal == "bank_income"}
+    if len(targets) != 2 or len({(year, month) for _, year, month in targets}) != 1:
+        return ""
+    amounts = {}
+    for name, outcome in results:
+        evidence = outcome.get("evidence", {})
+        scope = evidence.get("scope", {})
+        target = (scope.get("company_id"), scope.get("year"), scope.get("month"))
+        if (target not in targets or outcome["status"] not in {"SUCCESS", "NO_DATA"}
+                or evidence.get("source") != "current_sqlite"):
+            continue
+        summary = (outcome.get("data") if name == "get_finance_summary" else
+                   evidence.get("finance_summary") if name == "list_bank_transactions" else None)
+        if not isinstance(summary, dict):
+            continue
+        try:
+            amount = Decimal(str(summary["bank_income_total"]))
+            if not amount.is_finite() or amount != amount.quantize(Decimal("0.01")):
+                continue
+        except (KeyError, InvalidOperation, TypeError, ValueError):
+            continue
+        amounts[target] = amount
+    missing = sorted(target[0] for target in targets if target not in amounts)
+    if missing:
+        return "银行进账金额比较未完成：尚未取得 " + "、".join(missing) + " 同一账期的可信收入总额；已成功的单侧查询仍有效。"
+    (left, right) = sorted(targets)
+    a, b = amounts[left], amounts[right]
+    year, month = left[1:]
+    first = f"{left[0]}：¥{a:,.2f}"
+    second = f"{right[0]}：¥{b:,.2f}"
+    if a == b:
+        conclusion = "两家银行收入相同，差额 ¥0.00。"
+    else:
+        higher = left[0] if a > b else right[0]
+        conclusion = f"{higher} 银行收入更多，相差 ¥{abs(a-b):,.2f}。"
+    return f"{year} 年 {month} 月银行收入比较（当前 SQLite）：{first}；{second}。{conclusion}"
 
 
 def render_goal_coverage(coverage, receipt):

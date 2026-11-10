@@ -15,7 +15,7 @@ from .updates import prepare_invoice_update
 from .responses import (explicit_scope, parse_final, render_information, render_clarification,
                         render_explanation_evidence, render_grounded_explanation, render_invoice_comparison, render_reference_error, render_stopped,
                         render_task_scope_negotiation, render_tool_failure, QUERY_GOALS, query_goal,
-                        verified_query_goal, render_goal_coverage, scope_mismatch)
+                        verified_query_goal, render_goal_coverage, render_bank_income_comparison, scope_mismatch)
 from .persistence import ManagementIntent, ManagementTurn, ManagementProposals
 from .context import ContextBuilder, ContextLimitError, RELATIVE_PERIOD, reference_hint
 from .scheduler import BudgetPolicy, TurnExecution
@@ -519,6 +519,8 @@ class Agent:
         periods = trusted_scope.get("periods", ())
         goals = [(goal, company, *periods[0]) for company in companies] if (
             covered_turn and goal and companies and set(companies) <= {"C001", "C002"} and len(periods) == 1) else []
+        bank_comparison_requested = (goal == "bank_income" and
+                                     bool(re.search(r"比较|对比|哪家多|谁多|哪家高|差多少|相差", text)))
         if covered_turn:
             turn_tools = [tool for tool in turn_tools if tool["function"]["name"] != "set_schedule"]
 
@@ -603,6 +605,10 @@ class Agent:
                     text += "\n引用锚点未能保存，请使用明确的企业和发票号。"
                 for anchor in anchors or ():
                     text += "\n已展示引用列表 anchor:" + anchor["anchor_id"] + "；" + json.dumps(anchor,ensure_ascii=False)
+            if bank_comparison_requested:
+                compared = render_bank_income_comparison(read_results, goals)
+                if compared:
+                    text += "\n" + compared
             if self.write_receipt['status']=='CURRENT_VALUE_MATCHES':text+='\n'+self.write_receipt['message']
             self.last_response = {"source":"runtime_output", "category":category, "text":text, "operation_receipt":self.write_receipt, "trace_degraded":self.trace_degraded,"execution":execution.snapshot()}
             api={key:self.transport.counts()[key]-api_before[key] for key in api_before} if api_before is not None else None
@@ -670,7 +676,7 @@ class Agent:
                     f"本轮可核验的只读目标（类型、企业、年份、月份）：{goals}。"
                     "finance 用 get_finance_summary，bank_income 用 list_bank_transactions 或 get_finance_summary，"
                     "directory 用 list_invoice_directory 第1页，purpose_rule 用 get_applicable_rules(rule_type=purpose)。"
-                    "各企业分别查询，缺项清单不等于全部必填对象。"
+                    "各企业分别查询，缺项清单不等于全部必填对象。已取得某一企业可信结果后不要重复请求相同参数的工具。"
                     + ("查询目标核验后才可 prepare_invoice_update，目标和值只取本轮修改分句。" if mixed else "")
                     + ("只执行前置目录，序数留到下一轮，勿引用旧列表。" if deferred else "")
                     + ("这是查询范围更正，请按目标重新查询，不复用旧值。" if corrected else "")})
