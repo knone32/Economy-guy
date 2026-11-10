@@ -371,6 +371,15 @@ def render_rule_history(rows):
     ) or "该企业范围内没有此规则的历史版本。"
 
 
+def render_recent_commit(evidence):
+    audit = evidence.get("historical_commit")
+    if not audit:
+        return ""
+    field = {"purpose": "用途", "remark": "备注"}[audit["field"]]
+    result = ("当前字段与当时提交值一致。" if audit["current_matches"] else "当前字段不再与当时提交值一致，或发票已不可读取。")
+    return f"历史操作：{field}修改已提交，审计已重新核验（{audit['request_id']}）。{result}"
+
+
 def render_invoice_comparison(previous, current):
     labels = {"invoice_date": "开票日期", "seller_name": "销售方", "item_name": "项目",
               "amount": "价税合计", "purpose": "用途", "remark": "备注"}
@@ -409,6 +418,12 @@ def render_information(results):
             parts.append(f"当前适用规则 {data['rule_id']} v{data['version']}：" + display_rule_amounts(data["content"]))
         elif name == "list_rule_versions":
             parts.append(render_rule_history(data))
+        elif name == "resolve_recent_invoice":
+            history = render_recent_commit(outcome["evidence"])
+            if history:
+                parts.append(history)
+            if data:
+                parts.append("当前 SQLite 发票：" + json.dumps(data, ensure_ascii=False))
         elif name == "list_invoice_directory":
             order = (data.get("sort_by", "date"), data.get("sort_order", "asc"))
             parts.append(f"发票目录 · {DIRECTORY_SORT_LABELS[order]} · 共 {data['total']} 张 · "
@@ -508,6 +523,7 @@ def render_clarification(value):
     labels = {"company_id":"企业", "invoice_no":"发票编号", "field":"要修改的字段（用途或备注）",
               "new_value":"修改后的具体内容", "year":"年份", "month":"月份",
               "action":"具体管理动作", "task_id":"任务编号", "note":"待办的具体说明",
+              "invoice_reference":"要看的发票来源（刚查过、已修改或目录序号）",
               "key":"偏好名称", "value":"偏好的具体内容"}
     fields = list(dict.fromkeys(value["missing_fields"]))
     if fields == ["business_object"]:

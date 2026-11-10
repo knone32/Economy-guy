@@ -7,7 +7,8 @@ from dataclasses import asdict
 from datetime import date
 from . import finance, queries
 from .permissions import check_permission
-from .updates import prepare_invoice_update
+from .updates import inspect_request, prepare_invoice_update
+from .stage2_schema import open_existing
 from .rules import resolve_rule, check_missing_purpose, RuleError
 from .responses import scope_mismatch, explicit_scope
 from .tasks import list_tasks, manage_task
@@ -45,6 +46,7 @@ REGISTRY = {
     "manage_display_preference": (None, {"action":"string","value":"string"}),
     "manage_preference": (None, {"company_id":"string","action":"string","key":"string","value":"string"}),
     "resolve_invoice_reference": (None, {"company_id":"string","ordinal":"integer","anchor_id":"string"}),
+    "resolve_recent_invoice": (None, {"source": "string"}),
     "set_schedule": (None, {"goal":"string","steps":"array","stop_condition":"string"}),
 }
 TOOLS = [{"type": "function", "function": {"name": name,
@@ -56,7 +58,7 @@ TEACHING_TOOLS = TOOLS
 TOOLS = [tool for tool in TOOLS if tool["function"]["name"] in ANNUAL | {
     "get_finance_summary", "list_invoices", "list_invoice_directory", "get_invoice", "list_bank_transactions",
     "check_missing_purpose", "get_applicable_rules", "list_rule_versions", "prepare_invoice_update",
-    "list_tasks", "manage_task", "manage_preference", "manage_display_preference", "resolve_invoice_reference", "set_schedule"}]
+    "list_tasks", "manage_task", "manage_preference", "manage_display_preference", "resolve_invoice_reference", "resolve_recent_invoice", "set_schedule"}]
 DESCRIPTIONS = {
     "get_annual_finance_summary":"仅用于可信的完整年度，分别汇总发票、银行收入和银行支出。",
     "list_annual_blank_purpose":"仅用于可信的完整年度，按页列出用途字段为空的发票；不判定必填或合规。",
@@ -75,6 +77,7 @@ DESCRIPTIONS = {
     "manage_display_preference":"仅当前模拟账号的个人回复详细度；明确要求以后简洁或详细时用set，value为简洁、详细或普通；get/delete时value为空。保存需要独立可信确认。与企业偏好、权限和财务事实无关。",
     "manage_preference":"用户企业隔离的偏好CRUD；普通自然语言可提出create/update/delete候选，get/list只读。删除需明确key、value为空。所有写候选须可信CLI展示旧值/新值并确认，不能自行声称保存。",
     "resolve_invoice_reference":"仅解析用户本轮明确的第几张发票线索；必须有真实展示锚点，重新鉴权查库，无唯一对象则追问。不能自由猜序号。",
+    "resolve_recent_invoice":"只读解析用户本轮语义明确指向的近期发票来源，并重新鉴权读取当前值。modified 指已核验的实际提交，queried 指已核验的详情查询。来源不明先追问。",
     "set_schedule":"仅真正多步依赖时提出本轮粗计划；不是长期任务或授权。再次调用为一次显式重规划，不创造进展或预算。简单查询直接调用业务工具。",
 }
 PARAMETERS = {"company_id":"企业编号，例如C001；不能凭空猜测。", "year":"明确的业务年份。",
@@ -85,6 +88,7 @@ PARAMETERS = {"company_id":"企业编号，例如C001；不能凭空猜测。", 
               "action":"该管理工具支持的操作名称。", "task_id":"已有任务ID；create使用空字符串。",
               "note":"用户明确的简短后续待办说明，优先保留原话；不扩写发票清单、规则解释或步骤计划；具体内容仍需可信确认，不接受模型声称完成作为证据。",
               "key":"偏好名称；list时为空。", "value":"用户明确的偏好内容；查询/删除时为空。",
+              "source":"近期发票的可信来源，不能自行填企业、发票号或审计编号。",
               "ordinal":"用户明确的展示序号，从1开始。", "anchor_id":"已展示anchor编号；唯一列表时可为空，不能自行编造。",
               "goal":"本轮用户目标描述，不是执行证据。","steps":"必要工具步骤及依赖，不拆分SQL/事务等内部操作。",
               "stop_condition":"目标证据齐全或等待用户/确认/拒绝时停止的描述；不能扩大运行时硬限。"}
@@ -95,6 +99,8 @@ for tool in TOOLS:
         if tool["function"]["name"] == "list_invoice_directory" and key in {"year", "month"}:
             schema["description"] += " 年度目录只将月份设为0；全账簿目录年份和月份都设为0。"
 for tool in TOOLS:
+    if tool["function"]["name"] == "resolve_recent_invoice":
+        tool["function"]["parameters"]["properties"]["source"]["enum"] = ["modified", "queried"]
     if tool["function"]["name"] == "list_invoice_directory":
         for key, choices in DIRECTORY_SORT_FIELDS.items():
             tool["function"]["parameters"]["properties"][key]["enum"] = list(choices)
@@ -311,7 +317,7 @@ def annual_amount_rule(connection, user_id, company_id, year):
     return asdict(decisions[0])
 
 
-def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allowed_tools=None, expected_scope=None, management_intent=None, reference_context=None, execution=None, management_confirmation=None, management_proposals=None,provenance=None,display_preference=None):
+def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allowed_tools=None, expected_scope=None, management_intent=None, reference_context=None, execution=None, management_confirmation=None, management_proposals=None,provenance=None,display_preference=None,recent_context=None):
     """严格按 Schema 校验，身份仅取可信 Session，并复用业务函数。"""
     try:
         if not isinstance(name, str) or name not in REGISTRY:
@@ -323,6 +329,50 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
         directory_sort = provenance.directory_sort if isinstance(provenance, ScopeProof) and provenance.actor == user_id else None
         args = validate_arguments(name, raw_arguments, directory_sort=directory_sort)
         function = REGISTRY[name][0]
+        if name == "resolve_recent_invoice":
+            if execution:
+                rejection = execution.guard(name, args)
+                if rejection:
+                    return rejection
+            if (not recent_context or recent_context["actor"] != user_id
+                    or Path(recent_context["workbook"]).resolve() != Path(db_path).resolve()):
+                return tool_result("DENIED", error="近期对象不属于当前用户或账簿")
+            candidate = recent_context["candidates"].get(args["source"])
+            if not candidate:
+                return tool_result("AMBIGUOUS", error="本对话没有该来源的唯一可信发票",
+                                   evidence={"missing_fields": ["invoice_reference"]})
+            key = {field: candidate[field] for field in ("company_id", "invoice_no")}
+            explicit = recent_context["explicit"]
+            if scope_mismatch(explicit, key):
+                return tool_result("SCOPE_MISMATCH", error="近期对象与本轮明确目标冲突")
+            trusted_key = {field: [value] for field, value in key.items()}
+            proof = ScopeProof(user_id, trusted_key, dict.fromkeys(trusted_key, "trusted_reference"))
+            rejection = validate_scope(proof, user_id, "get_invoice", key)
+            if rejection:
+                return tool_result(**rejection)
+            with closing(open_existing(db_path, readonly=True)) as connection:
+                connection.execute("BEGIN")
+                if not check_permission(connection, user_id, key["company_id"], "read").allowed:
+                    return tool_result("DENIED", error="没有读取该发票的权限")
+                current = queries.get_invoice(connection, user_id, **key) if args["source"] == "queried" else None
+            evidence = {"source": "current_sqlite", "scope": key, "reference_source": args["source"]}
+            if args["source"] == "modified":
+                checked = inspect_request(db_path, user_id, candidate["request_id"])
+                if checked["status"] != "COMMITTED":
+                    return tool_result(checked["status"], error="无法重新核实本用户的历史提交")
+                audit = checked["data"]["historical_commit"]
+                if any(audit.get(field) != value for field, value in key.items()):
+                    return tool_result("SCOPE_MISMATCH", error="历史审计与可信发票目标不一致")
+                current = checked["data"]["current_invoice"]
+                evidence["historical_commit"] = {"request_id": candidate["request_id"], "field": audit["field"],
+                                                  "current_matches": checked["data"]["current_matches"]}
+            if current is not None:
+                day = date.fromisoformat(current["invoice_date"])
+                scope = {**key, "year": day.year, "month": day.month}
+                if scope_mismatch(explicit, scope):
+                    return tool_result("SCOPE_MISMATCH", error="当前发票不在本轮明确账期内")
+                evidence["scope"] = scope
+            return tool_result("SUCCESS" if current is not None else "NO_DATA", current, evidence)
         if name=="set_schedule":
             return _set_schedule(args,user_id,db_path,execution,permitted,update_session,expected_scope,management_intent,management_proposals,provenance)
         if name == "manage_display_preference":

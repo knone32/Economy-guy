@@ -23,7 +23,7 @@ from .model_config import ModelConnection, ProfileError, load_profiles, resolve_
 from .persistence import ManagementIntent, ManagementTurn, confirm_management
 from .queries import QueryError, available_periods, get_invoice, invoice_directory
 from .responses import (DIRECTORY_SORT_LABELS, display_rule_amounts, explicit_scope, needs_progress_evidence,
-                        render_goal_coverage, render_rule_history, render_scope, scope_key)
+                        render_goal_coverage, render_recent_commit, render_rule_history, render_scope, scope_key)
 from .rules import RuleError, check_missing_purpose
 from .session_store import workbook_identity
 from .stage2_schema import open_existing
@@ -974,6 +974,10 @@ class AgentWorkspace(ConversationUI, App):
                                           for row in data) or "没有符合条件的银行流水。")
         if tool == "list_rule_versions":
             return ("规则版本", render_rule_history(data))
+        if tool == "resolve_recent_invoice":
+            history = render_recent_commit(evidence)
+            current = AgentWorkspace.invoice_text(data) if data else "当前账簿已找不到该发票。"
+            return ("近期发票核验", "\n".join(filter(None, (history, "当前 SQLite 发票\n" + current))))
         if not isinstance(data, dict):
             return None
         if tool in {"get_finance_summary", "get_annual_finance_summary"}:

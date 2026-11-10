@@ -62,6 +62,7 @@ class ContextBuilder:
         self.diagnostics = []
         self.references_blocked = False
         self.prior_query_tools = []
+        self.recent_invoice_query = None
         self.annual_focus = None
         self.display_ids = None
         self.restored_turns = []
@@ -254,6 +255,38 @@ class ContextBuilder:
         self.references_blocked = False
         return anchors
 
+    def recent_invoice_candidates(self, events):
+        candidates = {}
+        if self.recent_invoice_query:
+            candidates["queried"] = self.recent_invoice_query
+        if events:
+            event = events[-1]
+            receipt = event["receipt"]
+            if receipt["status"] == "COMMITTED" and receipt["readback_verified"]:
+                audit = receipt["data"]["data"]["historical_commit"]
+                if audit["actor"] == self.user_id and audit["request_id"] == event["request_id"]:
+                    candidates["modified"] = {key: audit[key] for key in ("company_id", "invoice_no", "request_id")}
+        if not candidates:
+            return {}
+        try:
+            with closing(open_existing(self.db_path, readonly=True)) as connection:
+                return {source: candidate for source, candidate in candidates.items()
+                        if check_permission(connection, self.user_id, candidate["company_id"], "read").allowed}
+        except sqlite3.Error:
+            return {}
+
+    def remember_invoice_query(self, results):
+        """Keep only the joint key of the latest unique verified detail query."""
+        if any(name == "resolve_recent_invoice" and outcome["ok"] for name, outcome in results):
+            return  # A recent-object lookup does not replace the separate query source.
+        keys = {(scope["company_id"], scope["invoice_no"]) for name, outcome in results
+                if name in {"get_invoice", "resolve_invoice_reference"} and outcome["status"] == "SUCCESS"
+                and outcome["evidence"].get("source") == "current_sqlite"
+                and {"company_id", "invoice_no"} <= (scope := outcome["evidence"].get("scope", {})).keys()}
+        if keys:
+            self.recent_invoice_query = (dict(zip(("company_id", "invoice_no"), next(iter(keys))))
+                                         if len(keys) == 1 else None)
+
     def explanation_facts(self, results, explicit, *, historical=False):
         """Select verified evidence for explanation, without extending scope or authorizing writes."""
         bank_read = False
@@ -329,7 +362,7 @@ class ContextBuilder:
         return data
 
     def build(self,messages,history_event=None,reference=None,execution=None,measure=None,read_workspace=None,
-              explanation_facts=None, previous_directory=None):
+              explanation_facts=None, previous_directory=None, recent_invoices=None):
         """以序列化消息字符数限长；保留本轮整段及tool_call_id配对，旧轮整段取舍。"""
         size = measure or (lambda value: len(json.dumps(value,ensure_ascii=False)))
         last_user = max((i for i,m in enumerate(messages) if m["role"]=="user"),default=len(messages))
@@ -346,6 +379,12 @@ class ContextBuilder:
         data_origins = data["origins"]
         if read_workspace:
             data["read_workspace"] = {"scope": read_workspace, "usage": "仅供本轮只读查询，用户明确要求优先，不授予任何写入权限。"}
+        if recent_invoices:
+            data["recent_invoices"] = {
+                source: {key: candidate[key] for key in ("company_id", "invoice_no")}
+                for source, candidate in recent_invoices.items()
+            }
+            data_origins["recent_invoices"] = "runtime.verified_invoice_events"
         if previous_directory:
             data["previous_invoice_directory"] = previous_directory
             data_origins["previous_invoice_directory"] = "runtime.verified_directory_read"
@@ -353,7 +392,7 @@ class ContextBuilder:
             data["explanation_facts"] = explanation_facts
             data_origins["explanation_facts"] = "runtime.verified_read_results"
         extras = [{"role":"user","name":"context_data","content":json.dumps(data,ensure_ascii=False)}] if (
-            self.scope or read_workspace or explanation_facts or previous_directory or data.get("references") or data.get("personal_display")) else []
+            self.scope or read_workspace or explanation_facts or previous_directory or recent_invoices or data.get("references") or data.get("personal_display")) else []
         if self.restored_turns and self.history_start == 1:
             extras.append({"role":"assistant","name":"harness_history","content":json.dumps({
                 "source":"local_session","historical":True,
@@ -370,8 +409,8 @@ class ContextBuilder:
                 selected = candidate
                 sources.append(extra["name"])
             else:
-                if extra["name"] == "context_data" and (read_workspace or explanation_facts or previous_directory):
-                    essential = {key: data[key] for key in ("read_workspace", "explanation_facts", "previous_invoice_directory")
+                if extra["name"] == "context_data" and (read_workspace or explanation_facts or previous_directory or recent_invoices):
+                    essential = {key: data[key] for key in ("read_workspace", "explanation_facts", "previous_invoice_directory", "recent_invoices")
                                  if key in data}
                     minimal = {**extra, "content": json.dumps(essential, ensure_ascii=False)}
                     candidate = [selected[0],minimal,*selected[1:]]
