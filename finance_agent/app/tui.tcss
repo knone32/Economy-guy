@@ -54,7 +54,8 @@ SelectOverlay > .option-list--option-highlighted {
 #business-title { height: 1; color: $accent; text-style: bold; }
 #chat-log, #business-log { height: 1fr; min-height: 1; overflow-x: hidden; scrollbar-size-vertical: 1; padding-top: 1; }
 #toggle-business { display: none; }
-#chat.compact-chat #toggle-business { display: block; }
+#terminal-width-note { display: none; height: auto; color: $danger; text-style: bold; }
+#chat.compact-chat #toggle-business, #chat.compact-chat #terminal-width-note { display: block; }
 #chat.compact-chat #chat-main { min-width: 1; }
 #chat.compact-chat #business-pane { display: none; width: 1fr; }
 #chat.compact-chat.business-only #chat-main { display: none; }

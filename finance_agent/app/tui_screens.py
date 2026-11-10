@@ -49,6 +49,47 @@ class Dialog(ModalScreen):
         self.dismiss(None)
 
 
+class TerminalWidthNotice(Dialog):
+    def __init__(self, width, recommended):
+        super().__init__()
+        self.width, self.recommended = width, recommended
+
+    def width_message(self, *, rechecked=False):
+        prefix = "复查后仍为" if rechecked else "当前终端为"
+        return f"{prefix} {self.width} 列，建议至少 {self.recommended} 列。"
+
+    def compose(self):
+        with VerticalScroll():
+            yield Label("终端宽度不足", classes="dialog-title")
+            yield Static(self.width_message(), id="width-check-result", classes="field-hint", markup=False)
+            yield Static(
+                "紧凑模式会隐藏右侧的业务查询结果和历史。请最大化当前 PowerShell、CMD 或 Windows Terminal 窗口，"
+                "也可手动拉宽。\n继续使用紧凑模式时，点击「查看业务历史」即可查看结果。",
+                classes="field-hint", markup=False,
+            )
+            yield TextAction("已调整窗口", id="recheck-width", variant="primary")
+            yield TextAction("继续使用紧凑模式", id="keep-compact")
+
+    def on_mount(self):
+        self.call_after_refresh(self.check_width)
+
+    def check_width(self, *, rechecked=False):
+        if self.app.screen is not self:
+            return
+        self.width = self.app.size.width
+        if self.width >= self.recommended:
+            self.dismiss(None)
+        else:
+            self.query_one("#width-check-result", Static).update(self.width_message(rechecked=rechecked))
+
+    @on(Button.Pressed)
+    def pressed(self, event):
+        if event.button.id == "recheck-width":
+            self.check_width(rechecked=True)
+        elif event.button.id == "keep-compact":
+            self.dismiss(None)
+
+
 class Approval(Dialog):
     BINDINGS = [Binding("pageup", "scroll_preview('up')", show=False),
                 Binding("pagedown", "scroll_preview('down')", show=False)]
