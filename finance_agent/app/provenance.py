@@ -4,7 +4,7 @@ from copy import deepcopy
 
 SOURCES={'user_current','session_confirmed','trusted_reference','current_sqlite'}
 MONTHLY={'get_finance_summary','summary','list_invoices','list_bank_transactions',
-         'invoice_total','bank_income_total','bank_expense_total','check_missing_purpose','get_applicable_rules'}
+         'invoice_total','bank_income_total','bank_expense_total','check_missing_purpose','get_applicable_rules','count_invoice_fields'}
 
 ANNUAL = {"get_annual_finance_summary", "list_annual_blank_purpose", "list_annual_bank_income"}
 

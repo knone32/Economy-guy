@@ -34,6 +34,7 @@ REGISTRY = {
     "summary": (None, MONTH),
     "get_finance_summary": (finance.get_finance_summary, MONTH),
     "check_missing_purpose": (check_missing_purpose, MONTH),
+    "count_invoice_fields": (None, {**MONTH, "selector": "string"}),
     "get_annual_finance_summary": (finance.get_annual_finance_summary, YEAR),
     "list_annual_blank_purpose": (queries.list_annual_blank_purpose, {**YEAR, "page": "integer"}),
     "list_annual_bank_income": (queries.list_annual_bank_income, {**YEAR, "page": "integer"}),
@@ -58,7 +59,7 @@ TOOLS = [{"type": "function", "function": {"name": name,
 TEACHING_TOOLS = TOOLS
 TOOLS = [tool for tool in TOOLS if tool["function"]["name"] in ANNUAL | {
     "get_finance_summary", "list_invoices", "list_invoice_directory", "get_invoice", "list_bank_transactions",
-    "check_missing_purpose", "get_applicable_rules", "list_rule_versions", "prepare_invoice_update",
+    "check_missing_purpose", "count_invoice_fields", "get_applicable_rules", "list_rule_versions", "prepare_invoice_update",
     "list_tasks", "manage_task", "manage_preference", "manage_display_preference", "resolve_invoice_reference", "resolve_recent_invoice", "propose_invoice_edit", "set_schedule"}]
 DESCRIPTIONS = {
     "get_annual_finance_summary":"仅用于可信的完整年度，分别汇总发票、银行收入和银行支出。",
@@ -69,7 +70,8 @@ DESCRIPTIONS = {
     "list_invoice_directory":"按企业和账期重新读取、排序并分页，每页10条。年度用year及month=0；全账簿用year=0、month=0；月度传完整年月。未指定方向时升序，未指定字段时按日期。",
     "get_invoice":"企业编号和发票号联合定位当前发票，不猜测模糊指代。",
     "list_bank_transactions":"查询指定企业年月的银行流水，只读，不推断发票已付款。",
-    "check_missing_purpose":"用户问哪些发票用途未填写、还剩多少缺项时，使用本工具。采用可信只读账期或当前明确范围，按有效规则返回实际缺项和发票编号；不要改为财务汇总。备注不代替用途。",
+    "count_invoice_fields":"按明确企业及月份统计发票数量。可统计有备注、空备注、空用途或按有效规则必填用途缺失。普通空值与规则缺项是不同条件。",
+    "check_missing_purpose":"用户问哪些发票按规则必填用途但仍缺失时，使用本工具。采用可信只读账期或当前明确范围，按有效规则返回实际缺项和发票编号；不要改为财务汇总。备注不代替用途。",
     "get_applicable_rules":"按企业、业务日期和规则类型获取唯一启用依据。R001对应amount，R002/R003对应purpose，R004对应bank。查询旧版是否仍适用也使用其规则类型，不用金额汇总规则替代用途门槛规则；不提供管理权限。",
     "prepare_invoice_update":"只生成用途/备注草稿，展示旧值，不保存；必须等待可信CLI最终确认。",
     "propose_invoice_edit":"仅提出最近唯一可信发票的口语化修改候选。source选queried或modified，field只选purpose或remark，new_value必须为用户本轮明确指定的原文。Harness独立验证后才允许Prepare；无数据库写权限。",
@@ -101,6 +103,10 @@ for tool in TOOLS:
         if tool["function"]["name"] == "list_invoice_directory" and key in {"year", "month"}:
             schema["description"] += " 年度目录只将月份设为0；全账簿目录年份和月份都设为0。"
 for tool in TOOLS:
+    if tool["function"]["name"] == "count_invoice_fields":
+        selector = tool["function"]["parameters"]["properties"]["selector"]
+        selector["enum"] = list(queries.INVOICE_FIELD_LABELS)
+        selector["description"] = "；".join(f"{key}：{label}" for key, label in queries.INVOICE_FIELD_LABELS.items())
     if tool["function"]["name"] == "resolve_recent_invoice":
         tool["function"]["parameters"]["properties"]["source"]["enum"] = ["modified", "queried"]
     if tool["function"]["name"] == "list_invoice_directory":
@@ -576,6 +582,17 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
             if name == "get_applicable_rules":
                 decision = resolve_rule(connection, user_id, **args)
                 return tool_result("SUCCESS", asdict(decision), {"rule":asdict(decision),"scope":actual_scope,"source":"current_sqlite"})
+            if name == "count_invoice_fields":
+                selector = args["selector"]
+                scope = {key: args[key] for key in MONTH}
+                evidence = {"scope": scope, "source": "current_sqlite"}
+                if selector == "required_purpose_missing":
+                    checked = check_missing_purpose(connection, user_id, **scope)
+                    count = checked["count"]
+                    evidence["rule"] = checked["rule"]
+                else:
+                    count = queries.filter_monthly_invoices(connection, user_id, **args)
+                return tool_result("SUCCESS", {"selector": selector, "count": count}, evidence)
             if name == "check_missing_purpose":
                 data = check_missing_purpose(connection, user_id, **args)
                 return tool_result("SUCCESS", data, {"rule":data["rule"], "source":"current_sqlite", "scope":args})

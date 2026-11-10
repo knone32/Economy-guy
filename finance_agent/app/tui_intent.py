@@ -71,6 +71,53 @@ def quoted_edit_candidate(text):
     return {"field": fields.pop(), "new_value": value}
 
 
+_BATCH_EDIT = re.compile(
+    rf"^(?:(?:请帮我|帮我|麻烦|请)\s*)?(?:把|将)\s*(?P<company>{_COMPANY}|[甲乙]公司)\s*"
+    r"(?P<period>\d{4}\s*(?:年\s*\d{1,2}\s*月|[-/]\s*\d{1,2}))\s*(?:的\s*)?"
+    r"(?P<selector>用途为空|备注为空|有备注|必填用途缺失)\s*的\s*(?:(?P<all_before>所有)\s*)?发票"
+    r"(?:\s*的?\s*(?P<field>用途|备注))?\s*(?P<all_after>全部|都|统一|批量)?\s*"
+    r"(?:修改为|改成|改为|填成|填为|设置为)\s*(?P<value>.+)$", re.I,
+)
+_BATCH_MODES = {
+    "逐项确认": "item", "逐张确认": "item", "一张张让我确认": "item",
+    "整批确认": "batch", "一次确认": "batch", "一次确认后自动处理": "auto", "自动连续处理": "auto",
+}
+_BATCH_SELECTORS = {
+    "用途为空": "purpose_blank", "备注为空": "remark_blank", "有备注": "remark_present",
+    "必填用途缺失": "required_purpose_missing",
+}
+
+
+def batch_edit_request(text):
+    """Return an explicit fixed-filter request, an invalid-request marker, or None."""
+    text = text.strip().rstrip("。！!").strip()
+    match = _BATCH_EDIT.fullmatch(text)
+    if not match:
+        return None
+    scope = explicit_scope(match["company"] + " " + match["period"], include_update_aliases=True)
+    if len(scope.get("company_id", ())) != 1 or len(scope.get("periods", ())) != 1:
+        return {}
+    mode_suffix = re.search(r"[，,]\s*(" + "|".join(_BATCH_MODES) + r")$", match["value"])
+    mode = _BATCH_MODES[mode_suffix[1]] if mode_suffix else "item"
+    if not (match["all_before"] or match["all_after"]):
+        return {}
+    value = (match["value"][:mode_suffix.start()] if mode_suffix else match["value"]).strip()
+    if not re.fullmatch(r'“[^”]+”|"[^"]+"|[^“”"，,。！？?；;\r\n]+', value):
+        return {}
+    if not value.startswith(("“", '"')) and re.search(
+            r"(?:不用|无需|不必|跳过).{0,14}确认|(?:并且|并|然后|再)\s*(?:把|将|修改|更正|更新|清空|查询)", value):
+        return {}
+    values = literal_value(value)
+    if not values:
+        return {}
+    selector = _BATCH_SELECTORS[match["selector"]]
+    field = match["field"] or ("备注" if selector.startswith("remark") else "用途")
+    year, month = scope["periods"][0]
+    return {"company_id": scope["company_id"][0], "year": year, "month": month,
+            "selector": selector, "field": "remark" if field == "备注" else "purpose",
+            "new_value": values[0], "mode": mode}
+
+
 def edit_turn(text, pending, *, guided=False):
     text = text.strip().rstrip("。！!").strip()
     if pending and _CANCEL.fullmatch(text):

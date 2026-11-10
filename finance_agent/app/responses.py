@@ -3,6 +3,8 @@ import json
 import re
 from decimal import Decimal, InvalidOperation
 
+from .queries import INVOICE_FIELD_LABELS
+
 
 def parse_final(content):
     """只接收信息/追问信封，不接受模型提供操作成功状态。"""
@@ -494,6 +496,10 @@ def render_invoice_comparison(previous, current):
     return f"已重新读取 {first} 与 {second}。\n" + ("\n".join(differences) or "所列发票字段一致。")
 
 
+def render_invoice_field_count(data):
+    return f"{INVOICE_FIELD_LABELS[data['selector']]}的发票共 {data['count']} 张。"
+
+
 def render_information(results):
     """保留执行摘要，从本轮真实证据按结构化范围合并说明。"""
     parts = []
@@ -533,6 +539,8 @@ def render_information(results):
             parts.append(f"发票目录 · {DIRECTORY_SORT_LABELS[order]} · 共 {data['total']} 张 · "
                          f"第 {data['page']} 页 · 每页 {data['page_size']} 张。")
             parts.append(json.dumps(data["rows"], ensure_ascii=False))
+        elif name == "count_invoice_fields":
+            parts.append(render_invoice_field_count(data))
         elif name == "list_annual_blank_purpose":
             parts.append(f"全年用途字段为空的发票共 {data['total']} 张（仅检查字段值）。"
                          + f"第 {data['page']} 页：" + "、".join(row["invoice_no"] for row in data["rows"]))

@@ -58,10 +58,10 @@ class Approval(Dialog):
         else:
             content.scroll_page_down(animate=False)
 
-    def __init__(self, title, body, action, *, cancel="取消", danger=False):
+    def __init__(self, title, body, action, *, cancel="取消", danger=False, skip=False):
         super().__init__()
         self.title_text, self.body, self.action_text = title, body, action
-        self.cancel_text, self.danger = cancel, danger
+        self.cancel_text, self.danger, self.skip = cancel, danger, skip
         self.resolved = False
 
     def compose(self):
@@ -81,6 +81,8 @@ class Approval(Dialog):
                 yield Static(body, markup=False)
             with Horizontal(classes="dialog-actions"):
                 yield TextAction(self.cancel_text, id="cancel")
+                if self.skip:
+                    yield TextAction("跳过", id="skip")
                 yield TextAction(self.action_text, id="approve", variant="error" if self.danger else "primary")
 
     def on_mount(self):
@@ -98,7 +100,8 @@ class Approval(Dialog):
 
     @on(Button.Pressed)
     def pressed(self, event):
-        self.answer(event.button.id == "approve")
+        key = event.button.id
+        self.answer("skip" if key == "skip" else key == "approve")
 
 
 class Choices(Dialog):

@@ -19,17 +19,19 @@ from textual.worker import get_current_worker
 from .agent import Agent
 from .cli_chat import safe_text, turn_tools
 from .cli_workspaces import company_access, invoice_history, missing_migrations, workspace_users
+from .invoice_batch import run_invoice_batch
 from .model_config import ModelConnection, ProfileError, load_profiles, resolve_connection
 from .persistence import ManagementIntent, ManagementTurn, confirm_management, task_note_from_request
 from .queries import QueryError, available_periods, get_invoice, invoice_directory
 from .responses import (DIRECTORY_SORT_LABELS, display_rule_amounts, explicit_scope, needs_progress_evidence,
-                        render_goal_coverage, render_recent_commit, render_rule_history, render_scope, scope_key)
+                        render_goal_coverage, render_invoice_field_count, render_recent_commit,
+                        render_rule_history, render_scope, scope_key)
 from .rules import RuleError, check_missing_purpose
 from .session_store import workbook_identity
 from .stage2_schema import open_existing
 from .tasks import list_tasks, manage_task, task_details
 from .trace import redact
-from .tui_intent import edit_turn
+from .tui_intent import batch_edit_request, edit_turn
 from .tui_local import profile_choice_path, read_profile_choice, remember_profile_choice, remember_workbook, startup_workbook
 from .tui_sessions import ConversationUI, query_scopes
 from .tui_screens import Approval, Choices, Login, Settings, TaskNote, TextAction
@@ -823,7 +825,13 @@ class AgentWorkspace(ConversationUI, App):
             except (OSError, ValueError, sqlite3.Error):
                 self.note("工作库身份或会话存储已变化，请重新打开。")
                 return
-        args = edit_turn(message, self.agent.pending_edit, guided=self.supplement)
+        batch = batch_edit_request(message)
+        if batch == {}:
+            self.note("请明确一个企业、年月、筛选、全部匹配项及完整新值。新值含标点时请用引号包住。")
+            return
+        if batch and not self.can_change_conversation():
+            return
+        args = {} if batch else edit_turn(message, self.agent.pending_edit, guided=self.supplement)
         if args.pop("cancel", False):
             event.input.value = ""
             self.action_cancel_edit()
@@ -843,6 +851,9 @@ class AgentWorkspace(ConversationUI, App):
         self.note("正在处理，请稍候。")
         self.supplement = False
         self.workspace_widget("#supplement", Button).display = False
+        if batch:
+            self.run_batch(message, batch)
+            return
         scope = self.read_workspace or self.resume_focus
         if self.resume_focus and any(word in message for word in ("刚才","上一轮")):
             scope = self.resume_focus
@@ -851,6 +862,9 @@ class AgentWorkspace(ConversationUI, App):
         self.run_turn(message, args, scope)
 
     def wait_confirmation(self, title, body, action, *, danger=False):
+        return self.wait_approval(lambda: Approval(title, body, action, danger=danger)) is True
+
+    def wait_approval(self, make_screen):
         """Let the worker wait for the modal while the terminal stays responsive."""
         answer = Future()
         epoch = self.session_epoch
@@ -858,9 +872,9 @@ class AgentWorkspace(ConversationUI, App):
         def present():
             def resolve(yes):
                 if not answer.done():
-                    answer.set_result(yes is True and epoch == self.session_epoch)
+                    answer.set_result(yes if epoch == self.session_epoch else None)
             self.note("等待确认。")
-            self.push_screen(Approval(title, body, action, danger=danger), resolve)
+            self.push_screen(make_screen(), resolve)
 
         self.call_from_thread(present)
         worker = get_current_worker()
@@ -869,7 +883,39 @@ class AgentWorkspace(ConversationUI, App):
                 return answer.result(timeout=0.2)
             except TimeoutError:
                 pass
-        return False
+        return None
+
+    @work(thread=True, group="agent", exit_on_error=False)
+    def run_batch(self, message, request):
+        def approve_batch(body, mode):
+            title = "授权后自动连续处理" if mode == "auto" else "确认整批发票修改"
+            return self.wait_confirmation(title, body, "确认整批")
+
+        def approve_item(body):
+            answer = self.wait_approval(
+                lambda: Approval("逐张确认发票修改", body, "确认本张", cancel="终止", skip=True))
+            return "confirm" if answer is True else answer
+
+        def checkpoint(request_id):
+            if get_current_worker().is_cancelled or not self.is_running:
+                raise ValueError("批量处理已结束")
+            if self.conversation and self.turn_seq is not None:
+                self.conversation.checkpoint(self.turn_seq, request_id)
+
+        try:
+            status, summary = run_invoice_batch(self.agent, message, request, approve_batch=approve_batch,
+                                                approve_item=approve_item, checkpoint=checkpoint)
+        except Exception:
+            status, summary = "ERROR", "无法完成批量处理。请查看执行记录和发票修改审计。"
+        if self.is_running:
+            self.call_from_thread(self.finish_batch, status, summary)
+
+    def finish_batch(self, status, summary):
+        self.chat_message("业务回执", summary)
+        self.records.append((status, [], ""))
+        self.save_turn([], status, False)
+        self.note(status_label(status))
+        self.unlock()
 
     def confirm_management(self, proposal):
         if redact(proposal) != proposal:
@@ -987,6 +1033,8 @@ class AgentWorkspace(ConversationUI, App):
                                          ("银行支出", "bank_expense", "条"))))
         if tool in {"get_invoice", "resolve_invoice_reference"} and data:
             return ("发票详情", AgentWorkspace.invoice_text(data))
+        if tool == "count_invoice_fields":
+            return ("发票字段统计", render_invoice_field_count(data))
         if tool == "list_annual_blank_purpose":
             lines = "\n".join(f"{r['invoice_date']}　{r['invoice_no']}" for r in data["rows"])
             return ("年度用途空值", f"共 {data['total']} 张 · 第 {data['page']} 页 · 仅检查字段值\n" + lines)

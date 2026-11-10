@@ -28,7 +28,7 @@ SYSTEM = """你是财税助手。甲企业=C001，乙企业=C002。需要业务�
 企业、年份、月份缺失且对话没有明确依据时先追问，不默认当前月份。不能改变身份。
 用户只补充企业或年月时，应继续最近未完成的查询目标，不能把原目标缩减成明细。
 context_data的prior_query_tools只是历史查询类型线索：当前轮仅更正范围时可延续查询目标，不能继承旧金额、范围或修改许可。
-需要核查指定月份的用途合规缺项时调用check_missing_purpose，不能用财务汇总替代。context_data.read_workspace.scope中的唯一企业及完整年月可直接用于只读查询，无需再次追问；当前明确要求优先。
+指定月份的备注或用途字段数量用count_invoice_fields；空字段不等于规则缺项。核查用途合规缺项明细用check_missing_purpose，不能用财务汇总替代。context_data.read_workspace.scope中的唯一企业及完整年月可直接用于只读查询，无需再次追问；当前明确要求优先。
 完整年度或可信工作区 annual_year 可用于本轮及未更正范围的后续只读查询。目录/所有发票用 list_invoice_directory（可信年份、month=0），不能用汇总代替目录。
 用 list_annual_bank_income 分页查年度银行收入流水，用 get_annual_finance_summary 查年度合计，用 list_annual_blank_purpose 查年度用途空值。
 对象混淆（例如“银行收入发票”）时，追问 missing_fields=["business_object"]，不要推测流水与发票的关系，不重复询问已确认范围。

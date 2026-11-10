@@ -64,6 +64,35 @@ _INVOICE_ORDER = {
 PURPOSE_WHITESPACE = "".join(chr(code) for code in range(0x3001) if chr(code).isspace())
 
 
+INVOICE_FIELD_LABELS = {
+    "remark_present": "有备注",
+    "remark_blank": "备注为空",
+    "purpose_blank": "用途为空（仅检查字段值）",
+    "required_purpose_missing": "必填用途缺失",
+}
+_FIELD_FILTERS = {
+    "remark_present": "trim(coalesce(remark,''),?)<>''",
+    "remark_blank": "trim(coalesce(remark,''),?)=''",
+    "purpose_blank": "trim(coalesce(purpose,''),?)=''",
+}
+
+
+def filter_monthly_invoices(connection, user_id, company_id, year, month, selector, *, limit=None):
+    """Count matching fields, or snapshot a bounded set for trusted batch editing."""
+    _authorize(connection, user_id, company_id)
+    prefix = _check_month(year, month)
+    predicate = _FIELD_FILTERS.get(selector)
+    if predicate is None:
+        raise QueryError("不支持此发票字段筛选")
+    where = f"company_id=? AND invoice_date LIKE ? AND {predicate}"
+    values = (company_id, prefix + "-%", PURPOSE_WHITESPACE)
+    if limit is None:
+        return connection.execute(f"SELECT count(*) FROM invoices WHERE {where}", values).fetchone()[0]
+    return list(connection.execute(
+        f"""SELECT invoice_no, purpose, remark FROM invoices WHERE {where}
+              ORDER BY invoice_date, invoice_no LIMIT ?""", (*values, limit)))
+
+
 def invoice_directory(connection, user_id, company_id, year, month, page, sort_by="date", sort_order="asc"):
     """A stable, bounded invoice directory with a count from the same transaction."""
     _authorize(connection, user_id, company_id)
