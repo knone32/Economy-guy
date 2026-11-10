@@ -13,7 +13,8 @@ from .provenance import SOURCES, ScopeProof
 from .business_sql import BusinessSQL, BusinessSQLError, TABLES as SQL_TABLES
 from .tui_intent import invoice_intent_source, invoice_supplement
 from .invoice_batch import plan_invoice_change
-from .responses import (explicit_scope, parse_final, render_information, render_query_conclusion, render_clarification,
+from .responses import (DIRECTORY_INLINE_LIMIT, directory_complete, directory_count_only, directory_display_pages, explicit_scope,
+                        parse_final, render_information, render_query_conclusion, render_clarification,
                         render_explanation_evidence, render_grounded_explanation, render_invoice_comparison, render_reference_error, render_stopped,
                         render_task_scope_negotiation, render_tool_failure, QUERY_GOALS, query_goal,
                         verified_query_goal, render_goal_coverage, render_bank_income_comparison, render_hypothetical_purpose_rules, scope_mismatch)
@@ -45,7 +46,7 @@ context_data的prior_query_tools只是历史查询类型线索：当前轮仅更
 对象混淆（例如“银行收入发票”）时，追问 missing_fields=["business_object"]，不要推测流水与发票的关系，不重复询问已确认范围。
 规则旧版、停用状态和版本差异用 list_rule_versions；当前适用性用 get_applicable_rules。
 年度空值不是规则合规判断；不得猜年份、拆成任意月份或把 2026-09 的必填规则扩展到全年。
-银行流水和发票没有可靠的逐条关联，不能凭流水推断某张发票是否付款。
+银行流水和发票没有可靠的逐条关联，不能凭流水推断某张发票是否付款。只有用户问到付款、回款或发票与流水的关联时才解释这一点。
 用户要求全年用途待办时，可先查全年字段空值；不能替用户改成9月。待办建议需要用户下一轮明确同意具体企业、年月和动作，再按原流程请求可信确认。
 发票与银行收支的综合概览使用get_finance_summary，一次取得价税合计/数量、收入/支出/条数及R001；
 单企业普通发票目录和分页用 list_invoice_directory，由数据库先排序再分页。跨企业合并排序、多字段复合排序及其他复杂组合用 query_business_sql。规则定义的完整用途缺项用 check_missing_purpose。只读证据足够时直接回答，不重复相同查询。
@@ -361,8 +362,9 @@ class Agent:
         write_verified = write_expected and (
             operation["status"] == "CURRENT_VALUE_MATCHES"
             or (operation["status"] in {"COMMITTED", "NO_CHANGE"} and operation.get("readback_verified")))
-        reads_verified = (coverage and not coverage["unknown"] and not coverage["deferred"]
-                          and all(state == "VERIFIED" for _, _, state in coverage["reads"]))
+        reads_verified = response.get("single_query_verified") or (
+            coverage and not coverage["unknown"] and not coverage["deferred"]
+            and all(state == "VERIFIED" for _, _, state in coverage["reads"]))
         business_failure = stop in {"DENIED", "SCOPE_MISMATCH", "ERROR", "INVALID_ARGUMENTS", "RULE_CONFLICT",
                                     "NO_APPLICABLE_RULE", "CONFLICT", "UNKNOWN_OUTCOME"}
         if receipt is None and batch is None and stop in {"WAITING_USER", "AMBIGUOUS", "WAITING_CONFIRMATION"}:
@@ -370,7 +372,8 @@ class Agent:
         elif reads_verified and not business_failure and (not write_expected or write_verified):
             state = "VERIFIED_GOALS"
         elif write_verified or (batch and batch[0] == "PARTIAL_RESULT") or (
-                response["query_evidence_count"] and (coverage or write_expected or business_failure)):
+                response["query_evidence_count"] and
+                (coverage or write_expected or business_failure or response.get("single_query_partial"))):
             state = "PARTIAL_RESULT"
         else:
             state = "UNVERIFIED_RESULT"
@@ -550,7 +553,10 @@ class Agent:
                 date_sources["year"] = "current_sqlite"
         invoice_write = invoice_proposals and bool(invoice_intent_source(text_request))
         previous_results = (self.last_response or {}).get("tool_results", ())
+        explain_payment = bool(re.search(r"付款|回款|支付|付清|结清|已付|付过|(?:发票.*流水|流水.*发票).*(?:关联|对应)", text))
         previous_facts = self.context.explanation_facts(previous_results, explicit, historical=True) if read_only else {}
+        if not explain_payment:
+            previous_facts.pop("bank_invoice_link", None)
         prior_task_scopes = {
             (scope["company_id"], scope["year"], scope["month"])
             for name, outcome in previous_results
@@ -619,15 +625,21 @@ class Agent:
         all_invoices = read_only and not (invoice_write or reference or has_dates or explicit.get("invoice_no")) and bool(
             re.search(r"(?:所有|全部|全量|完整)的?发票|发票(?:的)?(?:完整目录|全部目录)", query_text))
         # A plain directory request has no independent metric, filter, comparison or action.
-        simple_directory = read_only and not (reference or deferred or corrected or pending_from) and bool(
-            re.fullmatch(
-                r"\s*(?:请\s*)?(?:(?:帮我)?(?:查询|查看|查一下|查|看看|看一下|列出|显示|给我看)\s*)?"
-                r"(?:(?:[甲乙](?:企业|公司)|C\d+)\s*(?:的\s*)?)?"
-                r"(?:(?:\d{4}\s*(?:年(?:\s*的)?(?:\s*(?:\d{1,2}|[一二三四五六七八九十]{1,2})\s*月)?"
-                r"|[-/]\s*\d{1,2})|这个月|本月|当月)\s*(?:的\s*)?)?"
-                r"(?:(?:所有|全部|全量|完整)\s*的?\s*)?发票(?:的)?(?:完整目录|全部目录|目录|清单|有哪些)?"
-                r"(?:\s*[，,]?\s*按(?:照)?(?:开票)?(?:金额|日期)(?:从[小低早大高晚]到[小低早大高晚]|升序|降序)?"
-                r"(?:排序|排列|列出)?)?\s*[。！？!?]?\s*", query_text, flags=re.IGNORECASE))
+        single_read = read_only and not (reference or deferred or corrected or pending_from)
+        read_subject = (
+            r"\s*(?:请\s*)?(?:(?:帮我)?(?:查询|查看|查一下|查|看看|看一下|只看|列出|找出|显示|给我看)\s*)?"
+            r"(?:(?:[甲乙](?:企业|公司)|C\d+)\s*(?:的\s*)?)?"
+            r"(?:(?:\d{4}\s*(?:年(?:\s*的)?(?:\s*(?:\d{1,2}|[一二三四五六七八九十]{1,2})\s*月)?"
+            r"|[-/]\s*\d{1,2})|这个月|本月|当月)\s*(?:的\s*)?)?"
+        )
+        directory_request = single_read and re.fullmatch(
+            read_subject + r"(?:(?:所有|全部|全量|完整)\s*的?\s*)?发票(?:的)?(?:完整目录|全部目录|目录|清单|有哪些)?"
+            r"(?:\s*[，,]?\s*按(?:照)?(?:开票)?(金额|日期)(?:从([小低早大高晚])到[小低早大高晚]|(升序|降序))?"
+            r"(?:排序|排列|列出)?)?\s*[。！？!?]?\s*", query_text, flags=re.IGNORECASE)
+        simple_directory = bool(directory_request)
+        metric_request = single_read and re.fullmatch(
+            read_subject + r"(发票(?:总数|数量|有多少张|价税合计)|银行(?:收入|支出)(?:总额|合计)?)"
+            r"(?:是多少|有多少)?\s*[。！？!?]?\s*", query_text, flags=re.IGNORECASE)
         exact_invoice = (not reference and not has_dates and
                          len(explicit.get("company_id", [])) == len(explicit.get("invoice_no", [])) == 1)
         previous_directory = None
@@ -692,6 +704,35 @@ class Agent:
                                      bool(re.search(r"比较|对比|哪家多|谁多|哪家高|差多少|相差", text)))
         if covered_turn:
             turn_tools = [tool for tool in turn_tools if tool["function"]["name"] != "set_schedule"]
+        single_scope = full_directory
+        if not single_scope and len(companies) == 1:
+            if annual_year:
+                single_scope = (companies[0], annual_year, 0)
+            elif len(periods) == 1:
+                single_scope = (companies[0], *periods[0])
+        directory_order = None
+        if simple_directory and directory_request[1]:
+            sort_by = "amount" if directory_request[1] == "金额" else "date"
+            descending = directory_request[2] in {"大", "高", "晚"} or directory_request[3] == "降序"
+            directory_order = (sort_by, "desc" if descending else "asc")
+
+        def single_scope_results():
+            return [(name, outcome) for name, outcome in read_results
+                    if outcome["status"] in {"SUCCESS", "NO_DATA"}
+                    and outcome["evidence"].get("source") == "current_sqlite"
+                    and (scope := outcome["evidence"].get("scope"))
+                    and tuple(scope.get("company_ids", (scope.get("company_id"),))) == single_scope[:1]
+                    and (scope.get("company_id"), scope.get("year", 0), scope.get("month", 0)) == single_scope]
+
+        def matching_directory(results):
+            return [outcome["data"] for name, outcome in results if name == "list_invoice_directory"
+                    and (not directory_order or (outcome["data"]["sort_by"], outcome["data"]["sort_order"]) == directory_order)]
+
+        def complete_directory(results):
+            pages = matching_directory(results)
+            if not pages or len({(page["total"], page["page_size"], page["sort_by"], page["sort_order"]) for page in pages}) != 1:
+                return False
+            return directory_complete(directory_display_pages(pages, all_periods=bool(full_directory)))
 
         query_attempts = []
 
@@ -727,6 +768,37 @@ class Agent:
             self.allowed_tools & {tool["function"]["name"] for tool in turn_tools},
             proposals=self.management_proposals if management is None else None)
         def finish(text, store=True, category="operation_result", *, chat_notice=None, missing_fields=()):
+            page_issue = page_read = None
+            if (simple_directory and full_directory and not execution.schedule
+                    and execution.stop_reason in {None, "NO_PROGRESS", "COMPLETED", "EVIDENCE_RETURNED",
+                                                  "MODEL_LIMIT", "NO_LEGAL_WORK", "EXTENSION_LIMIT"}):
+                pages = matching_directory(single_scope_results())
+                first = next((page for page in pages if page["page"] == 1), None)
+                if (first and first["page_size"] < first["total"] <= DIRECTORY_INLINE_LIMIT
+                        and len(first["rows"]) == first["page_size"]
+                        and not any(page["page"] == 2 for page in pages)):
+                    name = "list_invoice_directory"
+                    company, year, month = full_directory
+                    args = {"company_id": company, "year": year, "month": month, "page": 2,
+                            "sort_by": first["sort_by"], "sort_order": first["sort_order"]}
+                    raw = json.dumps(args)
+                    same_workbook = self.user_id == actor and self.workbook_available()
+                    blocked = execution.dispatch(name, raw) if same_workbook else "ERROR"
+                    if blocked:
+                        result = tool_result(blocked, error=None if same_workbook else "当前账号或工作库已变化")
+                    else:
+                        result = handle_tool(name, raw, self.user_id, self.db_path, allowed_tools=self.allowed_tools,
+                                             provenance=self.context.proof(directory_scope=full_directory),
+                                             execution=execution)
+                        execution.observe(name, args, result)
+                    page_read = {"id": f"harness-page-{self.trace_id}", "tool": name, "arguments": args,
+                                 "status": result["status"], "scope": result["evidence"].get("scope"),
+                                 "source": result["evidence"].get("source"), "error": result["error"]}
+                    self.trace("directory.page_read", {"call": page_read, "result": result, "execution": execution.snapshot()})
+                    read_results.append((name, result))
+                    if result["status"] not in {"SUCCESS", "NO_DATA"}:
+                        page_issue = "未能补齐第 2 页。" + render_tool_failure(result["status"], name, result)
+
             scope_fields = {"company_id", "year", "month"} & set(missing_fields)
             pending_fields = missing_fields if invoice_write else scope_fields
             if read_only and category == "clarification" and pending_fields:
@@ -808,17 +880,66 @@ class Agent:
                      and outcome.get("evidence", {}).get("source") == "current_sqlite"]
             stop = execution.stop_reason
             write_expected = bool(allow_prepare or invoice_write or mixed or invoice_change or bulk_no_confirmation)
+            scoped = single_scope_results() if single_scope and (simple_directory or metric_request) else []
+            directory_results = [(name, outcome) for name, outcome in scoped if name == "list_invoice_directory"]
+            directory_verified = simple_directory and complete_directory(directory_results)
+            metric_notice = None
+            if metric_request:
+                metric = metric_request[1]
+                if metric.startswith("银行"):
+                    key = "bank_income_total" if metric.startswith("银行收入") else "bank_expense_total"
+                    label = "银行收入" if key == "bank_income_total" else "银行支出"
+                else:
+                    key = "invoice_total" if metric.endswith("价税合计") else "invoice_count"
+                    label = "发票价税合计" if key == "invoice_total" else "发票数量"
+                values = set()
+                for name, outcome in scoped:
+                    summary = (outcome["data"] if name in {"get_finance_summary", "get_annual_finance_summary"}
+                               else outcome["evidence"].get("finance_summary"))
+                    if summary and key in summary:
+                        values.add(summary[key])
+                    elif key == "invoice_count" and name == "list_invoice_directory":
+                        values.add(outcome["data"]["total"])
+                    elif key == "invoice_count" and name == "query_business_sql":
+                        count = directory_count_only(outcome["data"])
+                        if count is not None:
+                            values.add(count)
+                if len(values) == 1:
+                    company, year, month = single_scope
+                    span = f" {year} 年" + (f" {month} 月" if month else "") if year else " 全部账期"
+                    unit = "张" if key == "invoice_count" else "元"
+                    metric_notice = f"{company}{span}的{label}为 {next(iter(values))} {unit}。"
             response = {"source": "runtime_output", "category": category, "operation_receipt": self.write_receipt,
-                        "execution": execution.snapshot(), "query_evidence_count": len(facts), "write_expected": write_expected}
+                        "execution": execution.snapshot(), "query_evidence_count": len(facts), "write_expected": write_expected,
+                        "single_query_verified": bool(directory_verified or metric_notice),
+                        "single_query_partial": bool(simple_directory and directory_results and not directory_verified)}
             if goal_coverage:
                 response["goal_coverage"] = goal_coverage
+            if page_read:
+                response["directory_page_read"] = page_read
             fulfillment = self.summarize_fulfillment(response)
             response["fulfillment"] = fulfillment
 
             budget_stops = {"MODEL_LIMIT": "已达到本次模型请求上限", "TOOL_LIMIT": "已达到本次操作次数上限",
                             "CONTEXT_LIMIT": "本次可处理的信息量已达上限", "NO_LEGAL_WORK": "目前无法继续核实",
                             "EXTENSION_LIMIT": "已达到本次处理上限"}
-            if not self.teaching and (stop == "NO_PROGRESS" or (facts and stop in budget_stops)):
+            read_finish = {"ANSWERED", "COMPLETED", "EVIDENCE_RETURNED", "NO_PROGRESS", *budget_stops}
+            directory_issue = page_issue or (chat_notice if stop not in read_finish and category == "operation_result" else None)
+            if simple_directory and directory_results and (stop in read_finish or directory_issue):
+                chat_notice = render_query_conclusion(directory_results)
+                if not matching_directory(directory_results):
+                    chat_notice += "\n还未按要求的顺序取得目录。"
+                issue = "\n".join(line for line in (directory_issue or "").splitlines()
+                                  if line not in chat_notice.splitlines())
+                if issue:
+                    chat_notice += "\n" + issue
+                category = response["category"] = "database_query"
+                text = "\n".join(filter(None, (render_information(directory_results), issue)))
+            elif metric_notice and not write_expected and stop in read_finish:
+                if not chat_notice or stop != "ANSWERED":
+                    chat_notice = metric_notice
+                    text = metric_notice
+            elif not self.teaching and (stop == "NO_PROGRESS" or (facts and stop in budget_stops)):
                 if stop == "NO_PROGRESS":
                     if any(outcome["status"] == "NO_PROGRESS" for _, outcome in read_results):
                         reason = "已停止重复执行相同请求"
@@ -924,6 +1045,8 @@ class Agent:
                 facts = previous_facts
                 if read_only and read_results:
                     facts = self.context.explanation_facts(read_results, explicit)
+                    if not explain_payment:
+                        facts.pop("bank_invoice_link", None)
                 context = self.model_messages(reference, read_workspace, explanation_facts=facts,
                                               previous_directory=previous_directory, recent_invoices=recent_invoices)
             except ContextLimitError as error:
@@ -947,7 +1070,8 @@ class Agent:
             if full_directory:
                 context.append({"role": "system", "content":
                     f"当前用户明确要求 {full_directory[0]} 的全账期发票。普通目录使用 list_invoice_directory，"
-                    "year=0、month=0；从第 1 页开始。不要以工作区月份或 SQL 统计代替目录。"})
+                    "year=0、month=0；从第 1 页开始。不要以工作区月份或 SQL 统计代替目录。"
+                    + ("只请求第 1 页，小目录的后续页由程序读取。" if simple_directory else "")})
             if confirmed_year:
                 context.append({"role": "system", "content":
                     "以下完整账期已核验，请按原条件继续，不要再次追问已确定的年份。"

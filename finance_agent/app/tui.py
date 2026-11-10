@@ -25,7 +25,8 @@ from .persistence import ManagementIntent, ManagementTurn, confirm_management, t
 from .queries import QueryError, available_periods, get_invoice, invoice_directory
 from .responses import (DIRECTORY_SORT_LABELS, display_rule_amounts, explicit_scope, needs_progress_evidence,
                         render_invoice_field_count, render_recent_commit, render_rule_history, render_scope,
-                        redundant_directory_count, render_query_conclusion, render_sql_evidence, sql_display_rows)
+                        directory_display_pages, redundant_directory_count, render_query_conclusion,
+                        render_sql_evidence, sql_display_rows)
 from .rules import RuleError, check_missing_purpose
 from .session_store import workbook_identity
 from .stage2_schema import open_existing
@@ -1010,6 +1011,8 @@ class AgentWorkspace(ConversationUI, App):
                 if single_item["status"] == "COMMITTED" and not receipt["readback_verified"]:
                     single_item["status"] = "UNKNOWN_OUTCOME"
             calls = turn_tools(agent.messages[offset:])
+            if page_read := agent.last_response.get("directory_page_read"):
+                calls.append(redact(page_read))
             verified = []
             call_by_id = {call["id"]: call for call in calls}
             for item in agent.messages[offset:]:
@@ -1145,7 +1148,8 @@ class AgentWorkspace(ConversationUI, App):
     def directory_summary(self, pages, route):
         # Keep distinct reported totals, including disagreement between two reads of the same page.
         counts = sorted({(d["page"], d["total"], d["page_size"]) for d in pages})
-        preferred = min(pages, key=lambda d: d["page"])
+        visible = directory_display_pages(pages, all_periods=route[1:] == (0, 0))
+        preferred = visible[0]
         if len({(total, size) for _, total, size in counts}) == 1:
             page_labels = "、".join(f"第 {page} 页" for page, _, _ in counts)
             page_count = (preferred["total"] + preferred["page_size"] - 1) // preferred["page_size"]
@@ -1158,10 +1162,11 @@ class AgentWorkspace(ConversationUI, App):
             header = f"各次查询的总数或每页数量不一致，以目录重新读取为准。\n{details}"
         if route[1:] == (0, 0):
             header = "全部账期 · " + header
-        rows = preferred["rows"]
-        page_text = f"第 {preferred['page']} 页（{len(rows)} 张）\n" + self.invoice_lines(rows)
+        page_text = "\n\n".join(f"第 {page['page']} 页（{len(page['rows'])} 张）\n" + self.invoice_lines(page["rows"])
+                                for page in visible)
         order = (preferred.get("sort_by", "date"), preferred.get("sort_order", "asc"))
-        shown = f"{len(rows)}/{preferred['total']}" if len({total for _, total, _ in counts}) == 1 else str(len(rows))
+        count = sum(len(page["rows"]) for page in visible)
+        shown = f"{count}/{preferred['total']}" if len({total for _, total, _ in counts}) == 1 else str(count)
         return f"发票目录 · 已显示 {shown} 张", f"{DIRECTORY_SORT_LABELS[order]}\n{header}\n{page_text}"
 
     def show_turn_results(self, results):
@@ -1180,12 +1185,12 @@ class AgentWorkspace(ConversationUI, App):
                 if route is None:
                     self.chat_message("Agent", "发票目录结果格式异常，请重新查询。")
                     continue
-                if outcome["status"] == "SUCCESS":
-                    directory = (*route, data.get("sort_by", "date"), data.get("sort_order", "asc"))
-                    directories.setdefault(directory, []).append(outcome)
+                directory = (*route, data.get("sort_by", "date"), data.get("sort_order", "asc"))
+                directories.setdefault(directory, []).append(outcome)
             entries.append((tool, outcome, route, directory))
 
-        preferred = {key: min(pages, key=lambda item: item["data"]["page"]) for key, pages in directories.items()}
+        preferred = {key: min(pages, key=lambda item: (not item["data"]["rows"], item["data"]["page"]))
+                     for key, pages in directories.items()}
         directory_totals = {}
         for tool, outcome, route, _ in entries:
             if tool == "list_invoice_directory":
@@ -1196,12 +1201,12 @@ class AgentWorkspace(ConversationUI, App):
             evidence, data = outcome["evidence"], outcome["data"]
             scope = evidence.get("scope", {})
             if tool == "list_invoice_directory":
-                if directory and outcome is not preferred[directory]:
+                if outcome is not preferred[directory]:
                     continue
-                pages = [item["data"] for item in directories[directory]] if directory else [data]
+                pages = [item["data"] for item in directories[directory]]
                 card = self.directory_summary(pages, route)
-                if directory:
-                    target = (*route, data["page"])
+                if data["total"]:
+                    target = (*route, data["page"] if data["rows"] else 1)
                     order = directory[3:]
                     routes.append(target if order == ("date", "asc") else (*target, *order))
             else:
@@ -1219,7 +1224,12 @@ class AgentWorkspace(ConversationUI, App):
                 fallback_route = (scope["company_id"], scope.get("year", 0), scope.get("month", 0), 1)
             companies = scope.get("company_ids") or ([scope["company_id"]] if scope.get("company_id") else [])
             self.business_message(card[0], f"{render_scope(evidence, conversational=True)}\n{card[1]}", companies)
-            displayed.append((tool, outcome))
+            if directory:
+                visible = directory_display_pages(pages, all_periods=route[1:] == (0, 0))
+                displayed.extend((tool, item) for item in directories[directory]
+                                 if any(item["data"] is page for page in visible))
+            else:
+                displayed.append((tool, outcome))
         self.chat_invoice_routes = tuple(routes) if routes else (fallback_route,) if fallback_route else ()
         if displayed and self.agent.record_query_display(displayed, full_directory=True) is None:
             self.chat_message("Agent", "本轮结果已展示，但未能保存引用。请使用明确的企业和发票编号。")
@@ -1334,7 +1344,11 @@ class AgentWorkspace(ConversationUI, App):
         self.save_turn(calls, "UNKNOWN_OUTCOME" if any(c["status"] == "UNKNOWN_OUTCOME" for c in calls) else status,
                        read_only)
         self.remember_focus()
-        self.note(f"{status_label(status)} · F2 聚焦导航，可选择执行记录")
+        read_stops = {"NO_PROGRESS", "MODEL_LIMIT", "TOOL_LIMIT", "CONTEXT_LIMIT", "NO_LEGAL_WORK",
+                      "EXTENSION_LIMIT", "EVIDENCE_RETURNED"}
+        label = ("查询完成" if stop in read_stops and response.get("single_query_verified")
+                 and response["fulfillment"]["status"] == "VERIFIED_GOALS" else status_label(status))
+        self.note(f"{label} · F2 聚焦导航，可选择执行记录")
         self.unlock()
 
     def fail_turn(self):

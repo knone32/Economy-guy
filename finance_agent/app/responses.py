@@ -470,6 +470,30 @@ DIRECTORY_SORT_LABELS = {
 }
 
 
+DIRECTORY_INLINE_LIMIT = 20
+
+
+def directory_complete(pages):
+    first = pages[0]
+    total, size = first["total"], first["page_size"]
+    keys = [(row["company_id"], row["invoice_no"]) for page in pages for row in page["rows"]]
+    return len(keys) == len(set(keys)) == total and all(
+        (page["page"], page["total"], page["page_size"], len(page["rows"]))
+        == (number, total, size, min(size, max(0, total - (number - 1) * size)))
+        for number, page in enumerate(pages, 1)
+    )
+
+
+def directory_display_pages(pages, *, all_periods):
+    """Use the same ordered rows for the card, its count and its reference anchor."""
+    first = min(pages, key=lambda page: (not page["rows"], page["page"]))
+    if all_periods and first["page"] == 1 and first["page_size"] < first["total"] <= DIRECTORY_INLINE_LIMIT:
+        second = next((page for page in pages if page["page"] == 2 and page["rows"]), None)
+        if second and directory_complete((first, second)):
+            return first, second
+    return (first,)
+
+
 def directory_preview(pages):
     return min(pages, key=lambda page: page["page"])["rows"][:3]
 
@@ -690,22 +714,26 @@ def render_query_conclusion(results):
         line = f"{heading}：{detail}" if heading else detail
         if line not in lines:
             lines.append(line)
-    for (heading, dated, order), pages in directories.items():
-        page = min(pages, key=lambda item: (not item["rows"], item["page"]))
-        shown, total, number = len(page["rows"]), page["total"], page["page"]
+    for (heading, dated, _), pages in directories.items():
+        visible = directory_display_pages(pages, all_periods=not dated)
+        page = visible[0]
+        shown, total = sum(len(item["rows"]) for item in visible), page["total"]
         prefix = f"{heading} " if heading else ""
-        if len({item["total"] for item in pages}) != 1:
-            lines.append(f"{prefix}各页返回的发票总数不一致，请重新打开目录核对。")
+        if len({(item["total"], item["page_size"]) for item in pages}) != 1:
+            lines.append(f"{prefix}各页的目录数据不一致，已显示 {shown} 张，请重新打开目录核对。")
             continue
         span = "" if dated else "全部账期"
         if not total:
             lines.append(f"{prefix}{span}没有发票。")
         elif not shown:
-            lines.append(f"{prefix}{span}共 {total} 张发票，第 {number} 页没有记录。")
+            lines.append(f"{prefix}{span}共 {total} 张发票，第 {page['page']} 页没有记录，可打开目录查看。")
+        elif directory_complete(visible):
+            detail = "两页明细都在右侧" if len(visible) == 2 else "明细已全部列在右侧"
+            lines.append(f"{prefix}{span}共 {total} 张发票，{detail}。")
         else:
-            pagination = f"，共 {((total - 1) // page['page_size']) + 1} 页" if shown < total else ""
-            lines.append(f"{prefix}{span}共 {total} 张发票{pagination}。"
-                         f"目录第 {number} 页有 {shown} 张，{DIRECTORY_SORT_LABELS[order]}。")
+            page_count = (total + page["page_size"] - 1) // page["page_size"]
+            lines.append(f"{prefix}{span}共 {total} 张发票，右侧第 {page['page']} 页显示 {shown} 张，"
+                         f"其余 {page_count - len(visible)} 页可在目录中查看。")
     return "\n".join(lines)
 
 

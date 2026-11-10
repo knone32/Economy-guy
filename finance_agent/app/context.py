@@ -4,7 +4,7 @@ import json
 import re
 import sqlite3
 from .references import reference_catalog, invalidate_references, resolve_reference, record_display
-from .responses import directory_preview, explicit_scope, scope_mismatch
+from .responses import directory_display_pages, directory_preview, explicit_scope, scope_mismatch
 from .tasks import list_tasks
 from .preferences import manage_preference
 from .provenance import ANNUAL, SOURCES, ScopeProof
@@ -246,7 +246,8 @@ class ContextBuilder:
                 groups.append({"scope":outcome["evidence"]["scope"],"source":name,
                                "keys":[{"company_id":row["company_id"],"invoice_no":row["invoice_no"]} for row in rows]})
         for scope, pages in directories.values():
-            rows = min(pages, key=lambda page: page["page"])["rows"] if full_directory else directory_preview(pages)
+            rows = ([row for page in directory_display_pages(pages, all_periods="year" not in scope)
+                     for row in page["rows"]] if full_directory else directory_preview(pages))
             groups.append({"scope": scope, "source": "list_invoice_directory",
                            "keys": [{"company_id": row["company_id"], "invoice_no": row["invoice_no"]}
                                     for row in rows]})
