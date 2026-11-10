@@ -190,7 +190,10 @@ def _task_note_request_error(request, action, proof):
     # A model may propose creation without a fixed CRUD verb, but not from a
     # read-only task question. A proposal remains unprivileged until confirmation.
     read_only_question = action == "create" and bool(re.search(
-        r"(?:查|查看|查询|列出|展示|有哪些|有没有|是什么).{0,18}(?:待办|任务)", request))
+        r"(?:查|查看|查询|列出|展示|有哪些|有没有|是什么).{0,18}(?:待办|任务)|"
+        r"(?:待办|任务).{0,12}(?:有哪些|多少|什么|状态|列表|清单|吗|？|\\?)", request))
+    negated = negated or bool(action == "create" and re.search(
+        r"(?:不要|别|不用|无需|不必|不想).{0,8}(?:待办|任务|留|记)", request))
     if (not task_mentioned or negated or bare_change
             or (action != "create" and not re.search(verb, request))
             or (read_only_question and not re.search(r"留|记|创建|新建|建立|添加", request))):
