@@ -20,7 +20,7 @@ from .agent import Agent
 from .cli_chat import safe_text, turn_tools
 from .cli_workspaces import company_access, invoice_history, missing_migrations, workspace_users
 from .model_config import ModelConnection, ProfileError, load_profiles, resolve_connection
-from .persistence import ManagementIntent, ManagementTurn, confirm_management
+from .persistence import ManagementIntent, ManagementTurn, confirm_management, task_note_from_request
 from .queries import QueryError, available_periods, get_invoice, invoice_directory
 from .responses import (DIRECTORY_SORT_LABELS, display_rule_amounts, explicit_scope, needs_progress_evidence,
                         render_goal_coverage, render_recent_commit, render_rule_history, render_scope, scope_key)
@@ -876,7 +876,7 @@ class AgentWorkspace(ConversationUI, App):
             return False
         p = proposal["proposal"]
         if proposal["domain"] == "task":
-            if p["action"] in {"create", "update", "correct"} and p["note"] != proposal["original_request"]:
+            if p["action"] in {"create", "update", "correct"} and p["note"] != task_note_from_request(proposal["original_request"]):
                 return False  # A workbench preview must already contain the trusted note.
             current = proposal.get("current") or {}
             old_note = current.get("context", {}).get("note") or "（无）"

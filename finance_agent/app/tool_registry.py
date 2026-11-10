@@ -14,7 +14,7 @@ from .responses import scope_mismatch, explicit_scope
 from .tasks import list_tasks, manage_task
 from .preferences import manage_preference
 from .references import resolve_reference
-from .persistence import can_manage, can_propose, confirm_management, ManagementIntent, ManagementCandidate, ManagementProposals
+from .persistence import can_manage, can_propose, confirm_management, ManagementIntent, ManagementCandidate, ManagementProposals, task_note_from_request
 from contextlib import closing
 from copy import deepcopy
 from .provenance import ANNUAL, MONTHLY, ScopeProof, is_annual_query, validate_scope
@@ -181,11 +181,20 @@ def _task_note_request_error(request, action, proof):
                         r"(?:(?:改为|改成|改到|按|把|将|给)[^，,。；;\n]{0,30})?(?:" + verb + ")", request)
     bare_change = action != "create" and re.fullmatch(
         r"\s*(?:请|帮我)?\s*(?:" + verb + r")\s*(?:这个|这条|当前)?(?:待办|任务)[。！!？?\s]*", request)
-    if (not re.search(r"待办|任务|记一下", request) or not re.search(verb, request)
-            or negated or bare_change):
+    task_mentioned = bool(re.search(r"待办|任务|记一下", request))
+    # A model may propose creation without a fixed CRUD verb, but not from a
+    # read-only task question. A proposal remains unprivileged until confirmation.
+    read_only_question = action == "create" and bool(re.search(
+        r"(?:查|查看|查询|列出|展示|有哪些|有没有|是什么).{0,18}(?:待办|任务)", request))
+    if (not task_mentioned or negated or bare_change
+            or (action != "create" and not re.search(verb, request))
+            or (read_only_question and not re.search(r"留|记|创建|新建|建立|添加", request))):
         fields = [] if negated else ["note" if bare_change else "action"]
         return tool_result("AMBIGUOUS", error="请明确待办操作及本轮要保存的说明",
                            evidence={"missing_fields": fields})
+    if action in _TASK_NOTE_ACTIONS and task_note_from_request(request) is None:
+        return tool_result("AMBIGUOUS", error="本轮指定的待办说明不唯一或为空",
+                           evidence={"missing_fields": ["note"]})
     if len(explicit.get("company_id", ())) > 1:
         return tool_result("AMBIGUOUS", error="请明确单一企业后再管理待办")
     annual = bool((proof and proof.annual_year is not None) or re.search(r"全年|全年度|整年", request)
@@ -512,7 +521,7 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
                     if (isinstance(intent, ManagementCandidate) and intent.turn.task_note_from_request
                             and args["action"] in _TASK_NOTE_ACTIONS):
                         # The preview and the transaction use the same trusted payload.
-                        args = {**args, "note": intent.source_request}
+                        args = {**args, "note": task_note_from_request(intent.source_request)}
                     outcome = manage_task(db_path,user_id,**args,intent=intent)
                 else:
                     outcome = manage_preference(db_path,user_id,**args,intent=intent)

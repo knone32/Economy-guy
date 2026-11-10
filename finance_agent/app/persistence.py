@@ -3,7 +3,20 @@ from dataclasses import dataclass, field, replace
 from copy import deepcopy
 import hashlib
 import json
+import re
 from uuid import uuid4
+
+
+def task_note_from_request(request):
+    """Return a literally specified note, or the complete original request as fallback."""
+    quoted = re.findall(
+        r"(?:说明|备注)\s*(?:写成|写为|写|设为|改为|填为|是)\s*(?:[‘“]([^’”]*)[’”]|\"([^\"]*)\"|'([^']*)')",
+        request,
+    )
+    if not quoted:
+        return request
+    notes = [next((part for part in match if part), "") for match in quoted]
+    return notes[0] if len(notes) == 1 and notes[0].strip() else None
 
 
 @dataclass
