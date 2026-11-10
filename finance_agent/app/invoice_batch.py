@@ -5,8 +5,8 @@ from datetime import date
 import sqlite3
 
 from .permissions import check_permission
-from .queries import get_invoice
-from .rules import missing_required_purpose
+from .queries import get_invoice, list_invoices
+from .rules import missing_required_purpose, resolve_rule
 from .tui_intent import excluded_invoice_ids, invoice_change_evidence
 from .responses import explicit_scope
 from .stage2_schema import open_existing
@@ -69,8 +69,13 @@ def _apply_target(agent, message, values, period, old, confirm, checkpoint):
     return receipt["status"], draft.request_id
 
 
-def plan_invoice_change(agent, source_request, proposal, selection, *, target_period=None,
-                        rule_period=None, rule_outcome=None):
+def _required_invoice_ids(db, actor, company, period, params, excluded):
+    return {row["invoice_no"] for row in list_invoices(db, actor, company, *period)
+            if row["invoice_no"] not in excluded and missing_required_purpose(params, row)}
+
+
+def plan_invoice_change(agent, source_request, proposal, selection, *, authorized_periods=(),
+                        literal_periods=(), read_results=()):
     """Validate current-turn scope and literal edit constraints without preparing a draft."""
     if selection is None:
         return None, "AMBIGUOUS", "请先取得本轮可信发票集合。"
@@ -98,19 +103,44 @@ def plan_invoice_change(agent, source_request, proposal, selection, *, target_pe
         return None, "AMBIGUOUS", "请明确修改对象所属企业。"
     if source == "get_invoice" and not named:
         return None, "AMBIGUOUS", "请明确发票编号或使用已核验的发票引用。"
-    if not invoice_change_evidence(source_request, proposal["field"], proposal["new_value"]):
-        return None, "AMBIGUOUS", "请明确只改用途或备注，并提供该字段的具体新值。"
     if len(invoice_nos) > MAX_BATCH_INVOICES:
         return None, "INVALID_ARGUMENTS", f"本次超过 {MAX_BATCH_INVOICES} 张的处理上限，请缩小范围。"
 
+    target_period = (proposal["target_year"], proposal["target_month"]) if "target_year" in proposal else None
+    rule_date = proposal.get("rule_business_date")
+    if len(authorized_periods) > 1 and (target_period is None or not rule_date):
+        return None, "AMBIGUOUS", "请分别明确规则参考日期与唯一的发票目标年月。"
+    if target_period is None and len(authorized_periods) == 1:
+        target_period, = authorized_periods
+    if target_period is not None and target_period not in authorized_periods:
+        return None, "SCOPE_MISMATCH", "目标年月没有本轮用户字面量或账簿账期证据。"
     if collection and target_period is None:
         return None, "SCOPE_MISMATCH", "请明确要修改的发票目标年月。"
+
     rule = None
-    if rule_period is not None:
-        if (rule_outcome is None or rule_outcome["evidence"]["scope"]["company_id"] != company
-                or source != "query_business_sql"):
-            return None, "SCOPE_MISMATCH", "请先核验该企业参考月用途规则，再按它筛选目标月发票。"
-        rule = rule_outcome["data"]
+    cohort = proposal.get("rule_cohort", False)
+    if rule_date:
+        day = date.fromisoformat(rule_date)
+        rule_period = (day.year, day.month)
+        if rule_period not in (literal_periods or authorized_periods) or source != "query_business_sql":
+            return None, "SCOPE_MISMATCH", "请使用本轮已核验的参考日期和目标发票 SQL 清单。"
+        matches = []
+        for name, outcome in read_results:
+            evidence = outcome.get("evidence", {})
+            rule_scope = evidence.get("scope", {})
+            if (name == "get_applicable_rules" and outcome["status"] == "SUCCESS"
+                    and evidence.get("source") == "current_sqlite"
+                    and rule_scope.get("company_id") == company and rule_scope.get("rule_type") == "purpose"
+                    and rule_scope.get("business_date") == rule_date and outcome["data"] == evidence.get("rule")
+                    and outcome["data"] not in matches):
+                matches.append(outcome["data"])
+        if len(matches) != 1:
+            return None, "SCOPE_MISMATCH", "当前轮没有唯一匹配的企业用途规则证据，请核对参考日期。"
+        rule, = matches
+
+    if not invoice_change_evidence(source_request, proposal["field"], proposal["new_value"],
+                                   rule_field="purpose" if rule else None):
+        return None, "AMBIGUOUS", "请明确允许修改的字段及来自用户原话的新值。"
 
     try:
         with closing(open_existing(agent.db_path, readonly=True)) as db:
@@ -123,8 +153,21 @@ def plan_invoice_change(agent, source_request, proposal, selection, *, target_pe
                 return None, "CONFLICT", "清单中的发票已失效，请重新查询。"
             days = [date.fromisoformat(row["invoice_date"]) for row in rows]
             actual_periods = {(day.year, day.month) for day in days}
-            if rule and any(not missing_required_purpose(rule["params"], row) for row in rows):
-                return None, "SCOPE_MISMATCH", "清单含有不符合参考规则筛选条件的发票。"
+            if rule:
+                current_rule = resolve_rule(db, agent.user_id, company, "purpose", rule_date)
+                if (current_rule.rule_id, current_rule.version, current_rule.params) != (
+                        rule["rule_id"], rule["version"], rule["params"]):
+                    return None, "CONFLICT", "参考规则已变化，请重新核验。"
+                if cohort:
+                    expected = _required_invoice_ids(db, agent.user_id, company, target_period,
+                                                     current_rule.params, excluded)
+                    if len(expected) > MAX_BATCH_INVOICES:
+                        return None, "INVALID_ARGUMENTS", f"规则缺项全集超过 {MAX_BATCH_INVOICES} 张，未创建确认清单。"
+                    if invoice_nos != expected:
+                        return None, "SCOPE_MISMATCH", (f"规则全集核验失败：应处理 {len(expected)} 张，"
+                                                        f"候选清单有 {len(invoice_nos)} 张。请重新查询，未进入确认。")
+                elif any(not missing_required_purpose(current_rule.params, row) for row in rows):
+                    return None, "SCOPE_MISMATCH", "清单含有不符合参考规则筛选条件的发票。"
     except (OSError, sqlite3.Error, ValueError):
         return None, "ERROR", "无法核验账簿、企业权限或发票实际日期。"
 
@@ -141,8 +184,8 @@ def plan_invoice_change(agent, source_request, proposal, selection, *, target_pe
         return None, "SCOPE_MISMATCH", "候选发票账期与用户要求不一致。"
     request = {key: proposal[key] for key in ("field", "new_value", "mode")}
     if rule:
-        request["rule_reference"] = {"period": rule_period, "rule_id": rule["rule_id"],
-                                     "version": rule["version"], "params": rule["params"]}
+        request["rule_reference"] = {"business_date": rule_date, "rule_id": rule["rule_id"],
+                                     "version": rule["version"], "params": rule["params"], "cohort": cohort}
     return {**request, "company_id": company, "year": year, "month": month,
             "invoice_nos": tuple(sorted(invoice_nos)), "excluded": tuple(sorted(excluded)),
             "source_request": source_request, "actor": agent.user_id,
@@ -177,8 +220,12 @@ def run_invoice_batch(agent, message, request, *, approve_batch, approve_item, c
             rows = [get_invoice(db, agent.user_id, company, invoice_no) for invoice_no in invoice_nos]
             if any(not row or row["invoice_date"][:7] != period for row in rows):
                 return "CONFLICT", "清单内发票已失效或账期已变更，未执行修改。"
-            if rule_reference and any(not missing_required_purpose(rule_reference["params"], row) for row in rows):
-                return "CONFLICT", "发票已不符合参考规则筛选条件，未执行修改。"
+            if rule_reference:
+                if any(not missing_required_purpose(rule_reference["params"], row) for row in rows):
+                    return "CONFLICT", "发票已不符合参考规则筛选条件，未执行修改。"
+                if rule_reference["cohort"] and set(invoice_nos) != _required_invoice_ids(
+                        db, agent.user_id, company, (year, month), rule_reference["params"], request["excluded"]):
+                    return "CONFLICT", "规则缺项全集已变化，请重新查询，未执行修改。"
             rows.sort(key=lambda row: (row["invoice_date"], row["invoice_no"]))
             targets = tuple((row["invoice_no"], row[field]) for row in rows)
     except (OSError, ValueError, sqlite3.Error):
@@ -189,15 +236,17 @@ def run_invoice_batch(agent, message, request, *, approve_batch, approve_item, c
     scope = (f"企业　{company} · {period}\n字段　{field_label}\n"
              f"覆盖提示　将替换 {overwrites} 张发票已填写的{field_label}。")
     if rule_reference:
-        rule_year, rule_month = rule_reference["period"]
-        scope += (f"\n参考规则　{rule_year:04d}-{rule_month:02d} · "
+        scope += (f"\n参考规则　{rule_reference['business_date']} · "
                   f"{rule_reference['rule_id']} v{rule_reference['version']}"
                   f"\n发票目标账期　{period}"
-                  "\n依据指定规则重新筛选，结果不代表目标账期的正式合规认定。")
+                  "\n按指定参考月份规则筛选目标月份发票，不代表目标月份正式合规认定。")
+        if not rule_reference["cohort"]:
+            scope += "\n仅确认以下 SQL 清单；程序未核验附加筛选条件的全集。"
+    scope += "\n原始要求　" + message
     if request["excluded"]:
         scope += "\n明确排除　" + "、".join(request["excluded"])
     item_lines = [f"{invoice}\n原值　{_preview(old)}\n新值　{_preview(value)}" for invoice, old in targets]
-    if redact(item_lines) != item_lines:
+    if redact(item_lines) != item_lines or redact(message) != message:
         return "DENIED", "预览含有需隐藏的内容，无法进行完整核对，未提交。"
 
     counts = {"committed": 0, "skipped": 0, "failed": 0, "unknown": 0}

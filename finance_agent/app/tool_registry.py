@@ -24,7 +24,10 @@ from .business_sql import BusinessSQLError
 YEAR = {"company_id": "string", "year": "integer"}
 MONTH = {**YEAR, "month": "integer"}
 DIRECTORY_SORT_FIELDS = {"sort_by": ("date", "amount"), "sort_order": ("asc", "desc")}
-OPTIONAL_FIELDS = {"list_invoice_directory": DIRECTORY_SORT_FIELDS.keys()}
+OPTIONAL_FIELDS = {
+    "list_invoice_directory": DIRECTORY_SORT_FIELDS.keys(),
+    "propose_invoice_changes": {"rule_business_date", "target_year", "target_month", "rule_cohort"},
+}
 REGISTRY = {
     "query_business_sql": (None, {"sql": "string"}),
     "list_invoices": (queries.list_invoices, MONTH),
@@ -45,7 +48,9 @@ REGISTRY = {
     "list_rule_versions": (None, {"company_id": "string", "rule_id": "string"}),
     "prepare_invoice_update": (None, {"company_id":"string", "invoice_no":"string", "field":"string", "new_value":"string"}),
     "propose_invoice_changes": (None, {"selection_id":"string", "field":"string", "new_value":"string",
-                                       "mode":"string", "excluded_invoice_ids":"array"}),
+                                       "mode":"string", "excluded_invoice_ids":"array",
+                                       "rule_business_date":"string", "target_year":"integer",
+                                       "target_month":"integer", "rule_cohort":"boolean"}),
     "add": (None, {"a": "integer", "b": "integer"}),
     "list_tasks": (None, {"company_id":"string"}),
     "manage_task": (None, {"company_id":"string","action":"string","task_id":"string","year":"integer","month":"integer","note":"string"}),
@@ -102,6 +107,10 @@ PARAMETERS = {"sql":"单条 SELECT 或只读 WITH 查询。严格遵守运行时
               "source":"近期发票的可信来源，不能自行填企业、发票号或审计编号。",
               "selection_id":"本轮真实查询结果返回的 selection_id，不能猜测或复用历史引用。",
               "mode":"item 逐张确认，batch 整批确认。",
+              "rule_business_date":"可选。与本轮实际用途规则结果完全一致的 YYYY-MM-DD 参考日期。",
+              "target_year":"可选。要修改的发票年份，与 target_month 一起提供。",
+              "target_month":"可选。要修改的发票月份，不能填参考规则月份代替目标月份。",
+              "rule_cohort":"可选。只有用户要处理规则定义的完整缺项集合，且无其他独立筛选时才传 true。",
               "excluded_invoice_ids":"用户原话明确要求排除的发票编号，若无则为空数组。",
               "ordinal":"用户明确的展示序号，从1开始。", "anchor_id":"已展示anchor编号；唯一列表时可为空，不能自行编造。",
               "goal":"本轮用户目标描述，不是执行证据。","steps":"必要工具步骤及依赖，不拆分SQL/事务等内部操作。",
@@ -169,7 +178,7 @@ def validate_arguments(name, raw_arguments, partial=False, *, directory_sort=Non
         raise ValueError("缺失或多余参数")
     for key,value in args.items():
         kind = fields[key]
-        if type(value) is not {"integer":int,"string":str,"array":list}[kind]:
+        if type(value) is not {"integer":int,"string":str,"array":list,"boolean":bool}[kind]:
             raise ValueError("参数类型错误："+key)
         if kind=="string" and key not in {"new_value","task_id","note","key","value","anchor_id"} and not value.strip():
             raise ValueError("参数不能为空："+key)
@@ -180,6 +189,18 @@ def validate_arguments(name, raw_arguments, partial=False, *, directory_sort=Non
             type(invoice) is not str or not re.fullmatch(r"F\d+", invoice, re.I)
             for invoice in args["excluded_invoice_ids"]):
         raise ValueError("排除对象必须为发票编号")
+    if name == "propose_invoice_changes" and not partial:
+        dates = {"target_year", "target_month"} & args.keys()
+        if len(dates) == 1 or ("rule_business_date" in args and not dates):
+            raise ValueError("请提供完整目标年月")
+        if dates:
+            queries._check_month(args["target_year"], args["target_month"])
+        if args.get("rule_cohort") and "rule_business_date" not in args:
+            raise ValueError("规则全集必须提供参考规则日期")
+        if "rule_business_date" in args:
+            day = args["rule_business_date"]
+            if date.fromisoformat(day).isoformat() != day:
+                raise ValueError("参考规则日期必须为 YYYY-MM-DD")
     if name == "list_invoice_directory" and directory_sort and "sort_by" not in args:
         # Paging a verified directory with omitted sort parameters retains the previous order.
         args["sort_by"] = directory_sort[0]

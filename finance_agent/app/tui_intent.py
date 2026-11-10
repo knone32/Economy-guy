@@ -57,7 +57,6 @@ _EXCLUDED = re.compile(
     rf"(?P<after>{_INVOICE_GROUP})\s*(?:之外|以外|不要动|别动|不改|不修改|保持原样)", re.I,
 )
 _FIELD_NAMES = {"purpose": "用途", "remark": "备注"}
-_NEGATED = re.compile(r"(?:不要|别|禁止|不许|无需|不必)\s*(?:把|将)?\s*$")
 _HYPOTHETICAL = re.compile(r"^\s*(?:如果|假如|假设|例如|怎样|如何|能否|能不能)")
 
 
@@ -84,52 +83,34 @@ def invoice_supplement(text, missing):
     return None
 
 
-_RULE_PERIOD = re.compile(
-    r"(?:按(?:照)?|依据|参考)\s*(\d{4}\s*年\s*[0-9一二三四五六七八九十]+\s*月(?:份)?"
-    r"|\d{4}[-/]\d{1,2})\s*(?:的\s*)?(?:发票)?(?:用途)?规则"
-)
-
-
-def invoice_rule_periods(text, periods):
-    """Only separate two dates when an explicit reference-rule phrase identifies one."""
-    matches = list(_RULE_PERIOD.finditer(text))
-    if len(matches) != 1 or len(periods) != 2:
-        return None
-    match, = matches
-    rule = explicit_scope(match[1]).get("periods", ())
-    target = explicit_scope(text[:match.start()] + " " + text[match.end():]).get("periods", ())
-    if len(rule) == len(target) == 1 and set(periods) == {rule[0], target[0]}:
-        return rule[0], target[0]
-    return None
-
-
-def invoice_change_evidence(text, field, new_value):
-    """Bind the proposed field and exact value to one positive user instruction."""
-    if not new_value.strip() or _HYPOTHETICAL.match(text):
+def invoice_change_evidence(text, field, new_value, *, rule_field=None):
+    """Require a literal value and reject clear read-only, hypothetical or forbidden requests."""
+    if not new_value.strip() or _HYPOTHETICAL.match(text) or text.rstrip().endswith(("?", "？")):
         return False
     label = _FIELD_NAMES[field]
+    if rule_field is not None and field != rule_field:
+        return False
     if re.search(rf"{label}\s*(?:别动|不要动|不改|不修改|保持原样)|(?:不改|不修改|不要修改|别改)\s*{label}", text):
         return False
+    if label not in text and field != rule_field:
+        return False
+
     literal = re.escape(new_value)
     value = rf'(?:“{literal}”|‘{literal}’|"{literal}"|{literal})'
-    field_target = rf"{label}(?:\s*为空\s*的\s*(?:所有|全部)?发票)?"
-    pattern = rf"{field_target}\s*(?:全部|都|统一)?\s*{_CHANGE_VERB}\s*{value}(?=$|[\s，,。；;！!])"
-    for match in re.finditer(pattern, text):
-        prefix = re.split(r"[，,。；;\n]", text[:match.start()])[-1]
-        if not re.search(r"(?:不要|别|禁止|不许|无需|不必)(?:改动?|修改|调整|把|将)", prefix) and not _NEGATED.search(prefix):
+    for match in re.finditer(rf"{value}(?=$|[\s，,。；;！!])", text):
+        clause = re.split(r"[，,。；;\n]", text[:match.start()])[-1]
+        if re.search(r"不要|别|禁止|不许|无需|不必", clause):
+            continue
+        # Match literal action evidence without parsing a specific field/verb sentence shape.
+        mentioned = {name for name in _FIELD_NAMES.values() if name in clause}
+        if ((mentioned and mentioned != {label}) or
+                (not mentioned and rule_field is None and all(name in text for name in _FIELD_NAMES.values()))):
+            continue
+        if re.search(r"[改填补设写]|处理", clause) and not re.match(r"\s*(?:查询|查看|统计|列出|检查|解释|比较)", clause):
             return True
-    # Literal supplements are accepted only after an explicit unfinished request.
-    original, *supplements = text.split("\n")
-    if not supplements or re.search(r"不要|别|禁止|不许|无需|不必", original):
-        return False
-    fields = {part.strip().rstrip("。！!") for part in supplements} & set(_FIELD_NAMES.values())
-    has_field = bool(re.search(rf"{label}\s*(?:{_CHANGE_VERB}|改一下|修改)\s*[。！!]?$", original))
-    if fields == {label} and not any(name in original for name in _FIELD_NAMES.values()):
-        if re.search(rf"{_CHANGE_VERB}\s*{value}[。！!]?$", original):
+        if re.fullmatch(r"\s*新值\s*(?:是|为)\s*", clause) and invoice_intent_source(text):
             return True
-        has_field = bool(re.search(rf"(?:{_CHANGE_VERB}|改一下|修改)\s*[。！!]?$", original))
-    return has_field and any(re.fullmatch(rf"新值\s*(?:是|为)\s*{value}[。！!]?", part.strip())
-                             for part in supplements)
+    return False
 
 
 def excluded_invoice_ids(text):
