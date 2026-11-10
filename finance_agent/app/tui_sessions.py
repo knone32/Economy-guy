@@ -111,8 +111,12 @@ class ConversationUI:
             if (scoped - {None}) - permitted:
                 continue
             self.has_saved_history = True
-            if turn["calls"]:
-                self.saved_records.append((turn["state"],turn["mode"],turn["calls"]))
+            if turn["request"] or turn["calls"]:
+                self.saved_records.append({
+                    **turn["operation"], "seq": turn["seq"], "state": turn["state"], "mode": turn["mode"],
+                    "calls": turn["calls"], "trace": turn["trace"], "lookup": turn["lookup"],
+                    "companies": sorted((scoped - {None}) | set(turn["operation"].get("companies", ()))),
+                })
             if turn["request"]:
                 self.chat_message("你", turn["request"])
             for role, body in turn["display"]:
@@ -165,7 +169,7 @@ class ConversationUI:
             except (OSError, ValueError, sqlite3.Error):
                 self.notify("当前焦点无法保存，请核对工作库。", severity="warning")
 
-    def save_turn(self, calls, status, read_only):
+    def save_turn(self, calls, status, read_only, *, operation=None):
         if self.turn_seq is None or not self.conversation:
             return
         read_tools = ANNUAL | {"get_finance_summary","list_invoices","list_invoice_directory",
@@ -184,8 +188,10 @@ class ConversationUI:
             if reads or retired_annual_focus:
                 self.resume_focus = next_focus
         try:
-            evidence = [{**call,"id":self.storage_text(call["id"])} for call in calls]
-            self.conversation.finish(self.turn_seq, self.turn_display, evidence, self.agent.trace_id, hint, state)
+            evidence = [{**call, "id": self.storage_text(call["id"]),
+                         "error": self.storage_text(call["error"]) if call.get("error") else None} for call in calls]
+            self.conversation.finish(self.turn_seq, self.turn_display, evidence, self.agent.trace_id, hint, state,
+                                     operation=operation)
             self.has_saved_history = True
         except (OSError, ValueError, sqlite3.Error):
             self.notify("本轮历史保存失败。请检查执行记录与当前业务状态。", severity="warning")

@@ -121,15 +121,25 @@ def company_access(path, user):
         return companies
 
 
-def invoice_history(path, user):
-    """Scope success history to its actor and recheck the current enterprise read ACL."""
+def invoice_history(path, user, *, request_ids=()):
+    """Return recent successes and visible operations' exact audit links under the same ACL."""
+    wanted = set(request_ids)
+    history = []
     with closing(open_existing(path, readonly=True)) as db, db:
         db.execute("BEGIN")
-        return [dict(row) for row in db.execute(
+        for row in db.execute(
             """SELECT request_id,company_id,invoice_no,field,old_value,new_value,status,committed_at
                FROM invoice_audit WHERE actor=? AND status='COMMITTED'
-               ORDER BY committed_at DESC, rowid DESC""", (user,))
-            if check_permission(db, user, row["company_id"], "read").allowed][:20]
+               ORDER BY committed_at DESC, rowid DESC""", (user,)):
+            request_id = row["request_id"]
+            if len(history) >= 20 and request_id not in wanted:
+                continue
+            wanted.discard(request_id)
+            if check_permission(db, user, row["company_id"], "read").allowed:
+                history.append(dict(row))
+            if len(history) >= 20 and not wanted:
+                break
+    return history
 
 
 def rule_history(path, capabilities):

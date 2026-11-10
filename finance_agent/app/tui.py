@@ -13,7 +13,7 @@ from rich.text import Text
 from textual import on, work
 from textual.app import App
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import Button, ContentSwitcher, DataTable, Footer, Input, RichLog, Static
+from textual.widgets import Button, Collapsible, ContentSwitcher, DataTable, Footer, Input, RichLog, Static
 from textual.worker import get_current_worker
 
 from .agent import Agent
@@ -181,6 +181,7 @@ class AgentWorkspace(ConversationUI, App):
         self.invoice_page = 1
         self.session_epoch = 0
         self.records = []
+        self.temporary_operation = 0
         self.model_requests = 0
         self.last_api_status = ""
         self.last_api_ok = None
@@ -348,11 +349,12 @@ class AgentWorkspace(ConversationUI, App):
         self.supplement = False
         self.workspace_widget("#supplement", Button).display = False
         self.session_epoch += 1
-        self.records.clear()
         self.model_requests = 0
         self.last_api_status = ""
         self.last_api_ok = None
         if clear_log:
+            self.records.clear()
+            self.workspace_widget("#record-list").display = False
             self.invoice_route = None
             self.invoice_page = 1
             self.invoice_rows = []
@@ -921,13 +923,21 @@ class AgentWorkspace(ConversationUI, App):
         return None
 
     def execute_batch(self, request):
+        batch_confirmed = False
+        approvals = {}
+
         def approve_batch(body, mode):
+            nonlocal batch_confirmed
             title = "授权后自动连续处理" if mode == "auto" else "确认整批发票修改"
-            return self.wait_confirmation(title, body, "确认整批")
+            batch_confirmed = self.wait_confirmation(title, body, "确认整批")
+            return batch_confirmed
 
         def approve_item(body):
             answer = self.wait_approval(
                 lambda: Approval("逐张确认发票修改", body, "确认本张", cancel="终止", skip=True))
+            draft = next(iter(self.agent.update_session.drafts.values()), None)
+            if draft and answer is True:
+                approvals[draft.invoice_no] = draft.request_id
             return "confirm" if answer is True else answer
 
         def checkpoint(request_id):
@@ -935,11 +945,18 @@ class AgentWorkspace(ConversationUI, App):
                 raise ValueError("批量处理已结束")
             if self.conversation and self.turn_seq is not None:
                 self.conversation.checkpoint(self.turn_seq, request_id)
+            draft = self.agent.update_session.drafts.get(request_id)
+            if draft:
+                approvals[draft.invoice_no] = request_id
 
         items = []
         status, summary = run_invoice_batch(self.agent, request["source_request"], request, approve_batch=approve_batch,
                                             approve_item=approve_item, checkpoint=checkpoint, display_items=items)
-        return status, summary, items, request["company_id"]
+        for item in items:
+            item["request_id"] = approvals.get(item["invoice_no"])
+            item["confirmed"] = batch_confirmed or item["request_id"] is not None
+            item["readback_verified"] = item["status"] == "COMMITTED"
+        return status, summary, items, request["company_id"], batch_confirmed
 
     def confirm_management(self, proposal):
         if redact(proposal) != proposal:
@@ -987,6 +1004,8 @@ class AgentWorkspace(ConversationUI, App):
         receipt = None
         batch = None
         single_item = None
+        attempted_request_id = None
+        trace_before = agent.trace_id
         try:
             agent.ask(message, read_workspace=read_workspace, task_note_from_request=True, **args)
             proposal = agent.last_response.pop("invoice_change", None)
@@ -995,19 +1014,23 @@ class AgentWorkspace(ConversationUI, App):
             elif agent.update_session.drafts:
                 draft, = agent.update_session.drafts.values()
                 fields = asdict(draft)
+                confirmed = False
                 if redact(fields) == fields:
                     field = "用途" if draft.field == "purpose" else "备注"
                     note = "\n此企业与工作区提示不同。" if self.company and self.company != draft.company_id else ""
                     name = self.company_name(draft.company_id)
                     body = (f"企业　{name}（{draft.company_id}）\n发票　{draft.invoice_no}\n字段　{field}\n"
                             f"原值　{draft.old_value or '（空）'}\n新值　{draft.new_value or '（清空）'}{note}\n尚未提交。")
-                    if self.wait_confirmation("确认发票修改", body, "确认修改"):
+                    confirmed = self.wait_confirmation("确认发票修改", body, "确认修改")
+                    if confirmed:
                         if self.conversation and self.turn_seq is not None:
                             self.conversation.checkpoint(self.turn_seq, draft.request_id)
+                        attempted_request_id = draft.request_id
                         receipt = agent.commit_update(draft.request_id, draft.fingerprint())
                 if receipt is None:
                     receipt = agent.cancel_update()
-                single_item = {**fields, "status": receipt["status"]}
+                single_item = {**fields, "status": receipt["status"], "confirmed": confirmed,
+                               "readback_verified": receipt["readback_verified"]}
                 if single_item["status"] == "COMMITTED" and not receipt["readback_verified"]:
                     single_item["status"] = "UNKNOWN_OUTCOME"
             calls = turn_tools(agent.messages[offset:])
@@ -1042,7 +1065,9 @@ class AgentWorkspace(ConversationUI, App):
             if agent.workbook_available() and agent.write_receipt["status"] != "UNKNOWN_OUTCOME":
                 agent.cancel_update()
             if self.is_running:
-                self.call_from_thread(self.fail_turn)
+                trace = agent.trace_id if agent.trace_id != trace_before else None
+                self.call_from_thread(self.fail_turn, turn_tools(agent.messages[offset:]), trace, message,
+                                      attempted_request_id)
 
     @staticmethod
     def business_card(tool, data, evidence):
@@ -1297,7 +1322,7 @@ class AgentWorkspace(ConversationUI, App):
         for detail in verified:
             self.chat_message("业务回执", detail)
         if batch:
-            batch_status, summary, items, company = batch
+            batch_status, summary, items, company, _ = batch
             if items:
                 summary = "\n".join(summary.splitlines()[:2]) + "\n\n" + self.modification_lines(items)
             self.business_message(f"批量发票修改 · {status_label(batch_status)}", summary, (company,))
@@ -1331,7 +1356,21 @@ class AgentWorkspace(ConversationUI, App):
                 self.last_api_status = "模型响应或协议校验失败"
             self.last_api_ok = False
         observed = self.last_api_status if api and api["attempts"] else ""
-        self.records.append((status, calls, observed))
+        changes = batch[2] if batch else (single_item,) if single_item else ()
+        operation = {
+            "status": "CURRENT_VALUE_MATCHES" if unchanged else status,
+            "execution_stop": stop, "api": self.storage_text(observed),
+            "companies": explicit_scope(self.agent.last_user_request or "", include_update_aliases=True).get("company_id", []),
+            "changes": [{key: item[key] for key in ("company_id", "invoice_no", "field", "status",
+                                                    "request_id", "confirmed", "readback_verified")} for item in changes],
+        }
+        if batch:
+            operation["kind"] = "批量发票修改"
+            operation["batch_confirmed"] = batch[4]
+            operation["companies"] = sorted({*operation["companies"], batch[3]})
+        elif unchanged:
+            operation["kind"] = "发票修改"
+        self.append_operation(operation, calls, self.agent.trace_id)
         if self.task_focus and self.task_focus[1] not in self.agent.context.scope.get("task_id", []):
             self.task_focus = None
         for call in calls:
@@ -1342,7 +1381,7 @@ class AgentWorkspace(ConversationUI, App):
                     self.period = scope["year"], scope["month"]
         self.workspace_widget("#supplement", Button).display = bool(self.agent.pending_edit)
         self.save_turn(calls, "UNKNOWN_OUTCOME" if any(c["status"] == "UNKNOWN_OUTCOME" for c in calls) else status,
-                       read_only)
+                       read_only, operation=operation)
         self.remember_focus()
         read_stops = {"NO_PROGRESS", "MODEL_LIMIT", "TOOL_LIMIT", "CONTEXT_LIMIT", "NO_LEGAL_WORK",
                       "EXTENSION_LIMIT", "EVIDENCE_RETURNED"}
@@ -1351,7 +1390,11 @@ class AgentWorkspace(ConversationUI, App):
         self.note(f"{label} · F2 聚焦导航，可选择执行记录")
         self.unlock()
 
-    def fail_turn(self):
+    def fail_turn(self, calls, trace, message, attempted_request_id):
+        if not (trace and self.records and self.records[-1][3]["trace"] == trace):
+            self.append_operation({"status": "UNKNOWN_OUTCOME" if attempted_request_id else "INTERRUPTED",
+                                   "lookup": attempted_request_id, "companies": explicit_scope(
+                                       message, include_update_aliases=True).get("company_id", [])}, calls, trace)
         self.turn_seq = None
         self.turn_display = []
         self.note("本轮处理失败。请核对设置。若结果未知，请先查执行记录。")
@@ -1367,6 +1410,8 @@ class AgentWorkspace(ConversationUI, App):
                 and not (chat.has_class("compact-chat") and chat.has_class("business-only"))):
             prompt.focus()
         self.update_header()
+        if self.workspace_widget("#panes", ContentSwitcher).current == "records":
+            self.call_later(self.refresh_pane, "records")
 
     def workspace_widget(self, selector, widget=None):
         return self.screen_stack[0].query_one(selector, widget)
@@ -1383,6 +1428,8 @@ class AgentWorkspace(ConversationUI, App):
         if page == "finance":
             self.invoice_route = None
             self.invoice_page = 1
+        if page == "records":
+            self.workspace_widget("#record-list").display = False
         self.select_pane(page)
         self.update_header()
         if page == "chat":
@@ -1395,7 +1442,12 @@ class AgentWorkspace(ConversationUI, App):
     async def refresh_pane(self, page):
         targets = {"tasks": "#task-body", "finance": "#finance-body", "records": "#record-list"}
         holder = self.workspace_widget(targets[page], VerticalScroll)
+        epoch = self.session_epoch
+        expanded = {item.id for item in holder.query(Collapsible) if not item.collapsed and item.id} if (
+            page == "records" and holder.display) else set()
         await holder.remove_children()
+        if page == "records" and (epoch != self.session_epoch or not self.user):
+            return
         try:
             if page == "tasks":
                 widgets = self.task_widgets()
@@ -1403,10 +1455,14 @@ class AgentWorkspace(ConversationUI, App):
                 widgets = self.finance_widgets()
             else:
                 widgets = self.record_widgets()
+                for widget in widgets:
+                    if isinstance(widget, Collapsible) and widget.id in expanded:
+                        widget.collapsed = False
         except (OSError, ValueError, sqlite3.Error):
             widgets = [Static("无法读取当前记录。请核对工作库、规则或权限。", markup=False)]
         await holder.mount(*widgets)
-        holder.display = True
+        if page != "records" or (epoch == self.session_epoch and self.user):
+            holder.display = True
 
     def task_widgets(self):
         self.task_links = {}
@@ -1721,36 +1777,178 @@ class AgentWorkspace(ConversationUI, App):
         else:
             self.task_feedback("此发票当前不可读取。请返回目录刷新。")
 
+    def append_operation(self, operation, calls, trace):
+        if self.turn_seq is None:
+            self.temporary_operation += 1
+        record = {**operation, "seq": self.turn_seq, "temporary": self.temporary_operation,
+                  "mode": self.mode, "calls": calls, "trace": trace}
+        self.records.append((operation["status"], calls, operation.get("api", ""), record))
+
+    @staticmethod
+    def operation_status(record, audits):
+        status = record.get("status")
+        changes = record.get("changes", ())
+        committed = [item for item in changes if item["status"] == "COMMITTED"]
+        if status == "UNKNOWN_OUTCOME" or record.get("state") == "UNKNOWN_OUTCOME":
+            if len(audits) == 1 and len(changes) <= 1:
+                if committed and committed[0]["readback_verified"]:
+                    return "已提交并回读核验 · 另有结果未知"
+                return "审计已证实提交 · 回读未核实"
+            return "部分已提交 · 仍有结果未知" if committed or audits else "提交结果未知"
+        if committed:
+            if len(committed) < len(changes) or status == "PARTIAL_RESULT":
+                return "部分成功"
+            return "已提交并回读核验" if all(item["readback_verified"] for item in committed) else "已提交 · 回读未核实"
+        if status == "CANCELLED":
+            return "已取消 · 未提交"
+        if audits:
+            return "审计已证实提交 · 回读未核实"
+        if status == "WAITING_CONFIRMATION":
+            return "等待确认 · 未提交"
+        if status == "CURRENT_VALUE_MATCHES":
+            return "当前值已相同 · 未提交"
+        if changes and status == "COMPLETED":
+            return "未提交 · 跳过或无需变更"
+        if status == "PARTIAL_RESULT":
+            return "部分完成"
+        if status == "INTERRUPTED" or record.get("state") == "INTERRUPTED":
+            return "处理中断"
+        return status_label(status) if status else "已结束 · 结果未记录"
+
+    @staticmethod
+    def audit_lines(audit):
+        field = {"purpose": "用途", "remark": "备注"}[audit["field"]]
+        return [
+            f"成功审计　{audit['committed_at']} · {audit['company_id']} {audit['invoice_no']} · {field}",
+            f"原值 {audit['old_value'] or '（空）'}　新值 {audit['new_value'] or '（空）'}",
+            f"请求编号 {audit['request_id']}",
+        ]
+
+    @staticmethod
+    def operation_lines(record):
+        lines = []
+        for key, label in (("mode", "模式"), ("api", "联网"), ("trace", "Trace ID")):
+            if record.get(key):
+                lines.append(f"{label}　{record[key]}")
+        if record.get("status"):
+            lines.append(f"记录结果　{status_label(record['status'])}")
+        if record.get("execution_stop") and record["execution_stop"] != record.get("status"):
+            lines.append(f"Agent 停止状态　{status_label(record['execution_stop'])}")
+        for call in record["calls"]:
+            scope = call.get("scope") or {}
+            company = "、".join(scope.get("company_ids", ())) or scope.get("company_id", "")
+            periods = scope.get("periods")
+            if periods:
+                period = "、".join(f"{year:04d}-{month:02d}" for year, month in periods)
+            elif scope.get("year") and scope.get("month"):
+                period = f"{scope['year']:04d}-{scope['month']:02d}"
+            elif scope.get("year"):
+                period = f"{scope['year']} 年"
+            else:
+                period = scope.get("business_date", "")
+            rule_id, version = call.get("rule") or (None, None)
+            rule = f"{rule_id} v{version}" if rule_id and version else ""
+            line = f"{call['tool'] or '工具'} · {status_label(call['status'])}"
+            parts = (line, company, period, scope.get("invoice_no"), rule, call["id"])
+            lines.append(" · ".join(str(value) for value in parts if value))
+            for key, label in (("source", "来源"), ("error", "错误")):
+                if call.get(key):
+                    lines.append(f"  {label}　{call[key]}")
+            if scope.get("rule_business_date"):
+                lines.append(f"  参考规则日期　{scope['rule_business_date']}")
+        return lines
+
     def record_widgets(self):
+        if self.conversation:
+            self.conversation.validate()
         items = [Static(f"本次对话的真实模型请求尝试　{self.model_requests}", markup=False)] if self.model_requests else []
         if self.last_api_status:
-            items.append(Static(safe_text("最近联网状态　" + self.last_api_status), markup=False))
-        for index, (status, calls, api) in reversed(list(enumerate(self.records, 1))):
-            lines = [f"第 {index} 轮 · {status_label(status)}"]
-            if api:
-                lines.append(f"联网　{api}")
-            for call in calls:
-                scope = call["scope"] or {}
-                where = scope.get("company_id", "")
-                if "year" in scope and "month" in scope:
-                    where += f" {scope['year']:04d}-{scope['month']:02d}"
-                rule_id, version = call.get("rule", (None, None))
-                rule = f" · {rule_id} v{version}" if rule_id and version else ""
-                lines.append(f"{call['tool']} · {status_label(call['status'])} · {where}{rule} · {call['id']}")
-                if call.get("source"):
-                    lines.append(f"  来源 {call['source']}")
-                if call.get("error"):
-                    lines.append(f"  {call['error']}")
-            items.append(Static(safe_text("\n".join(lines)), markup=False))
-        for state, mode, calls in reversed(self.saved_records):
-            lines = [f"历史轮次 · {state} · {mode or '未记录'}"]
-            for call in calls:
+            items.append(Static(self.storage_text("最近联网状态　" + self.last_api_status), markup=False))
+        permitted = {row["company_id"] for row in company_access(self.db, self.user) if row["read"]}
+        records = [row[3] for row in reversed(self.records)] + list(reversed(self.saved_records))
+        request_ids = {item["request_id"] for record in records for item in record.get("changes", ())
+                       if item.get("request_id") and item["confirmed"]}
+        request_ids.update(record["lookup"] for record in records if record.get("lookup"))
+        try:
+            audits = {audit["request_id"]: audit for audit in invoice_history(self.db, self.user, request_ids=request_ids)}
+        except (OSError, ValueError, sqlite3.Error):
+            audits = {}
+            items.append(Static("暂时无法读取成功审计。", markup=False))
+
+        seen = set()
+        for record in records:
+            seq = record["seq"]
+            if seq is not None and seq in seen:
+                continue
+            changes = record.get("changes", ())
+            companies = set(record.get("companies", ())) | {item["company_id"] for item in changes}
+            for call in record["calls"]:
                 scope = call.get("scope") or {}
-                lines.append(f"{call['tool']} · {status_label(call['status'])} · {scope.get('company_id','')} · {call['id']}")
-            items.append(Static(safe_text("\n".join(lines)), markup=False))
-        for audit in invoice_history(self.db, self.user):
-            items.append(Static(safe_text(
-                f"{audit['committed_at']} · {audit['company_id']} {audit['invoice_no']} · 成功修改"
-                f"\n原值 {audit['old_value'] or '（空）'}　新值 {audit['new_value']}"
-                f"\n审计编号 {audit['request_id']}"), markup=False))
+                companies.update(scope.get("company_ids", ()))
+                if scope.get("company_id"):
+                    companies.add(scope["company_id"])
+            if companies - permitted:
+                continue
+            if seq is not None:
+                seen.add(seq)
+            operation = f"操作 #{seq}" if seq is not None else f"临时 #{record['temporary']}（本次运行）"
+            widget_id = f"operation-{seq}" if seq is not None else f"operation-local-{record['temporary']}"
+
+            associated = {}
+            for item in changes:
+                request_id = item.get("request_id")
+                audit = audits.get(request_id)
+                if item["confirmed"] and audit and all(
+                    item[key] == audit[key] for key in ("company_id", "invoice_no", "field")
+                ):
+                    associated[request_id] = audits.pop(request_id)
+            lookup = record.get("lookup")
+            if not changes and lookup in audits:
+                associated[lookup] = audits.pop(lookup)
+
+            names = {call["tool"] for call in record["calls"]}
+            if record.get("kind"):
+                kind = record["kind"]
+            elif changes or lookup or names & {"prepare_invoice_update", "propose_invoice_changes"}:
+                kind = "发票修改"
+            elif names & {"list_tasks", "manage_task"}:
+                kind = "待办"
+            elif names & {"manage_preference", "manage_display_preference"}:
+                kind = "偏好"
+            else:
+                kind = "业务查询" if names else "对话"
+
+            title = f"{operation} · {kind} · {self.operation_status(record, associated)}"
+            lines = self.operation_lines(record)
+            if record.get("batch_confirmed"):
+                lines.append("整批确认　已确认")
+            change_states = {
+                "COMMITTED": "已提交", "CANCELLED": "已取消 · 未提交", "SKIPPED": "已跳过 · 未提交",
+                "NOT_EXECUTED": "未执行 · 未提交", "NOT_SUBMITTED": "未提交",
+                "NO_CHANGE": "无需变更", "UNKNOWN_OUTCOME": "提交结果未知",
+            }
+            for item in changes:
+                field = {"purpose": "用途", "remark": "备注"}[item["field"]]
+                change_status = item["status"]
+                line = f"{item['company_id']} {item['invoice_no']} · {field} · {change_states.get(change_status, status_label(change_status))}"
+                if item["confirmed"]:
+                    line += " · 已确认"
+                if item["readback_verified"]:
+                    line += " · 已回读核验"
+                elif change_status in {"COMMITTED", "UNKNOWN_OUTCOME"}:
+                    line += " · 回读未核实"
+                lines.append(line)
+                if item.get("request_id") and item["request_id"] not in associated:
+                    lines.append(f"  请求编号　{item['request_id']}")
+            if lookup and not changes and not associated:
+                lines.append(f"请求编号　{lookup}")
+            for audit in associated.values():
+                lines.extend(self.audit_lines(audit))
+            items.append(Collapsible(Static(self.storage_text("\n".join(lines) or "没有可恢复的执行详情。"), markup=False),
+                                     title=self.storage_text(title), collapsed=True, id=widget_id))
+
+        for audit in list(audits.values())[:20]:
+            title = f"历史审计 {audit['request_id'][:8]} · {audit['company_id']} {audit['invoice_no']} · 已提交"
+            items.append(Collapsible(Static(self.storage_text("\n".join(self.audit_lines(audit))), markup=False),
+                                     title=self.storage_text(title), collapsed=True))
         return items or [Static("暂无执行记录。", markup=False)]

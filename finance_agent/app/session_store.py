@@ -139,6 +139,8 @@ class SessionStore:
             chat = dict(row)
             title = " ".join((chat.pop("first_request") or "").split())
             calls = json.loads(chat.pop("calls") or "[]")
+            if isinstance(calls, dict):
+                calls = calls["tools"]
             chat["company_ids"] = sorted({c["scope"]["company_id"] for c in calls
                                           if (c.get("scope") or {}).get("company_id")})
             chat["title"] = (title[:36] + "…" if len(title) > 36 else title) or "空白对话"
@@ -211,13 +213,16 @@ class SessionStore:
             if changed != 1:
                 raise ValueError("Turn is no longer active")
 
-    def finish(self, seq, display, calls, trace, hint, state="COMPLETED"):
+    def finish(self, seq, display, calls, trace, hint, state="COMPLETED", *, operation=None):
         self.validate()
         if state not in {"COMPLETED","INTERRUPTED","UNKNOWN_OUTCOME"}:
             raise ValueError("Invalid terminal turn state")
-        evidence = [{k:c.get(k) for k in ("id","tool","status","scope","rule")} for c in calls]
+        evidence = [{k: c.get(k) for k in ("id", "tool", "status", "scope", "rule")}
+                    | {k: c[k] for k in ("source", "error") if k in c} for c in calls]
         if any(c["tool"] in {"manage_task","manage_preference","manage_display_preference","prepare_invoice_update"} for c in evidence):
             hint = None
+        if operation is not None:
+            evidence = {"tools": evidence, "operation": operation}
         with self.connection() as db:
             db.execute("""UPDATE turns SET display=?,calls=?,trace=?,hint=?,state=?
                           WHERE chat=? AND seq=? AND state IN ('RUNNING','UNKNOWN_OUTCOME')""",
@@ -234,6 +239,10 @@ class SessionStore:
                 row = dict(entry)
                 for key in ("display","calls","hint"):
                     row[key] = json.loads(row[key]) if row[key] else None
+                stored = row["calls"]
+                row["operation"] = stored["operation"] if isinstance(stored, dict) else {}
+                if isinstance(stored, dict):
+                    row["calls"] = stored["tools"]
                 rows.append(row)
         return {key: json.loads(chat[key]) if chat[key] else None for key in ("focus","task")} | {
             "boundary":chat["boundary"],"turns":rows}
