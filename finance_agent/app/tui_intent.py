@@ -51,20 +51,24 @@ def _edit_scope(match, text):
 
 def quoted_edit_candidate(text):
     """Extract a uniquely quoted user value; this is evidence, never permission."""
-    if re.search(r"(?:不用|无需|不必|跳过).{0,12}确认|[?？]|(?:不要|别)\s*(?:修改|改|换)", text):
+    if (re.search(r"(?:不用|无需|不必|跳过).{0,12}确认|[?？]|(?:不要|别)\s*(?:修改|改|换)", text)
+            or re.match(r"\s*(?:请\s*)?(?:查询|查看|列出|核对|假设|如果|例如)", text)):
         return None
-    fields = {"purpose" if item == "用途" else "remark"
-              for item in re.findall(r"用途|备注", text)}
-    if len(fields) != 1:
-        return None
-    values = re.findall(
+    values = list(re.finditer(
         r"(?:换成|改成|修改为|设置为|填成|写成|设为)\s*(?:“([^”]*)”|‘([^’]*)’|\"([^\"]*)\")",
         text,
-    )
-    extracted = [next((part for part in group if part), "") for group in values]
-    if len(extracted) != 1 or not extracted[0].strip():
+    ))
+    if len(values) != 1:
         return None
-    return {"field": fields.pop(), "new_value": extracted[0]}
+    match = values[0]
+    prefix = text[:match.start()]
+    if not re.search(r"发票|单据|单子|这张|那张", prefix):
+        return None
+    fields = {"purpose" if item == "用途" else "remark" for item in re.findall(r"用途|备注", prefix)}
+    value = next((part for part in match.groups() if part is not None), "")
+    if len(fields) != 1 or not value.strip():
+        return None
+    return {"field": fields.pop(), "new_value": value}
 
 
 def edit_turn(text, pending, *, guided=False):

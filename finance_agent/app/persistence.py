@@ -9,14 +9,20 @@ from uuid import uuid4
 
 def task_note_from_request(request):
     """Return a literally specified note, or the complete original request as fallback."""
-    quoted = re.findall(
-        r"(?:说明|备注)\s*(?:写成|写为|写|设为|改为|填为|是)\s*(?:[‘“]([^’”]*)[’”]|\"([^\"]*)\"|'([^']*)')",
-        request,
-    )
-    if not quoted:
+    labels = list(re.finditer(r"(?:说明|备注)\s*(?:写成|写为|写|设为|改为|填为|是)\s*", request))
+    if not labels:
         return request
-    notes = [next((part for part in match if part), "") for match in quoted]
-    return notes[0] if len(notes) == 1 and notes[0].strip() else None
+    if len(labels) != 1:
+        return None
+    tail = request[labels[0].end():]
+    quoted = re.match(r"""“([^”]*)”|‘([^’]*)’|"([^"]*)"|'([^']*)'""", tail)
+    if quoted:
+        note = next((part for part in quoted.groups() if part is not None), "")
+    elif tail.startswith(("“", "‘", '"', "'")):
+        return None
+    else:
+        note = re.split(r"[，,。；;\n]", tail, maxsplit=1)[0].strip()
+    return note if note.strip() else None
 
 
 @dataclass

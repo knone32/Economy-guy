@@ -51,7 +51,7 @@ SYSTEM += """
 追问 {"kind":"clarification","text":"自然语言问题","missing_fields":["invoice_no"]}。
 若问题需要解释已有可信查询，且 context_data.explanation_facts 提供相应证据，使用
 {"kind":"explanation","text":"根据已核验事实写自然说明"}。年度解释可直接引用证据中的企业、账期、张数和规则版本；
-也可用 [[result]] 代表已核验张数、[[boundary]] 代表规则引用。银行流水与发票付款关系仍使用 [[boundary]]。
+也可用 [[result]] 代表已核验张数、[[boundary]] 代表规则引用。银行流水与发票付款关系可使用 [[boundary]]，程序仅展示可信关联边界。
 用户引用的数量与证据不符时，明确归属，例如用「您提到的……」或「并非……」区分用户原话与已核验数量。
 不要自行添加金额、规则或操作回执。
 历史结果可用于解释当时的查询。若用户明确要求最新值，必须重新查询；解释年度空值含义无需运行月度合规检查。
@@ -389,6 +389,10 @@ class Agent:
         # 只读轮不向模型提供写草稿能力；执行白名单仍会拒绝伪造调用。
         turn_tools=[tool for tool in self.tools
                     if allow_prepare or tool['function']['name']!='prepare_invoice_update']
+        if bulk_no_confirmation:
+            turn_tools = [tool for tool in turn_tools if tool["function"]["name"] not in {
+                "prepare_invoice_update", "propose_invoice_edit", "manage_task", "manage_preference",
+                "manage_display_preference", "set_schedule"}]
         self.write_receipt = self._receipt("NOT_SUBMITTED")
         self.trace_id = uuid4().hex
         self.trace("turn.started", {"user": self.user_id, "transport_bound": self.transport is not None})
@@ -437,8 +441,15 @@ class Agent:
                 if len(years) == len(explicit["month"]) == 1:
                     explicit["periods"] = [(explicit["year"][0], explicit["month"][0])]
                     date_sources["periods"] = "session_confirmed"
-        previous_facts = self.context.explanation_facts(
-            (self.last_response or {}).get("tool_results", ()), explicit, historical=True) if read_only else {}
+        previous_results = (self.last_response or {}).get("tool_results", ())
+        previous_facts = self.context.explanation_facts(previous_results, explicit, historical=True) if read_only else {}
+        prior_task_scopes = {
+            (scope["company_id"], scope["year"], scope["month"])
+            for name, outcome in previous_results
+            if name == "check_missing_purpose" and outcome["status"] == "SUCCESS"
+            and outcome["evidence"].get("source") == "current_sqlite"
+            and {"company_id", "year", "month"} <= (scope := outcome["evidence"].get("scope", {})).keys()
+        } if read_only and task_note_from_request else set()
         hint = reference_hint(query_text)
         exact_key = len(explicit.get("company_id", ())) == len(explicit.get("invoice_no", ())) == 1
         recent_semantics = (not (mixed or management or deferred or self.teaching or exact_key)
@@ -527,7 +538,7 @@ class Agent:
         periods = trusted_scope.get("periods", ())
         goals = [(goal, company, *periods[0]) for company in companies] if (
             covered_turn and goal and companies and set(companies) <= {"C001", "C002"} and len(periods) == 1) else []
-        bank_comparison_requested = (goal == "bank_income" and
+        bank_comparison_requested = (goal == "bank_income" and set(companies) == {"C001", "C002"} and
                                      bool(re.search(r"比较|对比|哪家多|谁多|哪家高|差多少|相差", text)))
         if covered_turn:
             turn_tools = [tool for tool in turn_tools if tool["function"]["name"] != "set_schedule"]
@@ -596,6 +607,24 @@ class Agent:
             else:
                 self.coordinator.assess_current_match(read_results)
             goal_coverage = coverage() if covered_turn else None
+            summaries = []
+            if bank_comparison_requested:
+                compared, complete = render_bank_income_comparison(read_results, goals)
+                summaries.append(compared)
+                if goal_coverage and not complete:
+                    goal_coverage["unknown"] = True
+            if goal == "purpose_rule":
+                hypothetical = render_hypothetical_purpose_rules(read_results, text_request, goals)
+                if hypothetical:
+                    summaries.append(hypothetical)
+            if bulk_no_confirmation:
+                summaries.append("本轮未执行批量无确认修改：发票用途修改必须逐项明确真实用途并由用户确认。"
+                                 "用途字段为空，不能据此认定实际用途是所提类别。")
+                if not execution.stop_reason:
+                    verified_read = any(result["status"] in {"SUCCESS", "NO_DATA"}
+                                        and result["evidence"].get("source") == "current_sqlite"
+                                        for _, result in read_results)
+                    execution.stop("PARTIAL_RESULT" if verified_read else "DENIED")
             if not execution.stop_reason:
                 partial = goal_coverage and (goal_coverage["unknown"] or deferred
                           or any(state != "VERIFIED" for _, _, state in goal_coverage["reads"])
@@ -613,17 +642,10 @@ class Agent:
                     text += "\n引用锚点未能保存，请使用明确的企业和发票号。"
                 for anchor in anchors or ():
                     text += "\n已展示引用列表 anchor:" + anchor["anchor_id"] + "；" + json.dumps(anchor,ensure_ascii=False)
-            if bank_comparison_requested:
-                compared = render_bank_income_comparison(read_results, goals)
-                if compared:
-                    text += "\n" + compared
-            if goal == "purpose_rule":
-                hypothetical = render_hypothetical_purpose_rules(read_results, text_request, goals)
-                if hypothetical:
-                    text += "\n" + hypothetical
-            if bulk_no_confirmation:
-                text += ("\n本轮未执行批量无确认修改：发票用途修改必须逐项明确真实用途并由用户确认。"
-                         "用途字段为空不能推断实际用途就是用户提出的类别；上方已核验的查询结果不代表写入成功。")
+            if summaries:
+                summary = "\n".join(summaries)
+                chat_notice = "\n".join(filter(None, (chat_notice, summary)))
+                text = "\n".join(filter(None, (text, summary)))
             if self.write_receipt['status']=='CURRENT_VALUE_MATCHES':text+='\n'+self.write_receipt['message']
             self.last_response = {"source":"runtime_output", "category":category, "text":text, "operation_receipt":self.write_receipt, "trace_degraded":self.trace_degraded,"execution":execution.snapshot()}
             api={key:self.transport.counts()[key]-api_before[key] for key in api_before} if api_before is not None else None
@@ -686,6 +708,12 @@ class Agent:
                     "本轮尚无当前业务查询证据。不要复述历史金额、规则或记录。"
                     "请根据原始用户请求和可信范围调用所需查询工具；范围或对象不明确则返回 clarification。"
                     "不创建待办、不保存偏好、不修改发票。只纠正本轮的查询回答。"})
+            if len(prior_task_scopes) == 1 and re.search(r"待办|任务", text_request):
+                company, year, month = next(iter(prior_task_scopes))
+                if not scope_mismatch(explicit, {"company_id": company, "year": year, "month": month}):
+                    context.append({"role": "system", "content":
+                        f"上一轮唯一核验的用途缺项范围为 {company} / {year:04d}-{month:02d}。"
+                        "若用户明确要求为该批记录创建待办，可提出 create 候选，必须由用户确认。"})
             if bulk_no_confirmation:
                 context.append({"role": "system", "content":
                     "本轮包含不支持的批量无确认用途修改，绝不执行修改或创建修改草稿。"
@@ -870,14 +898,32 @@ class Agent:
                             tool_scope = {key: values for key, values in tool_scope.items() if key != "invoice_no"}
                             tool_proof.values.pop("invoice_no", None)
                             tool_proof.sources.pop("invoice_no", None)
+                        if fn.get("name") == "manage_task" and len(prior_task_scopes) == 1 and annual_year is None:
+                            company, year, month = next(iter(prior_task_scopes))
+                            checked = {"company_id": company, "year": year, "month": month}
+                            if not scope_mismatch(explicit, checked):
+                                try:
+                                    task_args = validate_arguments("manage_task", fn.get("arguments"))
+                                except (TypeError, ValueError):
+                                    task_args = {}
+                                if task_args.get("action") == "create":
+                                    scope = {key: [value] for key, value in checked.items()}
+                                    scope["periods"] = [(year, month)]
+                                    tool_scope = {**scope, **explicit}
+                                    tool_proof = ScopeProof(self.user_id, tool_scope,
+                                                           {**dict.fromkeys(scope, "current_sqlite"),
+                                                            **dict.fromkeys(explicit, "user_current")})
                         if fn.get("name") == "propose_invoice_edit":
                             try:
                                 proposal = validate_arguments("propose_invoice_edit", fn.get("arguments"))
                             except (ValueError, TypeError):
                                 proposal = None
-                            candidate = recent_invoices.get(proposal["source"]) if proposal else None
+                            candidate = recent_context["candidates"].get(proposal["source"]) if proposal else None
                             key = ({k: candidate[k] for k in ("company_id", "invoice_no")} if candidate else {})
-                            if (not proposal or not edit_literal or not candidate
+                            rejected = execution.guard("propose_invoice_edit", proposal) if proposal else None
+                            if rejected:
+                                result = rejected
+                            elif (not proposal or not edit_literal or not candidate
                                     or any(proposal[k] != edit_literal[k] for k in ("field", "new_value"))
                                     or scope_mismatch(explicit, key) or len(recent_keys) != 1):
                                 result = tool_result("AMBIGUOUS", error="修改候选与原话或唯一可信发票不一致，请明确发票与新值")

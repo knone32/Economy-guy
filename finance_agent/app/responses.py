@@ -34,7 +34,8 @@ def render_explanation_evidence(facts):
             text += f"该企业在该账期的依据为 {data['rule']['id']} v{data['rule']['version']}。"
         return text
     if "bank_invoice_link" in facts:
-        return "当前账簿没有可靠的发票与银行流水关联，无法据此判断具体发票是否已付款。"
+        return ("已核验的银行收入不能单独证明本期发票已全部回款。"
+                "当前账簿没有可靠的发票与银行流水逐笔关联，无法据此确认具体发票是否已付款。")
     return ""
 
 
@@ -82,24 +83,18 @@ def render_grounded_explanation(text, facts, user_text=""):
         prose = re.sub(counts, "", prose)
         rendered = re.sub(token, lambda match: slots[match[1]], text)
     else:
-        # A verified bank read proves only the lack of a reliable invoice-bank
-        # mapping. Permit a natural negative explanation, with or without the
-        # optional boundary marker; never accept a positive payment assertion.
+        # Interpret the explanation request without promoting the model's amounts or payment claims.
         markers = re.findall(token, text)
         if markers not in ([], ["boundary"]):
             return None
         prose = re.sub(token, "", text)
-        if (not prose.strip() or not re.search(r"银行|流水|进账", prose)
+        if markers and not prose.strip(" 。！!，,；;\n\t"):
+            return evidence
+        if (not re.search(r"银行|流水|进账", prose)
                 or not re.search(r"发票|回款|收款", prose)
-                or not re.search(r"不能|无法|不足以|不意味|不代表|不等于|没有可靠|缺乏|缺少", prose)
-                or re.search(r"[\d¥￥$\[\]]|人民币|成功(?:保存|提交|修改)|已(?:经)?(?:保存|提交|修改|确认|授权)|"
-                             r"[零〇一二两三四五六七八九十百千万亿]+\s*(?:张|条|元|分|年|月|多)", prose)):
+                or not re.search(r"不能|无法|不足以|不意味|不代表|不等于|没有可靠|缺乏|缺少", prose)):
             return None
-        for clause in re.split(r"[，,。；;\n]", prose):
-            if re.search(r"(?:已(?:经)?|都|全部|所有|每张).{0,14}(?:回款|收款|付款|支付|对应)", clause):
-                if not re.search(r"不能|无法|不足以|不意味|不代表|不等于|没有可靠|缺乏|缺少", clause):
-                    return None
-        return re.sub(token, lambda _: evidence, text) if markers else prose.strip() + "\n" + evidence
+        return evidence
     if (not prose.strip() or re.search(
             r"[\d¥￥$\[\]]|[零〇一二两三四五六七八九十百千万亿]+\s*(?:张|条|元|分|年|月)|"
             r"金额|人民币|已(?:经)?(?:保存|提交|修改|付款|支付|确认|授权)|成功(?:保存|提交|修改)", prose)):
@@ -194,7 +189,7 @@ def render_bank_income_comparison(results, goals):
     targets = {(company, year, month) for goal, company, year, month in goals
                if goal == "bank_income"}
     if len(targets) != 2 or len({(year, month) for _, year, month in targets}) != 1:
-        return ""
+        return "银行进账金额比较未完成：请明确两家企业的同一账期。", False
     amounts = {}
     for name, outcome in results:
         evidence = outcome.get("evidence", {})
@@ -216,7 +211,7 @@ def render_bank_income_comparison(results, goals):
         amounts[target] = amount
     missing = sorted(target[0] for target in targets if target not in amounts)
     if missing:
-        return "银行进账金额比较未完成：尚未取得 " + "、".join(missing) + " 同一账期的可信收入总额；已成功的单侧查询仍有效。"
+        return "银行进账金额比较未完成：尚未取得 " + "、".join(missing) + " 同一账期的可信收入总额；已成功的单侧查询仍有效。", False
     (left, right) = sorted(targets)
     a, b = amounts[left], amounts[right]
     year, month = left[1:]
@@ -227,7 +222,7 @@ def render_bank_income_comparison(results, goals):
     else:
         higher = left[0] if a > b else right[0]
         conclusion = f"{higher} 银行收入更多，相差 ¥{abs(a-b):,.2f}。"
-    return f"{year} 年 {month} 月银行收入比较（当前 SQLite）：{first}；{second}。{conclusion}"
+    return f"{year} 年 {month} 月银行收入比较（当前 SQLite）：{first}；{second}。{conclusion}", True
 
 
 def render_hypothetical_purpose_rules(results, request, goals):
@@ -235,16 +230,20 @@ def render_hypothetical_purpose_rules(results, request, goals):
     if not (re.search(r"发票|单据", request) and
             re.search(r"没填用途|未填用途|用途为空|用途还空|用途没填", request)):
         return ""
-    fragments = re.findall(
-        r"([甲乙])(?:企业|公司)(?:(?![甲乙](?:企业|公司)).){0,85}?(\d+(?:\.\d{1,2})?)\s*元",
-        request,
-    )
-    if not fragments or len(fragments) != len(set(company for company, _ in fragments)):
+    company_pattern = r"甲(?:企业|公司)|乙(?:企业|公司)|(?<![A-Za-z0-9])C00[12](?![A-Za-z0-9])"
+    amount_pattern = r"(?<![\d.,+\-])(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]{1,2})?"
+    fragments = re.findall(rf"({company_pattern})(?:(?!(?:{company_pattern})).){{0,85}}?"
+                           rf"({amount_pattern})\s*元", request, flags=re.I)
+    if not fragments:
         return ""
-    aliases = {"甲": "C001", "乙": "C002"}
+    aliases = {"甲企业": "C001", "甲公司": "C001", "乙企业": "C002", "乙公司": "C002",
+               "C001": "C001", "C002": "C002"}
+    fragments = [(aliases[company.upper()], literal.replace(",", "")) for company, literal in fragments]
     targets = {(company, year, month) for goal, company, year, month in goals if goal == "purpose_rule"}
-    if not targets or any((aliases[company], 2026, 9) not in targets for company, _ in fragments):
-        return ""
+    if len({company for company, _ in fragments}) != len(fragments):
+        return "假设金额不能唯一对应企业，请分别注明每家企业的金额。"
+    if not targets or any((company, 2026, 9) not in targets for company, _ in fragments):
+        return "无法判断这笔假设发票：请明确企业及 2026 年 9 月的适用规则范围。"
     rules = {}
     for name, outcome in results:
         scope = outcome.get("evidence", {}).get("scope", {})
@@ -254,8 +253,8 @@ def render_hypothetical_purpose_rules(results, request, goals):
                 and scope.get("rule_type") == "purpose" and key in targets):
             rules[key] = outcome["data"]
     statements = []
-    for alias, literal in fragments:
-        company = aliases[alias]
+    for company, literal in fragments:
+        alias = "甲" if company == "C001" else "乙"
         rule = rules.get((company, 2026, 9))
         if not rule:
             statements.append(f"{alias}企业的适用规则尚未核验，不能判断假设金额是否违反必填要求。")

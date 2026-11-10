@@ -214,6 +214,14 @@ def _task_note_request_error(request, action, proof):
                                      "requested_scope": explicit})
     if any(len(explicit.get(key, ())) > 1 for key in ("year", "month", "periods")):
         return tool_result("AMBIGUOUS", error="请明确单一账期后再管理待办")
+    if action == "create":
+        trusted = proof.values if proof else {}
+        companies = explicit.get("company_id") or trusted.get("company_id", ())
+        periods = explicit.get("periods") or trusted.get("periods", ())
+        missing = (["company_id"] if len(companies) != 1 else []) + (["year", "month"] if len(periods) != 1 else [])
+        if missing:
+            return tool_result("AMBIGUOUS", error="请先明确唯一的待办企业和账期",
+                               evidence={"missing_fields": missing})
     return None
 
 
