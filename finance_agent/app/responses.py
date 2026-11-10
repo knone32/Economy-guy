@@ -529,9 +529,91 @@ def render_sql_evidence(data):
     return "\n".join(lines)
 
 
+# Only label projections whose expression and source are both visible in this small SQL form.
+_SQL_SOURCE = re.compile(
+    r"\s*select\s+([\w\s,()*]+?)\s+from\s+(invoices|bank_transactions)"
+    r"(?:\s+where\s+\w+\s*(?:[<>=!]+|like)\s*(?:-?\d+|'(?:[^']|'')*')"
+    r"(?:\s+and\s+\w+\s*(?:[<>=!]+|like)\s*(?:-?\d+|'(?:[^']|'')*'))*)?"
+    r"(?:\s+group\s+by\s+\w+(?:\s*,\s*\w+)*)?"
+    r"(?:\s+order\s+by\s+\w+(?:\s+(?:asc|desc))?(?:\s*,\s*\w+(?:\s+(?:asc|desc))?)*)?"
+    r"\s*;?\s*", re.IGNORECASE,
+)
+_SQL_LABELS = {
+    "invoices": {"invoice_no": "发票编号", "invoice_date": "开票日期", "seller_name": "销售方",
+                 "item_name": "项目", "purpose": "用途", "remark": "备注", "amount_cents": "价税合计",
+                 "sum(amount_cents)": "价税合计", "count(*)": "发票数量", "company_id": "企业"},
+    "bank_transactions": {"transaction_no": "流水编号", "transaction_date": "交易日期", "direction": "收支方向",
+                          "counterparty_name": "交易对方", "amount_cents": "金额",
+                          "sum(amount_cents)": "金额合计", "count(*)": "流水数量", "company_id": "企业"},
+}
+
+
+def sql_display_rows(data):
+    match = _SQL_SOURCE.fullmatch(data["sql"])
+    columns = data["columns"]
+    names = list(columns)
+    units = [""] * len(columns)
+    if match:
+        projections, table = match.groups()
+        table = table.lower()
+        expressions = projections.split(",")
+        if len(expressions) == len(columns):
+            for i, expression in enumerate(expressions):
+                source = re.fullmatch(r"(\w+|(?:sum|count)\s*\(\s*(?:\w+|\*)\s*\))"
+                                      r"(?:\s+(?:as\s+)?\w+)?", expression.strip(), flags=re.IGNORECASE)
+                if not source:
+                    continue
+                source = re.sub(r"\s+", "", source[1].lower())
+                names[i] = _SQL_LABELS[table].get(source, columns[i])
+                if source == "count(*)":
+                    units[i] = " 张" if table == "invoices" else " 条"
+    lines = []
+    for row, derived in zip(data["rows"], data["derived"]):
+        cells = []
+        for i, (name, value) in enumerate(zip(names, row)):
+            amount = derived.get(str(i))
+            rendered = f"¥{Decimal(amount):,f}" if amount is not None else "（空）" if value is None else f"{value}{units[i]}"
+            if "percentage" in derived:
+                name = {"numerator": "分子", "denominator": "分母"}.get(name, name)
+            cells.append(f"{name}：{rendered}")
+        if "percentage" in derived:
+            cells.append(f"比例：{derived['percentage'] or '无法计算（分母为零）'}")
+        lines.append(" · ".join(cells))
+    return lines
+
+
+def directory_count_only(data):
+    """A count over the entire invoice snapshot, with no additional output or filters."""
+    if (not data["truncated"] and len(data["rows"]) == 1
+            and re.fullmatch(r"\s*select\s+count\s*\(\s*\*\s*\)(?:\s+as\s+\w+)?"
+                             r"\s+from\s+invoices\s*;?\s*", data["sql"], re.IGNORECASE)):
+        return data["rows"][0][0]
+    return None
+
+
+def redundant_directory_count(outcome, directory_totals):
+    scope = outcome["evidence"]["scope"]
+    company, year, month = scope.get("company_id"), scope.get("year"), scope.get("month", 0)
+    totals = directory_totals.get((company, year, month))
+    if not totals or not year or tuple(scope.get("company_ids", ())) != (company,):
+        return False
+    if tuple(map(tuple, scope.get("periods", ()))) != (((year, month),) if month else ()):
+        return False
+    count = directory_count_only(outcome["data"])
+    return count is not None and totals == {count}
+
+
 def render_query_conclusion(results):
     """Summarize verified reads without copying the detail pane or guessing coverage."""
     lines = []
+    directories = {}
+    directory_totals = {}
+    for name, outcome in results:
+        evidence = outcome["evidence"]
+        if name == "list_invoice_directory" and evidence.get("source") == "current_sqlite" and outcome["status"] in {"SUCCESS", "NO_DATA"}:
+            scope = evidence["scope"]
+            route = scope["company_id"], scope.get("year", 0), scope.get("month", 0)
+            directory_totals.setdefault(route, set()).add(outcome["data"]["total"])
     for name, outcome in results:
         evidence = outcome["evidence"]
         if evidence.get("source") != "current_sqlite" or outcome["status"] not in {"SUCCESS", "NO_DATA"}:
@@ -578,32 +660,25 @@ def render_query_conclusion(results):
         elif name == "get_applicable_rules":
             detail = f"适用 {data['rule_id']} v{data['version']}。{display_rule_amounts(data['content'])}"
         elif name == "query_business_sql":
+            if redundant_directory_count(outcome, directory_totals):
+                continue
             if outcome["status"] == "NO_DATA":
                 detail = "本次筛选没有匹配的记录。"
             elif data["truncated"]:
                 detail = f"本次筛选显示了 {data['row_count']} 行，总数尚未核实。"
             else:
                 detail = f"本次筛选返回 {data['row_count']} 行，明细见业务记录。"
-                columns = data["columns"]
-                # Only summarize SQL cells when all dimensions and values fit in the reply.
-                if 1 <= data["row_count"] <= 2 and all(
-                    column.endswith("_cents") or column in {"company_id", "numerator", "denominator"}
-                    for column in columns
+                if 1 <= data["row_count"] <= 2 and len(data["columns"]) <= 4 and (
+                    directory_count_only(data) is not None or
+                    (any(data["derived"]) and all(
+                        column.endswith("_cents") or column in {"company_id", "cnt", "numerator", "denominator"}
+                        for column in data["columns"]))
                 ):
-                    values = []
-                    for row, derived in zip(data["rows"], data["derived"]):
-                        cells = [f"{column.removesuffix('_cents')} {derived[str(i)]} 元"
-                                 if str(i) in derived else f"{column} {row[i]}"
-                                 for i, column in enumerate(columns)]
-                        if "percentage" in derived:
-                            cells.append(f"比例 {derived['percentage']}" if derived["percentage"] is not None
-                                         else "比例无法计算（分母为零）")
-                        values.append("，".join(cells))
-                    detail = "按本次筛选，" + "；".join(values) + "。"
+                    detail = "；".join(sql_display_rows(data)) + "。"
         elif name == "list_invoice_directory":
-            order = DIRECTORY_SORT_LABELS[(data.get("sort_by", "date"), data.get("sort_order", "asc"))]
-            kind = "发票目录" if period else "全部账期的发票目录"
-            detail = f"{kind}共 {data['total']} 张，{order}。"
+            order = data.get("sort_by", "date"), data.get("sort_order", "asc")
+            directories.setdefault((heading, bool(period), order), []).append(data)
+            continue
         elif name in {"list_invoices", "list_bank_transactions", "list_tasks"}:
             item = {"list_invoices": "张发票", "list_bank_transactions": "条银行流水", "list_tasks": "项待办"}[name]
             detail = f"查到 {len(data)} {item}，明细见业务记录。"
@@ -615,6 +690,22 @@ def render_query_conclusion(results):
         line = f"{heading}：{detail}" if heading else detail
         if line not in lines:
             lines.append(line)
+    for (heading, dated, order), pages in directories.items():
+        page = min(pages, key=lambda item: (not item["rows"], item["page"]))
+        shown, total, number = len(page["rows"]), page["total"], page["page"]
+        prefix = f"{heading} " if heading else ""
+        if len({item["total"] for item in pages}) != 1:
+            lines.append(f"{prefix}各页返回的发票总数不一致，请重新打开目录核对。")
+            continue
+        span = "" if dated else "全部账期"
+        if not total:
+            lines.append(f"{prefix}{span}没有发票。")
+        elif not shown:
+            lines.append(f"{prefix}{span}共 {total} 张发票，第 {number} 页没有记录。")
+        else:
+            pagination = f"，共 {((total - 1) // page['page_size']) + 1} 页" if shown < total else ""
+            lines.append(f"{prefix}{span}共 {total} 张发票{pagination}。"
+                         f"目录第 {number} 页有 {shown} 张，{DIRECTORY_SORT_LABELS[order]}。")
     return "\n".join(lines)
 
 

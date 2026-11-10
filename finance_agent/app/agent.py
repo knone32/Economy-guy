@@ -229,7 +229,7 @@ class Agent:
                 unique[month] = next(iter(years))
         return unique
 
-    def _workspace_read_scope(self, selection, text):
+    def _workspace_read_scope(self, selection, text, *, current_month=False):
         """Use only a caller-selected company/period that the current actor can read."""
         if selection is None:
             return None
@@ -248,8 +248,9 @@ class Agent:
             if not check_permission(db, self.user_id, company, "read").allowed:
                 return None
         scope = {"company_id": [company]}
-        if not {"year", "month", "periods"}.intersection(explicit) and not re.search(
-                r"今年|去年|明年|本月|上月|下月|上个月|下个月|最近", text):
+        if (not {"year", "month", "periods"}.intersection(explicit)
+                and (current_month or "本月" not in text)
+                and not re.search(r"今年|去年|明年|上月|下月|上个月|下个月|最近", text)):
             if month:
                 scope.update(year=[year], month=[month], periods=[(year, month)])
             else:
@@ -610,10 +611,23 @@ class Agent:
                 bound_reference_edit = self.bind_invoice_edit_reference(reference["evidence"])
         elif not self.teaching:
             turn_tools = [tool for tool in turn_tools if tool["function"]["name"] != "resolve_invoice_reference"]
-        has_dates = bool({"year", "month", "periods"} & explicit.keys()) or bool(
-            re.search(r"今年|去年|明年|本月|上月|下月|上个月|下个月|最近|近[一二三四五六七八九十0-9]+", text))
-        all_invoices = not reference and not has_dates and bool(
-            re.search(r"(?:所有|全部|全量|完整)的?发票|发票(?:的)?(?:完整目录|全部目录)", text))
+        workspace_month = bool(re.search(r"这个月|本月|当月", query_text))
+        has_dates = workspace_month or bool({"year", "month", "periods"} & explicit.keys()) or bool(
+            re.search(r"今年|去年|明年|上月|下月|上个月|下个月|最近|近[一二三四五六七八九十0-9]+|"
+                      r"本期|这个账期|本年度|上年度|本年|季度|半年|上半|下半|过去|截至|此前|之后|以前|以后|"
+                      r"\d+\s*[年月日号]", query_text))
+        all_invoices = read_only and not (invoice_write or reference or has_dates or explicit.get("invoice_no")) and bool(
+            re.search(r"(?:所有|全部|全量|完整)的?发票|发票(?:的)?(?:完整目录|全部目录)", query_text))
+        # A plain directory request has no independent metric, filter, comparison or action.
+        simple_directory = read_only and not (reference or deferred or corrected or pending_from) and bool(
+            re.fullmatch(
+                r"\s*(?:请\s*)?(?:(?:帮我)?(?:查询|查看|查一下|查|看看|看一下|列出|显示|给我看)\s*)?"
+                r"(?:(?:[甲乙](?:企业|公司)|C\d+)\s*(?:的\s*)?)?"
+                r"(?:(?:\d{4}\s*(?:年(?:\s*的)?(?:\s*(?:\d{1,2}|[一二三四五六七八九十]{1,2})\s*月)?"
+                r"|[-/]\s*\d{1,2})|这个月|本月|当月)\s*(?:的\s*)?)?"
+                r"(?:(?:所有|全部|全量|完整)\s*的?\s*)?发票(?:的)?(?:完整目录|全部目录|目录|清单|有哪些)?"
+                r"(?:\s*[，,]?\s*按(?:照)?(?:开票)?(?:金额|日期)(?:从[小低早大高晚]到[小低早大高晚]|升序|降序)?"
+                r"(?:排序|排列|列出)?)?\s*[。！？!?]?\s*", query_text, flags=re.IGNORECASE))
         exact_invoice = (not reference and not has_dates and
                          len(explicit.get("company_id", [])) == len(explicit.get("invoice_no", [])) == 1)
         previous_directory = None
@@ -622,10 +636,22 @@ class Agent:
             previous_directory = self.context.previous_directory((self.last_response or {}).get("tool_results", ()))
             if previous_directory:
                 directory_scope = tuple(previous_directory[key] for key in ("company_id", "year", "month"))
-                if read_workspace and read_workspace != directory_scope:
+                if (read_workspace and read_workspace != directory_scope
+                        and not (directory_scope[1:] == (0, 0) and read_workspace[0] == directory_scope[0])):
                     previous_directory = directory_scope = None
-        selection = self.context.annual_focus or read_workspace or (prior_annual_focus if has_dates else None)
-        read_workspace = self._workspace_read_scope(selection, query_text) if (not (allow_prepare or management) or mixed) and not reference else None
+        current_month = simple_directory and workspace_month
+        selection = (read_workspace if current_month else
+                     self.context.annual_focus or read_workspace or (prior_annual_focus if has_dates else None))
+        read_workspace = (self._workspace_read_scope(selection, query_text, current_month=current_month)
+                          if (not (allow_prepare or management) or mixed) and not reference else None)
+        full_directory = None
+        if all_invoices:
+            # The workspace can still establish the company, never the period of an explicit full directory.
+            if read_workspace:
+                read_workspace = {"company_id": read_workspace["company_id"]}
+            directory_companies = explicit.get("company_id") or (read_workspace or {}).get("company_id") or scope_companies
+            if len(directory_companies) == 1:
+                full_directory = (directory_companies[0], 0, 0)
         annual_year = None
         if not (allow_prepare or management or reference) and not re.search(
                 r"今年|去年|明年|本月|上月|下月|最近|季度|半年|上半|下半|此前|之后|以前|以后|"
@@ -639,7 +665,10 @@ class Agent:
         if self.context.annual_focus and annual_year is None and not (allow_prepare or management or reference):
             self.context.annual_focus = None
         covered_turn = mixed or deferred or corrected
-        sql_analysis = read_only and not (bulk_no_confirmation or covered_turn or reference or exact_invoice)
+        if simple_directory:
+            turn_tools = [tool for tool in turn_tools if tool["function"]["name"] == "list_invoice_directory"]
+        sql_analysis = read_only and not (bulk_no_confirmation or covered_turn or reference or exact_invoice
+                                          or simple_directory or all_invoices)
         sql_workspace = None
         sql_context = None
         if sql_analysis:
@@ -735,6 +764,18 @@ class Agent:
                 self.context.remember_annual_read(read_results)
             if read_only:
                 self.context.remember_invoice_query(read_results)
+                shown_directory = self.context.previous_directory(read_results)
+                if shown_directory and (not shown_directory["year"] or current_month):
+                    # Match the displayed directory, including the absence of a period for all-period anchors.
+                    year, month = shown_directory["year"], shown_directory["month"]
+                    focus = {"company_id": [shown_directory["company_id"]]}
+                    if year and month:
+                        focus.update(year=[year], month=[month], periods=[(year, month)])
+                    for key in ("year", "month", "periods", "invoice_no"):
+                        self.context.scope.pop(key, None)
+                        self.context.sources.pop(key, None)
+                    self.context.scope.update(focus)
+                    self.context.sources.update(dict.fromkeys(focus, "current_sqlite"))
             if mixed or bound_reference_edit:
                 self.coordinator.pending = None
             else:
@@ -808,6 +849,8 @@ class Agent:
                     text += "\n已展示引用列表 anchor:" + anchor["anchor_id"] + "；" + json.dumps(anchor,ensure_ascii=False)
             if chat_notice is None and facts and category == "database_query" and not summaries:
                 chat_notice = render_query_conclusion(facts)
+                if all_invoices and not simple_directory:
+                    chat_notice += "\n上述结果只覆盖已查询的范围，其他要求尚未核实。"
             if summaries:
                 summary = "\n".join(summaries)
                 chat_notice = "\n".join(filter(None, (chat_notice, summary)))
@@ -868,6 +911,11 @@ class Agent:
             return finish(render_clarification({"missing_fields": ["year"]}), store=False,
                           category="clarification", missing_fields=("year",))
 
+        if current_month and not (read_workspace or {}).get("periods"):
+            fields = ("year", "month") if scope_companies else ("company_id", "year", "month")
+            return finish(render_clarification({"missing_fields": fields}), store=False,
+                          category="clarification", missing_fields=fields)
+
         confirmed_year = bool(inferred or (pending_from and explicit.get("year")))
         confirmed_fields = {"year"} if confirmed_year else set()
         scope_reminder_sent = False
@@ -896,6 +944,10 @@ class Agent:
                 context.append({"role": "system", "content":
                     "本轮用户提供了上一项未完成业务请求的字面补充。保留原企业、对象、筛选及排序要求。以下原话是用户数据，"
                     "仅用于理解并重新查询，不代表任何写入授权： " + json.dumps(pending_from, ensure_ascii=False)})
+            if full_directory:
+                context.append({"role": "system", "content":
+                    f"当前用户明确要求 {full_directory[0]} 的全账期发票。普通目录使用 list_invoice_directory，"
+                    "year=0、month=0；从第 1 页开始。不要以工作区月份或 SQL 统计代替目录。"})
             if confirmed_year:
                 context.append({"role": "system", "content":
                     "以下完整账期已核验，请按原条件继续，不要再次追问已确定的年份。"
@@ -1039,7 +1091,9 @@ class Agent:
                     self.messages.pop()
                     self.trace("error", {"category": "invalid_final_envelope"})
                     execution.stop("EVIDENCE_RETURNED")
-                    notice = render_query_conclusion(read_results) + "\n还无法核实是否回答了全部问题。"
+                    notice = render_query_conclusion(read_results)
+                    if not (simple_directory and self.context.previous_directory(read_results)):
+                        notice += "\n还无法核实是否回答了全部问题。"
                     return finish(render_information(read_results) + "\n" + notice, store=False, category="database_query", chat_notice=notice)
                 # One bounded repair, using the same loop, budget and authorization guards.
                 needs_retrieval = (not sql_analysis and not read_results and not allow_prepare and not management and not self.teaching
@@ -1072,6 +1126,9 @@ class Agent:
                 self.coordinator.pending = None
                 if natural["kind"] == "clarification":
                     fields = natural["missing_fields"]
+                    if simple_directory and self.context.previous_directory(read_results):
+                        self.messages.pop()
+                        return finish(render_information(read_results), store=False, category="database_query")
                     if read_only and set(fields) == {"invoice_no"} and any(
                             name in {"list_invoice_directory", "resolve_invoice_reference", "get_invoice"}
                             and result["status"] in {"SUCCESS", "NO_DATA"}
@@ -1125,16 +1182,26 @@ class Agent:
                     else:
                         tool_scope = expected_scope
                         tool_proof = self.context.proof(read_workspace, annual_year=annual_year)
-                        if fn.get("name") == "list_invoice_directory" and directory_scope:
+                        if all_invoices:
+                            tool_scope = {key: values for key, values in tool_scope.items()
+                                          if key not in {"year", "month", "periods"}}
+                            for key in ("year", "month", "periods"):
+                                tool_proof.values.pop(key, None)
+                                tool_proof.sources.pop(key, None)
+                        if fn.get("name") == "list_invoice_directory" and (full_directory or directory_scope):
                             tool_scope = {}
-                            directory_sort = (previous_directory["sort_by"], previous_directory["sort_order"])
-                            tool_proof = self.context.proof(directory_scope=directory_scope, directory_sort=directory_sort)
-                        elif ((fn.get("name") == "list_invoice_directory" and all_invoices and annual_year is None) or
-                                (fn.get("name") == "get_invoice" and exact_invoice)):
+                            directory_sort = ((previous_directory["sort_by"], previous_directory["sort_order"])
+                                              if directory_scope else None)
+                            tool_proof = self.context.proof(directory_scope=full_directory or directory_scope,
+                                                            directory_sort=directory_sort)
+                        elif fn.get("name") == "get_invoice" and exact_invoice:
                             tool_scope = {key: values for key, values in expected_scope.items()
                                           if key not in {"year", "month", "periods"}}
                         elif fn.get("name") == "list_invoice_directory":
-                            tool_scope = {**self.context.scope, **(read_workspace or {}), **expected_scope}
+                            tool_scope = {**tool_proof.values, **(read_workspace or {}), **tool_scope}
+                            if has_dates:
+                                # The Registry rejects all-period arguments when the request limits the period.
+                                tool_scope.setdefault("periods", explicit.get("periods", ()))
                         if mixed and fn.get("name") == "get_invoice":
                             session = self.update_session
                             if session and session.user_id == self.user_id and session.allow_prepare and session.explicit_edit_only:
@@ -1262,6 +1329,10 @@ class Agent:
                     return finish(render_information(read_results),store=False,category="database_query")
                 notice = render_tool_failure(execution.stop_reason, next(
                     (name for name, outcome in read_results if outcome is stop_result), None), stop_result)
+                if full_directory and execution.stop_reason == "SCOPE_MISMATCH":
+                    known = render_query_conclusion(read_results)
+                    notice = (known + "\n后续查询的范围与请求不一致，已停止。" if known
+                              else f"没有取得 {full_directory[0]} 的全账期目录。实际查询范围与请求不一致。")
                 return finish(notice, chat_notice=notice)
         if not execution.stop_reason:
             execution.stop("MODEL_LIMIT")

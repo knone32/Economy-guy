@@ -25,7 +25,7 @@ from .persistence import ManagementIntent, ManagementTurn, confirm_management, t
 from .queries import QueryError, available_periods, get_invoice, invoice_directory
 from .responses import (DIRECTORY_SORT_LABELS, display_rule_amounts, explicit_scope, needs_progress_evidence,
                         render_invoice_field_count, render_recent_commit, render_rule_history, render_scope,
-                        render_query_conclusion, render_sql_evidence)
+                        redundant_directory_count, render_query_conclusion, render_sql_evidence, sql_display_rows)
 from .rules import RuleError, check_missing_purpose
 from .session_store import workbook_identity
 from .stage2_schema import open_existing
@@ -1073,13 +1073,7 @@ class AgentWorkspace(ConversationUI, App):
         if tool in {"get_invoice", "resolve_invoice_reference"} and data:
             return ("发票详情", AgentWorkspace.invoice_text(data))
         if tool == "query_business_sql":
-            lines = []
-            for row, derived in zip(data["rows"], data["derived"]):
-                cells = [f"{name} {('¥' + derived[str(index)]) if str(index) in derived else '（空）' if value is None else value}"
-                         for index, (name, value) in enumerate(zip(data["columns"], row))]
-                if "percentage" in derived:
-                    cells.append(f"比例 {derived['percentage'] or '无法计算（分母为零）'}")
-                lines.append(" · ".join(cells))
+            lines = sql_display_rows(data)
             title = f"业务查询 · 已显示 {len(lines)} 行"
             if data["truncated"]:
                 lines.append("查询结果已截断，显示行数不代表总数。")
@@ -1154,7 +1148,11 @@ class AgentWorkspace(ConversationUI, App):
         preferred = min(pages, key=lambda d: d["page"])
         if len({(total, size) for _, total, size in counts}) == 1:
             page_labels = "、".join(f"第 {page} 页" for page, _, _ in counts)
-            header = f"共 {preferred['total']} 张 · 每页 {preferred['page_size']} 张 · 已查询 {page_labels}"
+            page_count = (preferred["total"] + preferred["page_size"] - 1) // preferred["page_size"]
+            total_text = f"共 {preferred['total']} 张"
+            if page_count:
+                total_text += f" / {page_count} 页"
+            header = f"{total_text} · 每页 {preferred['page_size']} 张 · 已查询 {page_labels}"
         else:
             details = "；".join(f"第 {page} 页报告共 {total} 张（每页 {size} 张）" for page, total, size in counts)
             header = f"各次查询的总数或每页数量不一致，以目录重新读取为准。\n{details}"
@@ -1188,6 +1186,10 @@ class AgentWorkspace(ConversationUI, App):
             entries.append((tool, outcome, route, directory))
 
         preferred = {key: min(pages, key=lambda item: item["data"]["page"]) for key, pages in directories.items()}
+        directory_totals = {}
+        for tool, outcome, route, _ in entries:
+            if tool == "list_invoice_directory":
+                directory_totals.setdefault(route, set()).add(outcome["data"]["total"])
         displayed, routes = [], []
         fallback_route = None
         for tool, outcome, route, directory in entries:
@@ -1203,6 +1205,8 @@ class AgentWorkspace(ConversationUI, App):
                     order = directory[3:]
                     routes.append(target if order == ("date", "asc") else (*target, *order))
             else:
+                if tool == "query_business_sql" and redundant_directory_count(outcome, directory_totals):
+                    continue
                 card = self.business_card(tool, data, evidence)
             if card is None:
                 if outcome["status"] == "NO_DATA":
