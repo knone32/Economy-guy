@@ -70,6 +70,8 @@ def invoice_intent_source(text):
 def invoice_supplement(text, missing):
     """A new request is never interpreted as a short literal supplement."""
     value = text.strip().rstrip("。！!").strip()
+    if "year" in missing and re.fullmatch(r"\d{4}", value) and int(value):
+        return {"year": [int(value)]}
     scope = explicit_scope(value, include_update_aliases=True)
     if {"year", "month"} & set(missing) and re.fullmatch(r"\d{4}\s*年(?:\s*\d{1,2}\s*月)?|\d{1,2}\s*月份?", value):
         return scope
@@ -82,6 +84,25 @@ def invoice_supplement(text, missing):
     return None
 
 
+_RULE_PERIOD = re.compile(
+    r"(?:按(?:照)?|依据|参考)\s*(\d{4}\s*年\s*[0-9一二三四五六七八九十]+\s*月(?:份)?"
+    r"|\d{4}[-/]\d{1,2})\s*(?:的\s*)?(?:发票)?(?:用途)?规则"
+)
+
+
+def invoice_rule_periods(text, periods):
+    """Only separate two dates when an explicit reference-rule phrase identifies one."""
+    matches = list(_RULE_PERIOD.finditer(text))
+    if len(matches) != 1 or len(periods) != 2:
+        return None
+    match, = matches
+    rule = explicit_scope(match[1]).get("periods", ())
+    target = explicit_scope(text[:match.start()] + " " + text[match.end():]).get("periods", ())
+    if len(rule) == len(target) == 1 and set(periods) == {rule[0], target[0]}:
+        return rule[0], target[0]
+    return None
+
+
 def invoice_change_evidence(text, field, new_value):
     """Bind the proposed field and exact value to one positive user instruction."""
     if not new_value.strip() or _HYPOTHETICAL.match(text):
@@ -91,7 +112,8 @@ def invoice_change_evidence(text, field, new_value):
         return False
     literal = re.escape(new_value)
     value = rf'(?:“{literal}”|‘{literal}’|"{literal}"|{literal})'
-    pattern = rf"{label}\s*(?:全部|都|统一)?\s*{_CHANGE_VERB}\s*{value}(?=$|[\s，,。；;！!])"
+    field_target = rf"{label}(?:\s*为空\s*的\s*(?:所有|全部)?发票)?"
+    pattern = rf"{field_target}\s*(?:全部|都|统一)?\s*{_CHANGE_VERB}\s*{value}(?=$|[\s，,。；;！!])"
     for match in re.finditer(pattern, text):
         prefix = re.split(r"[，,。；;\n]", text[:match.start()])[-1]
         if not re.search(r"(?:不要|别|禁止|不许|无需|不必)(?:改动?|修改|调整|把|将)", prefix) and not _NEGATED.search(prefix):

@@ -196,15 +196,16 @@ def resolve_rule(connection, user_id, company_id, rule_type, business_date):
     return RuleDecision(**row, params=params, explanation=OFFICIAL_NOTES[rule_type])
 
 
+def missing_required_purpose(params, invoice):
+    required = params["mode"] == "all" or int(Decimal(invoice["amount"]) * 100) >= params["threshold_cents"]
+    return required and not (invoice["purpose"] or "").strip()
+
+
 def check_missing_purpose(connection, user_id, company_id, year, month):
     """仅检查初赛2026-09，使用同一个RuleDecision判定与引用。"""
     if (year, month) != (2026, 9):
         raise RuleError("初赛仅支持2026年9月用途检查")
     decision = resolve_rule(connection, user_id, company_id, "purpose", "2026-09-01")
     invoices = list_invoices(connection, user_id, company_id, year, month)
-    missing = []
-    for invoice in invoices:
-        required = decision.params["mode"] == "all" or int(Decimal(invoice["amount"]) * 100) >= decision.params["threshold_cents"]
-        if required and not (invoice["purpose"] or "").strip():
-            missing.append(invoice)
+    missing = [invoice for invoice in invoices if missing_required_purpose(decision.params, invoice)]
     return {"missing_invoices": missing, "count": len(missing), "rule": asdict(decision)}

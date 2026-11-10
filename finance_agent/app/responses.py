@@ -660,6 +660,7 @@ def render_clarification(value):
     """保留模型选择的缺失信息，自然提问；不展示任意状态性自由文本。"""
     labels = {"company_id":"企业", "invoice_no":"发票编号", "field":"要修改的字段（用途或备注）",
               "new_value":"修改后的具体内容", "year":"年份", "month":"月份",
+              "target_period":"要修改的发票目标年月，如引用其他月份规则请单独注明参考年月",
               "action":"具体管理动作", "task_id":"任务编号", "note":"待办的具体说明",
               "invoice_reference":"要看的发票来源（刚查过、已修改或目录序号）",
               "key":"偏好名称", "value":"偏好的具体内容"}

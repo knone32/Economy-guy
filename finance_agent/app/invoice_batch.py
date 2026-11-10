@@ -1,10 +1,12 @@
 """Run a fixed, human-approved invoice list through the existing single-item coordinator."""
 from contextlib import closing
 from dataclasses import asdict
+from datetime import date
 import sqlite3
 
 from .permissions import check_permission
 from .queries import get_invoice
+from .rules import missing_required_purpose
 from .tui_intent import excluded_invoice_ids, invoice_change_evidence
 from .responses import explicit_scope
 from .stage2_schema import open_existing
@@ -67,7 +69,8 @@ def _apply_target(agent, message, values, period, old, confirm, checkpoint):
     return receipt["status"], draft.request_id
 
 
-def plan_invoice_change(agent, source_request, proposal, selection):
+def plan_invoice_change(agent, source_request, proposal, selection, *, target_period=None,
+                        rule_period=None, rule_outcome=None):
     """Validate current-turn scope and literal edit constraints without preparing a draft."""
     if selection is None:
         return None, "AMBIGUOUS", "请先取得本轮可信发票集合。"
@@ -100,23 +103,46 @@ def plan_invoice_change(agent, source_request, proposal, selection):
     if len(invoice_nos) > MAX_BATCH_INVOICES:
         return None, "INVALID_ARGUMENTS", f"本次超过 {MAX_BATCH_INVOICES} 张的处理上限，请缩小范围。"
 
-    periods = scope.get("periods") if source == "query_business_sql" else [(scope.get("year"), scope.get("month"))]
-    if (not periods or len(periods) != 1 or not all(periods[0])
-            or collection and requested.get("periods") != list(periods)
-            or requested.get("periods") and requested["periods"] != list(periods)):
-        return None, "SCOPE_MISMATCH", "集合修改须明确一个完整年月，发票实际账期必须一致。"
-    year, month = periods[0]
-    if any(requested.get(key) and requested[key] != [value] for key, value in (("year", year), ("month", month))):
-        return None, "SCOPE_MISMATCH", "候选发票账期与用户要求不一致。"
+    if collection and target_period is None:
+        return None, "SCOPE_MISMATCH", "请明确要修改的发票目标年月。"
+    rule = None
+    if rule_period is not None:
+        if (rule_outcome is None or rule_outcome["evidence"]["scope"]["company_id"] != company
+                or source != "query_business_sql"):
+            return None, "SCOPE_MISMATCH", "请先核验该企业参考月用途规则，再按它筛选目标月发票。"
+        rule = rule_outcome["data"]
+
     try:
         with closing(open_existing(agent.db_path, readonly=True)) as db:
             db.execute("BEGIN")
             if any(not check_permission(db, agent.user_id, company, operation).allowed
                    for operation in ("read", "modify")):
                 return None, "DENIED", "当前账号没有该企业的发票读取和修改权限。"
-    except (OSError, sqlite3.Error):
-        return None, "ERROR", "无法核验账簿和企业权限。"
+            rows = [get_invoice(db, agent.user_id, company, invoice_no) for invoice_no in invoice_nos]
+            if any(row is None for row in rows):
+                return None, "CONFLICT", "清单中的发票已失效，请重新查询。"
+            days = [date.fromisoformat(row["invoice_date"]) for row in rows]
+            actual_periods = {(day.year, day.month) for day in days}
+            if rule and any(not missing_required_purpose(rule["params"], row) for row in rows):
+                return None, "SCOPE_MISMATCH", "清单含有不符合参考规则筛选条件的发票。"
+    except (OSError, sqlite3.Error, ValueError):
+        return None, "ERROR", "无法核验账簿、企业权限或发票实际日期。"
+
+    if len(actual_periods) != 1 or target_period and actual_periods != {target_period}:
+        return None, "SCOPE_MISMATCH", "所有发票必须属于同一个已确认的目标年月。"
+    year, month = next(iter(actual_periods))
+    if source == "query_business_sql":
+        if (year, month) not in scope.get("periods", ()):
+            return None, "SCOPE_MISMATCH", "发票实际年月与本轮 SQL 查询范围不一致。"
+    elif (year, month) != (scope.get("year"), scope.get("month")):
+        return None, "SCOPE_MISMATCH", "发票实际年月与本轮读取证据不一致。"
+    if not rule and any(requested.get(key) and requested[key] != [value]
+                        for key, value in (("year", year), ("month", month))):
+        return None, "SCOPE_MISMATCH", "候选发票账期与用户要求不一致。"
     request = {key: proposal[key] for key in ("field", "new_value", "mode")}
+    if rule:
+        request["rule_reference"] = {"period": rule_period, "rule_id": rule["rule_id"],
+                                     "version": rule["version"], "params": rule["params"]}
     return {**request, "company_id": company, "year": year, "month": month,
             "invoice_nos": tuple(sorted(invoice_nos)), "excluded": tuple(sorted(excluded)),
             "source_request": source_request, "actor": agent.user_id,
@@ -128,6 +154,7 @@ def run_invoice_batch(agent, message, request, *, approve_batch, approve_item, c
     field, value, mode = (request[key] for key in ("field", "new_value", "mode"))
     period = f"{year:04d}-{month:02d}"
     invoice_nos = request["invoice_nos"]
+    rule_reference = request.get("rule_reference")
     coordinator = agent.coordinator
     if (request["actor"], request["workbook"], request["turn"]) != (agent.user_id, str(agent.db_path), agent.trace_id):
         return "DENIED", "对话轮次、账簿或用户已变化，原清单失效。"
@@ -150,6 +177,8 @@ def run_invoice_batch(agent, message, request, *, approve_batch, approve_item, c
             rows = [get_invoice(db, agent.user_id, company, invoice_no) for invoice_no in invoice_nos]
             if any(not row or row["invoice_date"][:7] != period for row in rows):
                 return "CONFLICT", "清单内发票已失效或账期已变更，未执行修改。"
+            if rule_reference and any(not missing_required_purpose(rule_reference["params"], row) for row in rows):
+                return "CONFLICT", "发票已不符合参考规则筛选条件，未执行修改。"
             rows.sort(key=lambda row: (row["invoice_date"], row["invoice_no"]))
             targets = tuple((row["invoice_no"], row[field]) for row in rows)
     except (OSError, ValueError, sqlite3.Error):
@@ -159,6 +188,12 @@ def run_invoice_batch(agent, message, request, *, approve_batch, approve_item, c
     overwrites = sum(bool((old or "").strip()) and old != value for _, old in targets)
     scope = (f"企业　{company} · {period}\n字段　{field_label}\n"
              f"覆盖提示　将替换 {overwrites} 张发票已填写的{field_label}。")
+    if rule_reference:
+        rule_year, rule_month = rule_reference["period"]
+        scope += (f"\n参考规则　{rule_year:04d}-{rule_month:02d} · "
+                  f"{rule_reference['rule_id']} v{rule_reference['version']}"
+                  f"\n发票目标账期　{period}"
+                  "\n依据指定规则重新筛选，结果不代表目标账期的正式合规认定。")
     if request["excluded"]:
         scope += "\n明确排除　" + "、".join(request["excluded"])
     item_lines = [f"{invoice}\n原值　{_preview(old)}\n新值　{_preview(value)}" for invoice, old in targets]

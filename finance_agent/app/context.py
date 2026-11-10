@@ -68,7 +68,7 @@ class ContextBuilder:
         self.restored_turns = []
         self.personal_detail = "普通"
 
-    def begin(self,text,message_index,reset=False,*,independent_read=False,explicit=None,date_sources=None):
+    def begin(self,text,message_index,reset=False,*,independent_read=False,explicit=None,date_sources=None,unresolved_year=False):
         """明确范围更正后弃用旧焦点；不更改长期任务，也不产生提交许可。"""
         if explicit is None:
             explicit = explicit_scope(text,include_update_aliases=True)
@@ -105,6 +105,9 @@ class ContextBuilder:
                 # 不能确认失效时也不能继续解析旧锚点。
                 self.diagnostics.append("reference_invalidation_failed")
                 self.references_blocked = True
+        if unresolved_year:
+            self.scope.pop("year", None)
+            self.sources.pop("year", None)
         if date_fields.intersection(explicit) or not date_fields.issubset(self.scope):
             self.scope.pop("periods", None)
             self.sources.pop("periods", None)
