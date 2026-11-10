@@ -1,6 +1,7 @@
 """工具声明、严格参数校验与受控分发。"""
 import json
 import re
+from uuid import uuid4
 from pathlib import Path
 import sqlite3
 from dataclasses import asdict
@@ -43,7 +44,8 @@ REGISTRY = {
     "get_applicable_rules": (None, {"company_id":"string", "rule_type":"string", "business_date":"string"}),
     "list_rule_versions": (None, {"company_id": "string", "rule_id": "string"}),
     "prepare_invoice_update": (None, {"company_id":"string", "invoice_no":"string", "field":"string", "new_value":"string"}),
-    "propose_invoice_edit": (None, {"source":"string", "field":"string", "new_value":"string"}),
+    "propose_invoice_changes": (None, {"selection_id":"string", "field":"string", "new_value":"string",
+                                       "mode":"string", "excluded_invoice_ids":"array"}),
     "add": (None, {"a": "integer", "b": "integer"}),
     "list_tasks": (None, {"company_id":"string"}),
     "manage_task": (None, {"company_id":"string","action":"string","task_id":"string","year":"integer","month":"integer","note":"string"}),
@@ -62,7 +64,7 @@ TEACHING_TOOLS = TOOLS
 TOOLS = [tool for tool in TOOLS if tool["function"]["name"] in ANNUAL | {
     "query_business_sql", "get_finance_summary", "list_invoices", "list_invoice_directory", "get_invoice", "list_bank_transactions",
     "check_missing_purpose", "count_invoice_fields", "get_applicable_rules", "list_rule_versions", "prepare_invoice_update",
-    "list_tasks", "manage_task", "manage_preference", "manage_display_preference", "resolve_invoice_reference", "resolve_recent_invoice", "propose_invoice_edit", "set_schedule"}]
+    "list_tasks", "manage_task", "manage_preference", "manage_display_preference", "resolve_invoice_reference", "resolve_recent_invoice", "propose_invoice_changes", "set_schedule"}]
 DESCRIPTIONS = {
     "query_business_sql":"普通只读业务分析首选。在按可信企业和账期隔离的账簿快照上执行单条 SELECT 或只读 WITH。支持筛选、分组、JOIN 和子查询。金额原值是整数分；is_blank(value) 检查 NULL、空串与纯空白。规则判定仍用规则工具。",
     "get_annual_finance_summary":"仅用于可信的完整年度，分别汇总发票、银行收入和银行支出。",
@@ -77,7 +79,7 @@ DESCRIPTIONS = {
     "check_missing_purpose":"用户问哪些发票按规则必填用途但仍缺失时，使用本工具。采用可信只读账期或当前明确范围，按有效规则返回实际缺项和发票编号；不要改为财务汇总。备注不代替用途。",
     "get_applicable_rules":"按企业、业务日期和规则类型获取唯一启用依据。R001对应amount，R002/R003对应purpose，R004对应bank。查询旧版是否仍适用也使用其规则类型，不用金额汇总规则替代用途门槛规则；不提供管理权限。",
     "prepare_invoice_update":"只生成用途/备注草稿，展示旧值，不保存；必须等待可信CLI最终确认。",
-    "propose_invoice_edit":"仅提出最近唯一可信发票的口语化修改候选。source选queried或modified，field只选purpose或remark，new_value必须为用户本轮明确指定的原文。Harness独立验证后才允许Prepare；无数据库写权限。",
+    "propose_invoice_changes":"对本轮可信 selection_id 提出一个字段的发票修改候选。新值必须是用户原话。整批确认用 batch，逐张或未指定用 item。excluded_invoice_ids 保留用户指定的全部排除编号，SQL 选取时也要排除。候选必须经可信界面授权，不能提交。",
     "list_rule_versions":"读取企业可见的规则历史版本与启停状态。问 R002 v1.0、旧版或版本区别时使用，无需月份；停用版本不能用于当前合规判断。",
     "list_tasks":"列出当前用户指定企业的持久任务，不创建或修改待办。",
     "manage_task":"为普通自然语言后续待办提出创建/更正/取消等候选，或查询任务；候选无写入权限，需可信CLI展示具体对象和内容并确认。恢复重查规则与发票，完成必须有业务证据；不能修改发票。",
@@ -98,6 +100,9 @@ PARAMETERS = {"sql":"单条 SELECT 或只读 WITH 查询。严格遵守运行时
               "note":"用户明确的简短后续待办说明，优先保留原话；不扩写发票清单、规则解释或步骤计划；具体内容仍需可信确认，不接受模型声称完成作为证据。",
               "key":"偏好名称；list时为空。", "value":"用户明确的偏好内容；查询/删除时为空。",
               "source":"近期发票的可信来源，不能自行填企业、发票号或审计编号。",
+              "selection_id":"本轮真实查询结果返回的 selection_id，不能猜测或复用历史引用。",
+              "mode":"item 逐张确认，batch 整批确认。",
+              "excluded_invoice_ids":"用户原话明确要求排除的发票编号，若无则为空数组。",
               "ordinal":"用户明确的展示序号，从1开始。", "anchor_id":"已展示anchor编号；唯一列表时可为空，不能自行编造。",
               "goal":"本轮用户目标描述，不是执行证据。","steps":"必要工具步骤及依赖，不拆分SQL/事务等内部操作。",
               "stop_condition":"目标证据齐全或等待用户/确认/拒绝时停止的描述；不能扩大运行时硬限。"}
@@ -119,9 +124,11 @@ for tool in TOOLS:
             tool["function"]["parameters"]["properties"][key]["enum"] = list(choices)
     if tool["function"]["name"] == "prepare_invoice_update":
         tool["function"]["parameters"]["properties"]["field"]["enum"] = ["purpose", "remark"]
-    if tool["function"]["name"] == "propose_invoice_edit":
-        tool["function"]["parameters"]["properties"]["source"]["enum"] = ["queried", "modified"]
-        tool["function"]["parameters"]["properties"]["field"]["enum"] = ["purpose", "remark"]
+    if tool["function"]["name"] == "propose_invoice_changes":
+        fields = tool["function"]["parameters"]["properties"]
+        fields["field"]["enum"] = ["purpose", "remark"]
+        fields["mode"]["enum"] = ["item", "batch"]
+        fields["excluded_invoice_ids"]["items"] = {"type": "string"}
     if tool["function"]["name"] == "manage_task":
         tool["function"]["parameters"]["properties"]["action"]["enum"] = ["create","show","update","correct","wait","pause","resume","complete","cancel"]
     if tool["function"]["name"] == "manage_display_preference":
@@ -169,6 +176,10 @@ def validate_arguments(name, raw_arguments, partial=False, *, directory_sort=Non
         choices=ARGUMENT_SCHEMAS[name][key].get("enum")
         if choices and value not in choices:
             raise ValueError("参数不在允许取值中："+key)
+    if name == "propose_invoice_changes" and "excluded_invoice_ids" in args and any(
+            type(invoice) is not str or not re.fullmatch(r"F\d+", invoice, re.I)
+            for invoice in args["excluded_invoice_ids"]):
+        raise ValueError("排除对象必须为发票编号")
     if name == "list_invoice_directory" and directory_sort and "sort_by" not in args:
         # Paging a verified directory with omitted sort parameters retains the previous order.
         args["sort_by"] = directory_sort[0]
@@ -353,7 +364,13 @@ def annual_amount_rule(connection, user_id, company_id, year):
     return asdict(decisions[0])
 
 
-def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allowed_tools=None, expected_scope=None, management_intent=None, reference_context=None, execution=None, management_confirmation=None, management_proposals=None,provenance=None,display_preference=None,recent_context=None,sql_workspace=None):
+def register_invoice_selection(selections, keys, scope, source):
+    selection_id = uuid4().hex
+    selections[selection_id] = (tuple(keys), scope, source)
+    return selection_id
+
+
+def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allowed_tools=None, expected_scope=None, management_intent=None, reference_context=None, execution=None, management_confirmation=None, management_proposals=None,provenance=None,display_preference=None,recent_context=None,sql_workspace=None,invoice_selections=None):
     """严格按 Schema 校验，身份仅取可信 Session，并复用业务函数。"""
     try:
         if not isinstance(name, str) or name not in REGISTRY:
@@ -374,10 +391,12 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
                 if rejection:
                     return rejection
             try:
-                scope, data = sql_workspace.query(args["sql"])
+                scope, data, keys = sql_workspace.query(args["sql"])
             except BusinessSQLError as error:
                 evidence = {"missing_fields": list(error.missing)} if error.missing else {}
                 return tool_result(error.status, evidence=evidence, error=str(error))
+            if keys and invoice_selections is not None:
+                data["selection_id"] = register_invoice_selection(invoice_selections, keys, scope, name)
             status = "SUCCESS" if data["rows"] or data["truncated"] else "NO_DATA"
             return tool_result(status, data, {"scope": scope, "source": "current_sqlite"})
         if name == "resolve_recent_invoice":
@@ -435,7 +454,7 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
             return _confirm_proposal(service(intent),service,intent,user_id,action,management_confirmation)
         if name == "add":
             return tool_result("SUCCESS", args["a"] + args["b"])
-        if name == "propose_invoice_edit":
+        if name == "propose_invoice_changes":
             # Direct registry calls cannot establish a trusted editing session.
             return tool_result("DENIED", error="修改候选只可由Harness核实，不授予Prepare权限")
         if name == "prepare_invoice_update":

@@ -31,6 +31,9 @@ MAX_RESULT_ROWS = 30
 MAX_RESULT_BYTES = 10_000
 MAX_SQL_BYTES = 4096
 _QUERY = re.compile(r"\s*(?:SELECT|WITH)\b", re.I)
+_KEY_QUERY = re.compile(r"\s*SELECT\s+company_id\s*,\s*invoice_no\s+FROM\s+invoices(?=\s|;|$)", re.I)
+_PARTIAL_QUERY = re.compile(r"\b(?:LIMIT|OFFSET|GROUP|HAVING|WINDOW|UNION|INTERSECT|EXCEPT)\b", re.I)
+_AGGREGATES = {"avg", "count", "min", "max", "sum", "dense_rank", "rank", "row_number"}
 
 
 class BusinessSQLError(ValueError):
@@ -178,12 +181,18 @@ class BusinessSQL:
             steps += 1000
             return steps >= 250_000 or monotonic() > deadline
 
-        reads = set()
+        reads, functions = set(), set()
+        selects = 0
 
         def authorize(action, table, field, database, context):
+            nonlocal selects
             allowed = _authorizer(action, table, field, database, context)
             if action == sqlite3.SQLITE_READ and allowed == sqlite3.SQLITE_OK:
                 reads.add(table)
+            elif action == sqlite3.SQLITE_SELECT:
+                selects += 1
+            elif action == sqlite3.SQLITE_FUNCTION:
+                functions.add(field)
             return allowed
 
         db.set_authorizer(authorize)
@@ -200,8 +209,16 @@ class BusinessSQL:
             raise BusinessSQLError("SQL_REJECTED", "SQL 无效或包含未获准的操作、表或函数") from None
         finally:
             db.set_progress_handler(None, 0)
-        return scope, {"sql": sql, "columns": columns, "rows": rows, "row_count": len(rows),
-                       "truncated": truncated, "derived": derived}
+        data = {"sql": sql, "columns": columns, "rows": rows, "row_count": len(rows),
+                "truncated": truncated, "derived": derived}
+        # The selectable form projects original keys directly, without aliases,
+        # aggregation, subqueries or paging. General SQL still returns read results.
+        keys = ()
+        if (rows and not truncated and columns == ["company_id", "invoice_no"]
+                and selects == 1 and reads == {"invoices"} and not functions & _AGGREGATES
+                and _KEY_QUERY.match(sql) and not _PARTIAL_QUERY.search(sql)):
+            keys = tuple(rows)
+        return scope, data, keys
 
 
 def _bounded_rows(cursor, columns):

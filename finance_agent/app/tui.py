@@ -31,7 +31,7 @@ from .session_store import workbook_identity
 from .stage2_schema import open_existing
 from .tasks import list_tasks, manage_task, task_details
 from .trace import redact
-from .tui_intent import batch_edit_request, edit_turn
+from .tui_intent import edit_turn
 from .tui_local import profile_choice_path, read_profile_choice, remember_profile_choice, remember_workbook, startup_workbook
 from .tui_sessions import ConversationUI, query_scopes
 from .tui_screens import Approval, Choices, Login, Settings, TaskNote, TextAction
@@ -813,10 +813,6 @@ class AgentWorkspace(ConversationUI, App):
         if self.conversation_blocked:
             self.note("此账号的账簿对话已在另一窗口打开。请关闭后重新登录。")
             return
-        batch = batch_edit_request(message)
-        if isinstance(batch, str):
-            self.note(batch)
-            return
         try:
             self.ensure_agent()
         except (OSError, ProfileError, ValueError, sqlite3.Error):
@@ -829,9 +825,13 @@ class AgentWorkspace(ConversationUI, App):
             except (OSError, ValueError, sqlite3.Error):
                 self.note("工作库身份或会话存储已变化，请重新打开。")
                 return
-        if batch and not self.can_change_conversation():
-            return
-        args = {} if batch else edit_turn(message, self.agent.pending_edit, guided=self.supplement)
+        args = {}
+        if message.startswith("/edit "):
+            args = edit_turn(message[6:].strip(), self.agent.pending_edit, guided=self.supplement)
+        elif self.agent.pending_edit:
+            supplement = edit_turn(message, self.agent.pending_edit, guided=self.supplement)
+            if supplement.get("continue_edit") or supplement.get("cancel"):
+                args = supplement
         if args.pop("cancel", False):
             event.input.value = ""
             self.action_cancel_edit()
@@ -851,9 +851,6 @@ class AgentWorkspace(ConversationUI, App):
         self.note("正在处理，请稍候。")
         self.supplement = False
         self.workspace_widget("#supplement", Button).display = False
-        if batch:
-            self.run_batch(message, batch)
-            return
         scope = self.read_workspace or self.resume_focus
         if self.resume_focus and any(word in message for word in ("刚才","上一轮")):
             scope = self.resume_focus
@@ -885,8 +882,7 @@ class AgentWorkspace(ConversationUI, App):
                 pass
         return None
 
-    @work(thread=True, group="agent", exit_on_error=False)
-    def run_batch(self, message, request):
+    def execute_batch(self, request):
         def approve_batch(body, mode):
             title = "授权后自动连续处理" if mode == "auto" else "确认整批发票修改"
             return self.wait_confirmation(title, body, "确认整批")
@@ -902,20 +898,8 @@ class AgentWorkspace(ConversationUI, App):
             if self.conversation and self.turn_seq is not None:
                 self.conversation.checkpoint(self.turn_seq, request_id)
 
-        try:
-            status, summary = run_invoice_batch(self.agent, message, request, approve_batch=approve_batch,
-                                                approve_item=approve_item, checkpoint=checkpoint)
-        except Exception:
-            status, summary = "ERROR", "无法完成批量处理。请查看执行记录和发票修改审计。"
-        if self.is_running:
-            self.call_from_thread(self.finish_batch, status, summary)
-
-    def finish_batch(self, status, summary):
-        self.chat_message("业务回执", summary)
-        self.records.append((status, [], ""))
-        self.save_turn([], status, False)
-        self.note(status_label(status))
-        self.unlock()
+        return run_invoice_batch(self.agent, request["source_request"], request, approve_batch=approve_batch,
+                                 approve_item=approve_item, checkpoint=checkpoint)
 
     def confirm_management(self, proposal):
         if redact(proposal) != proposal:
@@ -961,9 +945,13 @@ class AgentWorkspace(ConversationUI, App):
         agent = self.agent
         offset = len(agent.messages)
         receipt = None
+        batch = None
         try:
             agent.ask(message, read_workspace=read_workspace, task_note_from_request=True, **args)
-            if agent.update_session.drafts:
+            proposal = agent.last_response.pop("invoice_change", None)
+            if proposal is not None:
+                batch = self.execute_batch(proposal)
+            elif agent.update_session.drafts:
                 draft, = agent.update_session.drafts.values()
                 fields = asdict(draft)
                 if redact(fields) == fields:
@@ -999,9 +987,9 @@ class AgentWorkspace(ConversationUI, App):
                     else:
                         verified.append("已按本次确认保存，业务库记录可重新查看。")
             self.call_from_thread(self.finish_turn, calls, receipt, verified,
-                                  not args.get("allow_prepare") and not args.get("continue_edit"))
+                                  batch is None and not args.get("allow_prepare") and not args.get("continue_edit"), batch)
         except Exception:
-            if agent.workbook_available():
+            if agent.workbook_available() and agent.write_receipt["status"] != "UNKNOWN_OUTCOME":
                 agent.cancel_update()
             if self.is_running:
                 self.call_from_thread(self.fail_turn)
@@ -1180,10 +1168,10 @@ class AgentWorkspace(ConversationUI, App):
             self.chat_message("Agent", "本轮结果已展示，但未能保存引用。请使用明确的企业和发票编号。")
         return bool(groups)
 
-    def finish_turn(self, calls, receipt, verified, read_only=True):
+    def finish_turn(self, calls, receipt, verified, read_only=True, batch=None):
         response = self.agent.last_response
         stop = response["execution"]["stop_reason"]
-        status = receipt["status"] if receipt else stop
+        status = batch[0] if batch else receipt["status"] if receipt else stop
         results = response["tool_results"]
         scopes = query_scopes({"tool": name, "status": result["status"], "scope": result["evidence"].get("scope")}
                               for name, result in results if result["evidence"].get("source") == "current_sqlite")
@@ -1209,7 +1197,7 @@ class AgentWorkspace(ConversationUI, App):
             self.chat_message("Agent", status_label(stop))
         elif response["operation_receipt"]["status"] == "CURRENT_VALUE_MATCHES":
             self.chat_message("发票回执", "当前发票值已经符合要求，本轮无需再次保存。")
-        elif not (coverage or shown or verified or receipt):
+        elif not (coverage or shown or verified or receipt or batch):
             self.chat_message("Agent", "本轮没有可核实的业务结果。请补充查询对象或查看执行记录。")
         if coverage:
             self.chat_message("本轮目标", render_goal_coverage(coverage, final_receipt))
@@ -1220,6 +1208,8 @@ class AgentWorkspace(ConversationUI, App):
             self.chat_message("当前待办", "暂时无法将本轮检查与唯一待办对应，请打开待办详情核对。")
         for detail in verified:
             self.chat_message("业务回执", detail)
+        if batch:
+            self.chat_message("发票回执", batch[1])
         if receipt:
             if not (coverage and coverage["write"]):
                 self.chat_message("发票回执", receipt["message"])
