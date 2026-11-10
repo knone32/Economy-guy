@@ -82,15 +82,29 @@ def render_grounded_explanation(text, facts, user_text=""):
         prose = re.sub(counts, "", prose)
         rendered = re.sub(token, lambda match: slots[match[1]], text)
     else:
-        if re.findall(token, text) != ["boundary"]:
+        # A verified bank read proves only the lack of a reliable invoice-bank
+        # mapping. Permit a natural negative explanation, with or without the
+        # optional boundary marker; never accept a positive payment assertion.
+        markers = re.findall(token, text)
+        if markers not in ([], ["boundary"]):
             return None
         prose = re.sub(token, "", text)
-        rendered = re.sub(token, lambda _: evidence, text)
+        if (not prose.strip() or not re.search(r"银行|流水|进账", prose)
+                or not re.search(r"发票|回款|收款", prose)
+                or not re.search(r"不能|无法|不足以|不意味|不代表|不等于|没有可靠|缺乏|缺少", prose)
+                or re.search(r"[\d¥￥$\[\]]|人民币|成功(?:保存|提交|修改)|已(?:经)?(?:保存|提交|修改|确认|授权)|"
+                             r"[零〇一二两三四五六七八九十百千万亿]+\s*(?:张|条|元|分|年|月|多)", prose)):
+            return None
+        for clause in re.split(r"[，,。；;\n]", prose):
+            if re.search(r"(?:已(?:经)?|都|全部|所有|每张).{0,14}(?:回款|收款|付款|支付|对应)", clause):
+                if not re.search(r"不能|无法|不足以|不意味|不代表|不等于|没有可靠|缺乏|缺少", clause):
+                    return None
+        return re.sub(token, lambda _: evidence, text) if markers else prose.strip() + "\n" + evidence
     if (not prose.strip() or re.search(
             r"[\d¥￥$\[\]]|[零〇一二两三四五六七八九十百千万亿]+\s*(?:张|条|元|分|年|月)|"
             r"金额|人民币|已(?:经)?(?:保存|提交|修改|付款|支付|确认|授权)|成功(?:保存|提交|修改)", prose)):
         return None
-    return rendered + "\n\n" + evidence if annual else rendered
+    return rendered + "\n\n" + evidence
 
 
 def explicit_scope(text, include_update_aliases=False):
