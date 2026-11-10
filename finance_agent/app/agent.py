@@ -8,7 +8,8 @@ from .tool_registry import (TOOLS, TEACHING_TOOLS, REGISTRY, handle_tool, tool_r
                             remaining_work_allowed, validate_arguments)
 from .trace import redact, write_trace, warn_trace_degraded
 from .write_coordination import WriteCoordinator
-from .updates import commit_invoice_update
+from .updates import commit_invoice_update, edit_scope_error
+from .provenance import ScopeProof
 from .responses import (explicit_scope, parse_final, render_information, render_clarification,
                         render_explanation_evidence, render_grounded_explanation, render_invoice_comparison, render_reference_error, render_stopped,
                         render_task_scope_negotiation, render_tool_failure, QUERY_GOALS, query_goal,
@@ -646,7 +647,6 @@ class Agent:
             self.messages.append(reply)
             if not calls:
                 if self.update_session.explicit_edit_only:
-                    from .updates import edit_scope_error
                     missing = edit_scope_error(self.update_session.expected_scope or {})
                     if missing and missing["status"] == "AMBIGUOUS":
                         return finish(render_clarification(missing["evidence"]), store=False,
@@ -770,6 +770,18 @@ class Agent:
                                           if key not in {"year", "month", "periods"}}
                         elif fn.get("name") == "list_invoice_directory":
                             tool_scope = {**self.context.scope, **(read_workspace or {}), **expected_scope}
+                        if mixed and fn.get("name") == "get_invoice":
+                            session = self.update_session
+                            if session and session.user_id == self.user_id and session.allow_prepare and session.explicit_edit_only:
+                                try:
+                                    invoice_args = validate_arguments("get_invoice", fn.get("arguments"))
+                                except (ValueError, TypeError):
+                                    invoice_args = None
+                                target = session.expected_scope or {}
+                                if invoice_args and not edit_scope_error(target, **invoice_args):
+                                    # This read uses the explicit edit key, independently of the query period.
+                                    tool_scope = {key: [target[key][0]] for key in ("company_id", "invoice_no")}
+                                    tool_proof = ScopeProof(session.user_id, tool_scope, dict.fromkeys(tool_scope, "user_current"))
                         result = handle_tool(fn.get("name"), fn.get("arguments"), self.user_id, self.db_path, self.update_session,
                                              allowed_tools=permitted, expected_scope=tool_scope, management_intent=management_intent,
                                              reference_context=reference_context,execution=execution,
