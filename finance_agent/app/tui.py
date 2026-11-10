@@ -24,8 +24,7 @@ from .model_config import ModelConnection, ProfileError, load_profiles, resolve_
 from .persistence import ManagementIntent, ManagementTurn, confirm_management, task_note_from_request
 from .queries import QueryError, available_periods, get_invoice, invoice_directory
 from .responses import (DIRECTORY_SORT_LABELS, display_rule_amounts, explicit_scope, needs_progress_evidence,
-                        render_invoice_field_count, render_recent_commit,
-                        render_rule_history, render_scope, render_sql_evidence, scope_key)
+                        render_invoice_field_count, render_recent_commit, render_rule_history, render_scope)
 from .rules import RuleError, check_missing_purpose
 from .session_store import workbook_identity
 from .stage2_schema import open_existing
@@ -33,12 +32,13 @@ from .tasks import list_tasks, manage_task, task_details
 from .trace import redact
 from .tui_intent import edit_turn
 from .tui_local import profile_choice_path, read_profile_choice, remember_profile_choice, remember_workbook, startup_workbook
-from .tui_sessions import ConversationUI, query_scopes
+from .tui_sessions import BUSINESS_RECORD, ConversationUI, business_title, query_scopes
 from .tui_screens import Approval, Choices, Login, Settings, TaskNote, TextAction
 from .win_vault import CredentialError, profile_target
 
 ROOT = Path(__file__).resolve().parents[1]
 CHAT_MAX_WIDTH = 108
+DUAL_COLUMN_WIDTH = 137
 FINAL_FORMAT_ERROR = "HTTP 成功 · 模型最终回复协议无效"
 STATUS = {
     "ANSWERED": "本轮回复完成", "COMPLETED": "本轮处理完成", "SUCCESS": "执行成功",
@@ -93,18 +93,20 @@ def offline_model(messages, tools):
 class ChatLog(RichLog):
     """Reflow sanitized chat renderables to the current viewport width."""
 
-    def __init__(self):
-        super().__init__(id="chat-log", markup=False, wrap=True, min_width=1)
+    def __init__(self, id="chat-log"):
+        super().__init__(id=id, markup=False, wrap=True, min_width=1)
         self.entries = []
         self.render_width = 0
 
     def clear(self):
         self.entries.clear()
+        self.render_width = 0
         return super().clear()
 
     def add(self, renderable):
         self.entries.append(renderable)
-        self.render_width = self.chat_width()
+        if not self.render_width:
+            self.render_width = self.chat_width()
         self.write(renderable, width=self.render_width)
 
     def chat_width(self):
@@ -131,7 +133,7 @@ class ChatLog(RichLog):
 class AgentWorkspace(ConversationUI, App):
     TITLE = "Economy-guy · 财税工作台"
     CSS_PATH = "tui.tcss"
-    NAV_ITEMS = (("go-chat", "对话"), ("go-tasks", "待办"), ("go-finance", "发票"),
+    NAV_ITEMS = (("go-chat", "对话"), ("chat-history", "历史会话"), ("go-tasks", "待办"), ("go-finance", "发票"),
                  ("go-records", "记录"), ("account", "账户"))
     BINDINGS = [("f2", "navigation", "导航"), ("f3", "account", "账户"),
                 ("f4", "cancel_edit", "取消未提交操作"), ("ctrl+n", "new_chat", "新建对话"),
@@ -193,15 +195,21 @@ class AgentWorkspace(ConversationUI, App):
                     yield TextAction(label, id=key, classes="current" if key == "go-chat" else None)
             with ContentSwitcher(initial="chat", id="panes"):
                 with Vertical(id="chat"):
-                    yield ChatLog()
-                    with Horizontal(id="ai-guide"):
-                        yield Static("", id="ai-guide-text", markup=False)
-                        yield TextAction("配置 AI 模型", id="configure-ai", variant="primary")
-                    yield TextAction("查看本轮发票目录", id="chat-invoices", classes="text-link")
-                    yield Static("发送消息", id="composer-label", markup=False)
-                    yield Static("", id="chat-note", markup=False)
-                    yield TextAction("补充本次修改", id="supplement")
-                    yield Input(placeholder="输入财税问题或修改要求，按 Enter 发送", id="prompt")
+                    yield TextAction("查看业务历史", id="toggle-business", classes="text-link")
+                    with Horizontal(id="chat-columns"):
+                        with Vertical(id="chat-main"):
+                            yield ChatLog()
+                            with Horizontal(id="ai-guide"):
+                                yield Static("", id="ai-guide-text", markup=False)
+                                yield TextAction("配置 AI 模型", id="configure-ai", variant="primary")
+                            yield TextAction("查看本轮发票目录", id="chat-invoices", classes="text-link")
+                            yield Static("发送消息", id="composer-label", markup=False)
+                            yield Static("", id="chat-note", markup=False)
+                            yield TextAction("补充本次修改", id="supplement")
+                            yield Input(placeholder="输入财税问题或修改要求，按 Enter 发送", id="prompt")
+                        with Vertical(id="business-pane"):
+                            yield Static("业务历史 · 当时快照", id="business-title", markup=False)
+                            yield ChatLog("business-log")
                 with Vertical(id="tasks"):
                     yield Static("待办事项", classes="section", markup=False)
                     yield VerticalScroll(id="task-body")
@@ -213,7 +221,18 @@ class AgentWorkspace(ConversationUI, App):
                     yield VerticalScroll(id="record-list")
         yield Footer()
 
+    def on_resize(self, event):
+        if self.screen_stack:
+            chat = next(iter(self.screen_stack[0].query("#chat")), None)
+            if chat is not None:
+                compact = event.size.width < DUAL_COLUMN_WIDTH
+                chat.set_class(compact, "compact-chat")
+                if not compact and chat.has_class("business-only"):
+                    chat.remove_class("business-only")
+                    self.workspace_widget("#toggle-business", Button).label = "查看业务历史"
+
     def on_mount(self):
+        self.workspace_widget("#chat").set_class(self.size.width < DUAL_COLUMN_WIDTH, "compact-chat")
         self.workspace_widget("#chat-invoices").display = False
         self.db, needs_selection = startup_workbook(self.db, self.recent_path, restore=self.restore_recent)
         self.push_screen(Login(start_in_picker=needs_selection), self.signed_in)
@@ -335,7 +354,9 @@ class AgentWorkspace(ConversationUI, App):
             self.invoice_route = None
             self.invoice_page = 1
             self.invoice_rows = []
-            self.workspace_widget("#chat-log", RichLog).clear()
+            for selector in ("#chat-log", "#business-log"):
+                self.workspace_widget(selector, ChatLog).clear()
+            self.workspace_widget("#business-title", Static).update("业务历史 · 当时快照")
 
     def logout(self):
         self.reset_agent(clear_log=True)
@@ -523,17 +544,21 @@ class AgentWorkspace(ConversationUI, App):
         self.workspace_widget("#chat-note", Static).update(safe_text(text))
 
     def chat_message(self, role, text):
-        log = self.workspace_widget("#chat-log", ChatLog)
+        title = business_title(role)
+        log = self.workspace_widget("#business-log" if title else "#chat-log", ChatLog)
         clean = self.storage_text(text)
-        if role.startswith("业务核验 / ") or role in {"业务回执", "发票回执", "当前待办", "待办回执", "待办未保存"}:
-            log.add(Panel(Text(clean), title=Text(role), title_align="left", border_style="#83ddd6",
+        if title:
+            log.add(Panel(Text(clean), title=Text(title), title_align="left", border_style="#83ddd6",
                           padding=(0, 1)))
         else:
             color = "#91cbff" if role == "你" else "#83ddd6"
             line = Text.assemble("\n", (role, f"bold {color}"), "\n", clean)
             log.add(line)
         if self.turn_seq is not None and role != "你":
-            self.turn_display.append((role,clean))
+            self.turn_display.append((role, clean))
+
+    def business_message(self, title, text, companies=()):
+        self.chat_message(f"{BUSINESS_RECORD}{','.join(sorted(set(companies)))} / {title}", text)
 
     def ensure_agent(self):
         if not self.user:
@@ -768,6 +793,14 @@ class AgentWorkspace(ConversationUI, App):
             self.show(key.removeprefix("go-"))
         elif key == "new-chat":
             self.action_new_chat()
+        elif key == "chat-history":
+            self.open_my_conversations()
+        elif key == "toggle-business":
+            chat = self.workspace_widget("#chat")
+            viewing = not chat.has_class("business-only")
+            chat.set_class(viewing, "business-only")
+            event.button.label = "返回聊天" if viewing else "查看业务历史"
+            self.workspace_widget("#business-log" if viewing else "#prompt").focus()
         elif key == "account":
             self.action_account()
         elif key == "query-scope":
@@ -871,7 +904,9 @@ class AgentWorkspace(ConversationUI, App):
             def resolve(yes):
                 if not answer.done():
                     answer.set_result(yes if epoch == self.session_epoch else None)
+                self.workspace_widget("#business-title", Static).update("业务历史 · 当时快照")
             self.note("等待确认。")
+            self.workspace_widget("#business-title", Static).update("业务历史 · 本项待确认，未提交")
             self.push_screen(make_screen(), resolve)
 
         self.call_from_thread(present)
@@ -899,8 +934,10 @@ class AgentWorkspace(ConversationUI, App):
             if self.conversation and self.turn_seq is not None:
                 self.conversation.checkpoint(self.turn_seq, request_id)
 
-        return run_invoice_batch(self.agent, request["source_request"], request, approve_batch=approve_batch,
-                                 approve_item=approve_item, checkpoint=checkpoint)
+        items = []
+        status, summary = run_invoice_batch(self.agent, request["source_request"], request, approve_batch=approve_batch,
+                                            approve_item=approve_item, checkpoint=checkpoint, display_items=items)
+        return status, summary, items, request["company_id"]
 
     def confirm_management(self, proposal):
         if redact(proposal) != proposal:
@@ -947,6 +984,7 @@ class AgentWorkspace(ConversationUI, App):
         offset = len(agent.messages)
         receipt = None
         batch = None
+        single_item = None
         try:
             agent.ask(message, read_workspace=read_workspace, task_note_from_request=True, **args)
             proposal = agent.last_response.pop("invoice_change", None)
@@ -967,6 +1005,9 @@ class AgentWorkspace(ConversationUI, App):
                         receipt = agent.commit_update(draft.request_id, draft.fingerprint())
                 if receipt is None:
                     receipt = agent.cancel_update()
+                single_item = {**fields, "status": receipt["status"]}
+                if single_item["status"] == "COMMITTED" and not receipt["readback_verified"]:
+                    single_item["status"] = "UNKNOWN_OUTCOME"
             calls = turn_tools(agent.messages[offset:])
             verified = []
             call_by_id = {call["id"]: call for call in calls}
@@ -991,7 +1032,8 @@ class AgentWorkspace(ConversationUI, App):
                 agent.last_response["fulfillment"] = agent.summarize_fulfillment(
                     agent.last_response, receipt=receipt, batch=batch)
             self.call_from_thread(self.finish_turn, calls, receipt, verified,
-                                  batch is None and not args.get("allow_prepare") and not args.get("continue_edit"), batch)
+                                  batch is None and not args.get("allow_prepare") and not args.get("continue_edit"),
+                                  batch, single_item)
         except Exception:
             if agent.workbook_available() and agent.write_receipt["status"] != "UNKNOWN_OUTCOME":
                 agent.cancel_update()
@@ -1003,13 +1045,17 @@ class AgentWorkspace(ConversationUI, App):
         if evidence.get("source") != "current_sqlite":
             return None
         if tool == "list_invoices" and isinstance(data, list):
-            return ("发票目录", f"本账期共 {len(data)} 张\n" + AgentWorkspace.invoice_lines(data))
+            return (f"发票目录 · 已显示 {len(data)} 张", AgentWorkspace.invoice_lines(data))
         if tool == "list_tasks" and isinstance(data, list):
             return ("待办", "\n".join(f"{row['year']} 年 {row['month']} 月用途补充待办，{TASK_STATUS.get(row['status'], '状态待核对')}"
                                       for row in data) or "当前没有待办。")
         if tool == "list_bank_transactions" and isinstance(data, list):
-            return ("银行流水", "\n".join(f"{row['transaction_date']}　{row['direction']} ¥{row['amount']}"
-                                          for row in data) or "没有符合条件的银行流水。")
+            lines = [f"{row['company_id']} {row['transaction_no']} · {row['transaction_date']}"
+                     f"\n{row['direction']} ¥{row['amount']}　{row['counterparty_name'] or ''}" for row in data]
+            if "finance_summary" in evidence:
+                totals = evidence["finance_summary"]
+                lines.append(f"收支汇总　收入 ¥{totals['bank_income_total']}，支出 ¥{totals['bank_expense_total']}")
+            return (f"银行流水 · {len(data)} 条", "\n".join(lines) or "没有符合条件的银行流水。")
         if tool == "list_rule_versions":
             return ("规则版本", render_rule_history(data))
         if tool == "resolve_recent_invoice":
@@ -1026,7 +1072,17 @@ class AgentWorkspace(ConversationUI, App):
         if tool in {"get_invoice", "resolve_invoice_reference"} and data:
             return ("发票详情", AgentWorkspace.invoice_text(data))
         if tool == "query_business_sql":
-            return ("SQL 查询证据", render_sql_evidence(data))
+            lines = []
+            for row, derived in zip(data["rows"], data["derived"]):
+                cells = [f"{name} {('¥' + derived[str(index)]) if str(index) in derived else '（空）' if value is None else value}"
+                         for index, (name, value) in enumerate(zip(data["columns"], row))]
+                if "percentage" in derived:
+                    cells.append(f"比例 {derived['percentage'] or '无法计算（分母为零）'}")
+                lines.append(" · ".join(cells))
+            title = f"业务查询 · 已显示 {len(lines)} 行"
+            if data["truncated"]:
+                lines.append("查询结果已截断，显示行数不代表总数。")
+            return title, "\n".join(lines) or "没有符合条件的记录。"
         if tool == "count_invoice_fields":
             return ("发票字段统计", render_invoice_field_count(data))
         if tool == "list_annual_blank_purpose":
@@ -1038,9 +1094,9 @@ class AgentWorkspace(ConversationUI, App):
                               for row in data["rows"])
             return ("年度银行收入流水", header + ("\n" + lines if lines else "\n本页没有记录。"))
         if tool == "check_missing_purpose":
-            return ("用途检查", f"目前有 {data['count']} 张发票未填写必填用途。\n"
-                    + display_rule_amounts(data["rule"]["content"]) + "\n"
-                    + "\n".join(f"{r['invoice_date']}　{r['invoice_no']}" for r in data["missing_invoices"]))
+            lines = AgentWorkspace.invoice_lines(data["missing_invoices"]) if data["missing_invoices"] else "没有缺项。"
+            return (f"用途检查 · {data['count']} 张",
+                    display_rule_amounts(data["rule"]["content"]) + "\n" + lines)
         if tool == "manage_task" and "task" in data:
             task = data["task"]
             state = TASK_STATUS.get(task["status"], "状态待核对")
@@ -1055,7 +1111,8 @@ class AgentWorkspace(ConversationUI, App):
 
     @staticmethod
     def invoice_lines(rows):
-        return "\n".join(f"{row['invoice_date']}　{row['invoice_no']}　¥{row['amount']}" for row in rows) or "本页没有发票。"
+        return "\n".join(f"{row['company_id']} {row['invoice_no']}　{row['invoice_date']}　¥{row['amount']}"
+                         for row in rows) or "本页没有发票。"
 
     @staticmethod
     def invoice_text(row):
@@ -1105,33 +1162,47 @@ class AgentWorkspace(ConversationUI, App):
         rows = preferred["rows"]
         page_text = f"第 {preferred['page']} 页（{len(rows)} 张）\n" + self.invoice_lines(rows)
         order = (preferred.get("sort_by", "date"), preferred.get("sort_order", "asc"))
-        return f"发票目录 · {DIRECTORY_SORT_LABELS[order]}", header + "\n" + page_text
+        shown = f"{len(rows)}/{preferred['total']}" if len({total for _, total, _ in counts}) == 1 else str(len(rows))
+        return f"发票目录 · 已显示 {shown} 张", f"{DIRECTORY_SORT_LABELS[order]}\n{header}\n{page_text}"
 
     def show_turn_results(self, results):
-        groups = {}
-        displayed = []
+        entries = []
         directories = {}
-        fallback_route = None
         for tool, outcome in results:
             if outcome["status"] not in {"SUCCESS", "NO_DATA", "NO_CHANGE"}:
                 continue
             evidence = outcome["evidence"]
+            if evidence.get("source") != "current_sqlite":
+                continue
             data = outcome["data"]
+            route = directory = None
             if tool == "list_invoice_directory":
                 route = self.directory_scope(evidence, data, outcome["status"])
                 if route is None:
                     self.chat_message("Agent", "发票目录结果格式异常，请重新查询。")
-                elif outcome["status"] == "SUCCESS":
-                    order = (data.get("sort_by", "date"), data.get("sort_order", "asc"))
-                    directories.setdefault((*route, *order), (evidence, []))[1].append(data)
-                else:
-                    cards = groups.setdefault(scope_key(evidence), (evidence, []))[1]
-                    item = (data, self.directory_summary([data], route))
-                    if item not in cards:
-                        cards.append(item)
-                        displayed.append((tool, outcome))
-                continue
-            card = self.business_card(tool, data, evidence)
+                    continue
+                if outcome["status"] == "SUCCESS":
+                    directory = (*route, data.get("sort_by", "date"), data.get("sort_order", "asc"))
+                    directories.setdefault(directory, []).append(outcome)
+            entries.append((tool, outcome, route, directory))
+
+        preferred = {key: min(pages, key=lambda item: item["data"]["page"]) for key, pages in directories.items()}
+        displayed, routes = [], []
+        fallback_route = None
+        for tool, outcome, route, directory in entries:
+            evidence, data = outcome["evidence"], outcome["data"]
+            scope = evidence.get("scope", {})
+            if tool == "list_invoice_directory":
+                if directory and outcome is not preferred[directory]:
+                    continue
+                pages = [item["data"] for item in directories[directory]] if directory else [data]
+                card = self.directory_summary(pages, route)
+                if directory:
+                    target = (*route, data["page"])
+                    order = directory[3:]
+                    routes.append(target if order == ("date", "asc") else (*target, *order))
+            else:
+                card = self.business_card(tool, data, evidence)
             if card is None:
                 if outcome["status"] == "NO_DATA":
                     card = ("查询结果", "没有符合条件的记录。")
@@ -1139,40 +1210,30 @@ class AgentWorkspace(ConversationUI, App):
                     card = ("处理结果", outcome["error"] or "当前无需变更。")
                 else:
                     continue
-            group = groups.setdefault(scope_key(evidence), (evidence, []))
-            item = (data, card)
-            if item not in group[1]:
-                group[1].append(item)
-                displayed.append((tool, outcome))
-            if tool == "list_bank_transactions" and "amount_rule" in evidence and "finance_summary" in evidence:
-                amount_basis = {**evidence, "rule": evidence["amount_rule"]}
-                totals = evidence["finance_summary"]
-                amount_group = groups.setdefault(scope_key(amount_basis), (amount_basis, []))
-                card = ("银行收支合计", f"收入 ¥{totals['bank_income_total']}，支出 ¥{totals['bank_expense_total']}。")
-                item = (totals, card)
-                if item not in amount_group[1]:
-                    amount_group[1].append(item)
             if outcome["status"] == "SUCCESS" and tool in {"list_invoices", "get_invoice"}:
-                scope = evidence["scope"]
                 fallback_route = (scope["company_id"], scope.get("year", 0), scope.get("month", 0), 1)
-        routes = []
-        for route_and_order, (evidence, pages) in directories.items():
-            route, order = route_and_order[:3], route_and_order[3:]
-            groups.setdefault(scope_key(evidence), (evidence, []))[1].append((None, self.directory_summary(pages, route)))
-            preferred = min(pages, key=lambda page: page["page"])
-            target = (*route, preferred["page"])
-            routes.append(target if order == ("date", "asc") else (*target, *order))
-            displayed.append(("list_invoice_directory", {"status": "SUCCESS", "evidence": evidence, "data": preferred}))
+            companies = scope.get("company_ids") or ([scope["company_id"]] if scope.get("company_id") else [])
+            self.business_message(card[0], f"{render_scope(evidence, conversational=True)}\n{card[1]}", companies)
+            displayed.append((tool, outcome))
         self.chat_invoice_routes = tuple(routes) if routes else (fallback_route,) if fallback_route else ()
-        for evidence, cards in groups.values():
-            self.chat_message("查询与处理结果", render_scope(evidence, conversational=True))
-            for _, (title, text) in cards:
-                self.chat_message(f"业务核验 / {title}", text)
         if displayed and self.agent.record_query_display(displayed, full_directory=True) is None:
             self.chat_message("Agent", "本轮结果已展示，但未能保存引用。请使用明确的企业和发票编号。")
-        return bool(groups)
 
-    def finish_turn(self, calls, receipt, verified, read_only=True, batch=None):
+    @staticmethod
+    def modification_lines(items):
+        labels = {"COMMITTED": "已提交并核验", "CANCELLED": "已取消，未提交", "NOT_EXECUTED": "未执行",
+                  "WAITING_CONFIRMATION": "待确认，未提交", "NO_CHANGE": "当前值相同，无需修改",
+                  "CURRENT_VALUE_MATCHES": "当前值已相同，本轮未提交",
+                  "SKIPPED": "已跳过，未提交", "UNKNOWN_OUTCOME": "结果未知，请核查审计"}
+        lines = []
+        for item in items:
+            field = "用途" if item["field"] == "purpose" else "备注"
+            status = labels.get(item["status"], status_label(item["status"]))
+            old, new = (item[key] if item[key] not in (None, "") else "（空）" for key in ("old_value", "new_value"))
+            lines.append(f"{item['company_id']} {item['invoice_no']} · {field} · {status}\n{old} → {new}")
+        return "\n\n".join(lines)
+
+    def finish_turn(self, calls, receipt, verified, read_only=True, batch=None, single_item=None):
         response = self.agent.last_response
         stop = response["execution"]["stop_reason"]
         status = batch[0] if batch else receipt["status"] if receipt else stop
@@ -1184,9 +1245,17 @@ class AgentWorkspace(ConversationUI, App):
         self.show_turn_results(results)
         self.workspace_widget("#chat-invoices").display = bool(self.chat_invoice_routes)
         coverage = response.get("goal_coverage")
+        operation = response["operation_receipt"]
+        unchanged = not receipt and not batch and operation["status"] == "CURRENT_VALUE_MATCHES"
         notice = response["chat_notice"]
-        if notice:
-            self.chat_message("Agent", notice)
+        if notice and not (unchanged and notice == operation["message"]):
+            for tool, result in results:
+                if tool == "query_business_sql" and result["status"] in {"SUCCESS", "NO_DATA"}:
+                    sql = result["data"]["sql"]
+                    fence = chr(96) * 3
+                    notice = notice.replace(f"{fence}sql\n{sql}\n{fence}", "").replace(sql, "")
+            if notice.strip():
+                self.chat_message("Agent", notice.strip())
         detail = response["fulfillment"]["detail"]
         if detail:
             self.chat_message("本轮目标", detail)
@@ -1198,10 +1267,16 @@ class AgentWorkspace(ConversationUI, App):
         for detail in verified:
             self.chat_message("业务回执", detail)
         if batch:
-            self.chat_message("发票回执", batch[1])
+            batch_status, summary, items, company = batch
+            if items:
+                summary = "\n".join(summary.splitlines()[:2]) + "\n\n" + self.modification_lines(items)
+            self.business_message(f"批量发票修改 · {status_label(batch_status)}", summary, (company,))
+            if batch_status == "UNKNOWN_OUTCOME":
+                self.chat_message("Agent", "发票修改结果未知。请先核查审计，再决定是否重试。")
         if receipt:
-            if not (coverage and coverage["write"]):
-                self.chat_message("发票回执", receipt["message"])
+            self.business_message("发票修改", self.modification_lines((single_item,)), (single_item["company_id"],))
+            if receipt["status"] == "UNKNOWN_OUTCOME" and not (coverage and coverage["write"]):
+                self.chat_message("Agent", receipt["message"])
             if receipt.get("task_progress"):
                 progress = receipt["task_progress"]
                 if progress["status"] == "SUCCESS":
@@ -1209,6 +1284,13 @@ class AgentWorkspace(ConversationUI, App):
                     self.chat_message("当前待办", f"已重新核对当前待办，剩余 {count} 张发票待补用途。")
                 else:
                     self.chat_message("当前待办", "本次修改结果见发票回执。请打开待办详情重新核对进度。")
+        if unchanged:
+            data = operation["data"]
+            invoice = data["current_invoice"]
+            item = {"company_id": invoice["company_id"], "invoice_no": invoice["invoice_no"],
+                    "field": data["field"], "old_value": invoice[data["field"]], "new_value": data["target_value"],
+                    "status": "CURRENT_VALUE_MATCHES"}
+            self.business_message("发票修改", self.modification_lines((item,)), (item["company_id"],))
         api = response.get("api_counts")
         if api:
             self.model_requests += api["attempts"]
@@ -1243,9 +1325,12 @@ class AgentWorkspace(ConversationUI, App):
 
     def unlock(self):
         self.busy = False
+        self.workspace_widget("#business-title", Static).update("业务历史 · 当时快照")
         prompt = self.workspace_widget("#prompt", Input)
         prompt.disabled = False
-        if self.workspace_widget("#panes", ContentSwitcher).current == "chat":
+        chat = self.workspace_widget("#chat")
+        if (self.workspace_widget("#panes", ContentSwitcher).current == "chat"
+                and not (chat.has_class("compact-chat") and chat.has_class("business-only"))):
             prompt.focus()
         self.update_header()
 
@@ -1267,6 +1352,8 @@ class AgentWorkspace(ConversationUI, App):
         self.select_pane(page)
         self.update_header()
         if page == "chat":
+            self.workspace_widget("#chat").remove_class("business-only")
+            self.workspace_widget("#toggle-business", Button).label = "查看业务历史"
             self.workspace_widget("#prompt", Input).focus()
         else:
             self.call_later(self.refresh_pane, page)

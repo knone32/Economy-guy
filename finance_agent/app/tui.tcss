@@ -48,7 +48,17 @@ SelectOverlay > .option-list--option-highlighted {
 #rail-spacer { height: 1fr; }
 #panes { width: 1fr; height: 1fr; }
 #chat { height: 1fr; padding: 0 2; }
-#chat-log { height: 1fr; min-height: 1; overflow-x: hidden; scrollbar-size-vertical: 1; padding-top: 1; }
+#chat-columns { height: 1fr; }
+#chat-main { width: 1fr; min-width: 78; height: 1fr; }
+#business-pane { width: 42; height: 1fr; border-left: solid $line; padding-left: 1; }
+#business-title { height: 1; color: $accent; text-style: bold; }
+#chat-log, #business-log { height: 1fr; min-height: 1; overflow-x: hidden; scrollbar-size-vertical: 1; padding-top: 1; }
+#toggle-business { display: none; }
+#chat.compact-chat #toggle-business { display: block; }
+#chat.compact-chat #chat-main { min-width: 1; }
+#chat.compact-chat #business-pane { display: none; width: 1fr; }
+#chat.compact-chat.business-only #chat-main { display: none; }
+#chat.compact-chat.business-only #business-pane { display: block; }
 #ai-guide { height: auto; padding: 0 1; margin-bottom: 1; }
 #ai-guide-text { width: 1fr; height: auto; color: $quiet; }
 #configure-ai { margin-left: 1; }

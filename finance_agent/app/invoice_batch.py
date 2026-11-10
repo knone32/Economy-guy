@@ -262,7 +262,7 @@ def plan_invoice_change(agent, source_request, proposal, selection, *, authorize
             "workbook": str(agent.db_path), "turn": agent.trace_id}, "WAITING_CONFIRMATION", None
 
 
-def run_invoice_batch(agent, message, request, *, approve_batch, approve_item, checkpoint):
+def run_invoice_batch(agent, message, request, *, approve_batch, approve_item, checkpoint, display_items=None):
     company, year, month = (request[key] for key in ("company_id", "year", "month"))
     field, value, mode = (request[key] for key in ("field", "new_value", "mode"))
     period = f"{year:04d}-{month:02d}"
@@ -322,6 +322,10 @@ def run_invoice_batch(agent, message, request, *, approve_batch, approve_item, c
     if redact(item_lines) != item_lines or redact(message) != message:
         return "DENIED", "预览含有需隐藏的内容，无法进行完整核对，未提交。"
 
+    if display_items is not None:
+        display_items.extend({"company_id": company, "invoice_no": invoice, "field": field,
+                              "old_value": old, "new_value": value, "status": "NOT_EXECUTED"}
+                             for invoice, old in targets)
     counts = {"committed": 0, "skipped": 0, "failed": 0, "unknown": 0}
     details = []
     status = "COMPLETED"
@@ -337,6 +341,9 @@ def run_invoice_batch(agent, message, request, *, approve_batch, approve_item, c
 
     if mode != "item" and not approve_batch(f"{scope}\n确认后将连续处理。\n\n{full_preview}", mode):
         status = "CANCELLED"
+        if display_items is not None:
+            for item in display_items:
+                item["status"] = "CANCELLED"
     else:
         try:
             for index, (invoice, old) in enumerate(targets):
@@ -350,6 +357,8 @@ def run_invoice_batch(agent, message, request, *, approve_batch, approve_item, c
                     outcome = "NOT_SUBMITTED" if status in {"SKIPPED", "NO_CHANGE"} else status
                     coordinator.receipt = coordinator._receipt(outcome)
                 agent.trace("invoice_batch.item", {"invoice_no": invoice, "status": status, "request_id": request_id})
+                if display_items is not None:
+                    display_items[index]["status"] = status
                 if status == "COMMITTED":
                     counts["committed"] += 1
                     details.append(f"{invoice}：已保存并回读")

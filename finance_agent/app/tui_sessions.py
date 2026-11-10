@@ -11,6 +11,40 @@ from .tasks import task_details
 from .updates import inspect_request
 
 
+BUSINESS_RECORD = "业务记录 / "
+_LEGACY_BUSINESS = {"查询与处理结果", "业务回执", "发票回执", "当前待办", "待办回执", "待办未保存"}
+
+
+def business_title(role):
+    if role.startswith(BUSINESS_RECORD):
+        return role.removeprefix(BUSINESS_RECORD).partition(" / ")[2]
+    if role.startswith("业务核验 / "):
+        return role.removeprefix("业务核验 / ")
+    return role if role in _LEGACY_BUSINESS else None
+
+
+def _legacy_sql_rows(body):
+    """Recover saved evidence rows while leaving the original session entry intact."""
+    _, marker, display = body.partition("\n列 ")
+    if not body.startswith("SQL\n") or not marker:
+        return body
+    header, _, rows = display.partition("\n")
+    columns = header.split(" · ")
+    lines = []
+    decoder = json.JSONDecoder()
+    for line in rows.splitlines():
+        if line.startswith("["):
+            try:
+                values, offset = decoder.raw_decode(line)
+            except ValueError:
+                lines.append(line)
+                continue
+            if isinstance(values, list) and len(values) == len(columns):
+                line = " · ".join(f"{key} {value}" for key, value in zip(columns, values)) + line[offset:]
+        lines.append(line)
+    return "\n".join(lines)
+
+
 QUERY_TOOLS = ANNUAL | {"get_finance_summary", "list_invoices", "list_invoice_directory", "check_missing_purpose",
                "get_invoice", "resolve_invoice_reference", "list_bank_transactions", "get_applicable_rules"}
 
@@ -66,8 +100,14 @@ class ConversationUI:
             if found["ok"] and found["data"]["can_execute"]:
                 self.task_focus = tuple(task)
         for turn in history["turns"]:
-            scoped = {(c.get("scope") or {}).get("company_id") for c in turn["calls"]}
+            scopes = [call.get("scope") or {} for call in turn["calls"]]
+            scoped = {scope.get("company_id") for scope in scopes}
+            scoped.update(company for scope in scopes for company in scope.get("company_ids", ()))
             scoped.update(explicit_scope(turn["request"], include_update_aliases=True).get("company_id", ()))
+            for role, _ in turn["display"]:
+                if role.startswith(BUSINESS_RECORD):
+                    companies, _, _ = role.removeprefix(BUSINESS_RECORD).partition(" / ")
+                    scoped.update(filter(None, companies.split(",")))
             if (scoped - {None}) - permitted:
                 continue
             self.has_saved_history = True
@@ -84,6 +124,8 @@ class ConversationUI:
                     except (ValueError, AttributeError):
                         status = None
                     body = render_reference_error(status if isinstance(status, str) else None)
+                if role == "业务核验 / SQL 查询证据":
+                    body = _legacy_sql_rows(body)
                 self.chat_message(role, body)
             if turn["state"] == "INTERRUPTED":
                 self.chat_message("会话状态", "上次处理被中断。请重新提出查询。")
@@ -111,6 +153,8 @@ class ConversationUI:
         self.resume_displays = self.resume_displays[-64:]
         self.saved_records = self.saved_records[-20:]
         if self.has_saved_history:
+            for selector in ("#chat-log", "#business-log"):
+                self.workspace_widget(selector).scroll_end(animate=False)
             self.note("已继续上次对话。当前业务状态将在查询时重新读取。")
         return self.has_saved_history
 
