@@ -369,6 +369,14 @@ class Agent:
         if self.workbook_guard:
             self.workbook_guard()
         self.last_user_request=text
+        bulk_no_confirmation = bool(
+            re.search(r"用途", text) and re.search(r"发票|单据", text)
+            and re.search(r"全部|统一|批量|所有|都", text)
+            and re.search(r"填成|填为|改成|改为|修改|设置为|补填", text)
+            and re.search(r"(?:不用|无需|不必|跳过).{0,14}确认", text))
+        if bulk_no_confirmation:
+            # No model-proposed or deterministic write can bypass per-invoice confirmation.
+            allow_prepare, continue_edit, edit_scope = False, False, None
         api_before=self.transport.counts() if self.transport else None
         if self.management_turn:
             self.management_turn.active=False
@@ -614,6 +622,9 @@ class Agent:
                 hypothetical = render_hypothetical_purpose_rules(read_results, text_request, goals)
                 if hypothetical:
                     text += "\n" + hypothetical
+            if bulk_no_confirmation:
+                text += ("\n本轮未执行批量无确认修改：发票用途修改必须逐项明确真实用途并由用户确认。"
+                         "用途字段为空不能推断实际用途为“办公用品”；上方已核验的查询结果不代表写入成功。")
             if self.write_receipt['status']=='CURRENT_VALUE_MATCHES':text+='\n'+self.write_receipt['message']
             self.last_response = {"source":"runtime_output", "category":category, "text":text, "operation_receipt":self.write_receipt, "trace_degraded":self.trace_degraded,"execution":execution.snapshot()}
             api={key:self.transport.counts()[key]-api_before[key] for key in api_before} if api_before is not None else None
@@ -676,6 +687,11 @@ class Agent:
                     "本轮尚无当前业务查询证据。不要复述历史金额、规则或记录。"
                     "请根据原始用户请求和可信范围调用所需查询工具；范围或对象不明确则返回 clarification。"
                     "不创建待办、不保存偏好、不修改发票。只纠正本轮的查询回答。"})
+            if bulk_no_confirmation:
+                context.append({"role": "system", "content":
+                    "本轮包含不支持的批量无确认用途修改，绝不执行修改或创建修改草稿。"
+                    "在可信企业与2026-09账期明确时，可用check_missing_purpose只读查询当前缺项。"
+                    "最终程序将单独报告批量无确认写入未执行；只读结果不等于操作完成。"})
             if covered_turn:
                 context.append({"role": "system", "content":
                     f"本轮可核验的只读目标（类型、企业、年份、月份）：{goals}。"
