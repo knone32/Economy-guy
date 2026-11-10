@@ -50,7 +50,6 @@ def _edit_scope(match, text):
 
 
 # These checks bind literal evidence, without deciding the target query.
-_CHANGE_VERB = r"(?:修改为|改成|改为|填成|填为|换成|写成|设置为)"
 _INVOICE_GROUP = rf"{_INVOICE}(?:\s*[、和及与]\s*{_INVOICE})*"
 _EXCLUDED = re.compile(
     rf"(?:除了?|排除|不含|不包括)\s*(?P<before>{_INVOICE_GROUP})|"
@@ -63,7 +62,7 @@ _HYPOTHETICAL = re.compile(r"^\s*(?:如果|假如|假设|例如|怎样|如何|�
 def invoice_intent_source(text):
     """Only explicit edit language may leave a read-only continuation clue."""
     return (not _HYPOTHETICAL.match(text) and re.search(r"发票|(?<![A-Za-z0-9])F\d+|这张|那张", text, re.I)
-            and re.search(rf"{_CHANGE_VERB}|改一下|^\s*修改|(?:用途|备注)\s*修改\s*[。！!]?$", text))
+            and re.search(r"[改填补设写换][^，,。；;\n]{0,2}[为成]\s*\S|改一下|^\s*修改|(?:用途|备注)\s*修改\s*[。！!]?$", text))
 
 
 def invoice_supplement(text, missing):

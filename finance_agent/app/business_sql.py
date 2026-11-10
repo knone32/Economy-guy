@@ -218,6 +218,13 @@ class BusinessSQL:
                 and selects == 1 and reads == {"invoices"} and not functions & _AGGREGATES
                 and _KEY_QUERY.match(sql) and not _PARTIAL_QUERY.search(sql)):
             keys = tuple(rows)
+            placeholders = ",".join("(?,?)" for _ in keys)
+            dates = db.execute(
+                f"SELECT company_id, invoice_date FROM invoices WHERE (company_id, invoice_no) IN (VALUES {placeholders})",
+                tuple(value for key in keys for value in key),
+            )
+            actual = sorted({(company, day[:7]) for company, day in dates})
+            data["selection_scope"] = [{"company_id": company, "period": period} for company, period in actual]
         return scope, data, keys
 
 

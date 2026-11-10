@@ -847,9 +847,17 @@ class Agent:
                     "用 is_blank 判断 NULL、空串和纯空白。范围内的全部数据参与计算；"
                     "truncated=true 只代表展示部分行，不能当作全量；需要合计或计数时直接做聚合。"
                     "不要把有界账期说成全账簿，也不要把两个无可信关联的表连接结果当成实际付款凭证。"
-                    "用 information 信封自然回答原始问题，明确指标与证据限制。"
+                    "真正的只读请求用 information 信封回答，明确指标与证据限制。"
+                    "若用户还要求修改，读取成功只是取证。具备依据时继续提出修改候选；否则精准追问或说明限制。"
                     "工具未执行的操作不声称成功；SQL 不提供写入回执或替代规则判定。\n"
                     + json.dumps(sql_context, ensure_ascii=False))})
+            if invoice_proposals and any(name == "query_business_sql" and outcome["status"] == "SUCCESS"
+                                         and outcome["data"].get("selection_id") for name, outcome in read_results):
+                context.append({"role": "system", "content":
+                    "本轮已有可提案的 SQL 清单。查阅现有 SQL 工具消息中的 selection_id、rows 和 selection_scope，"
+                    "以及已取得的参考规则工具结果。不要重复相同查询。若原始请求要求修改，下一步调用 "
+                    "propose_invoice_changes，使用该 ID、实际发票目标年月、用户原话明确的新值和匹配的规则业务日期；"
+                    "仍缺依据则只追问缺项。只读询问直接解释结果，不得提出修改。"})
             if retrieval_corrected and not read_results:
                 context.append({"role": "system", "content":
                     "本轮尚无当前业务查询证据。不要复述历史金额、规则或记录。"
@@ -1177,7 +1185,13 @@ class Agent:
                 if invoice_change is not None:
                     return finish("发票清单已核验，等待人工确认。", store=False)
                 if any(outcome is stop_result and name == "propose_invoice_changes" for name, outcome in read_results):
-                    notice = stop_result.get("error") or "无法核验本轮发票修改提案。"
+                    notice = (stop_result.get("error") or "无法核验本轮发票修改提案。") + " 本轮没有提交发票修改。"
+                    return finish(notice, store=False, chat_notice=notice)
+                if (execution.stop_reason == "NO_PROGRESS" and stop_result["status"] == "NO_PROGRESS" and any(
+                        name == "query_business_sql" and outcome["status"] == "SUCCESS"
+                        and outcome["data"].get("selection_id") for name, outcome in read_results)):
+                    notice = ("SQL 清单已取得并保留。模型重复请求同一工具调用，运行已停止（NO_PROGRESS）。"
+                              "本轮未生成或核验修改提案，没有提交任何发票修改。")
                     return finish(notice, store=False, chat_notice=notice)
                 if self.update_session.drafts:
                     return finish(self.write_receipt["message"])

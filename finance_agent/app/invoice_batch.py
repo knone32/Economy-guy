@@ -2,6 +2,7 @@
 from contextlib import closing
 from dataclasses import asdict
 from datetime import date
+import re
 import sqlite3
 
 from .permissions import check_permission
@@ -74,6 +75,38 @@ def _required_invoice_ids(db, actor, company, period, params, excluded):
             if row["invoice_no"] not in excluded and missing_required_purpose(params, row)}
 
 
+_FILTER_FIELDS = {"销售方": "seller_name", "销方": "seller_name", "备注": "remark", "项目": "item_name"}
+_LITERAL_FILTER = re.compile(
+    rf"({'|'.join(_FILTER_FIELDS)})\s*(?:(不为空|为空)|(?:为|是|等于)\s*"
+    r"(?:“([^”]+)”|‘([^’]+)’|\"([^\"]+)\"|'([^']+)'|([^，,。；;]+?)(?=的发票|且|，|,|。|；|;|$)))"
+)
+
+
+def _rule_subset_filters(text, new_value):
+    """Only literal field constraints can justify a narrower rule selection."""
+    start = text.rfind(new_value) if new_value else -1
+    end = start + len(new_value)
+    # The value being written is not evidence of a condition on the target.
+    filters, edit_source = [], text
+    for match in reversed(list(_LITERAL_FILTER.finditer(text))):
+        if start >= 0 and match.start() < end and start < match.end():
+            continue
+        label, predicate, *values = match.groups()
+        filters.append((_FILTER_FIELDS[label], predicate, next((value.strip() for value in values if value), None)))
+        edit_source = edit_source[:match.start()] + " " + edit_source[match.end():]
+    return tuple(filters), edit_source
+
+
+def _matches_subset_filters(row, filters):
+    for field, predicate, value in filters:
+        current = (row[field] or "").strip()
+        if predicate == "为空" and current or predicate == "不为空" and not current:
+            return False
+        if not predicate and current != value:
+            return False
+    return True
+
+
 def plan_invoice_change(agent, source_request, proposal, selection, *, authorized_periods=(),
                         literal_periods=(), read_results=()):
     """Validate current-turn scope and literal edit constraints without preparing a draft."""
@@ -118,7 +151,9 @@ def plan_invoice_change(agent, source_request, proposal, selection, *, authorize
         return None, "SCOPE_MISMATCH", "请明确要修改的发票目标年月。"
 
     rule = None
-    cohort = proposal.get("rule_cohort", False)
+    cohort = False
+    subset_filters = ()
+    edit_source = source_request
     if rule_date:
         day = date.fromisoformat(rule_date)
         rule_period = (day.year, day.month)
@@ -137,8 +172,13 @@ def plan_invoice_change(agent, source_request, proposal, selection, *, authorize
         if len(matches) != 1:
             return None, "SCOPE_MISMATCH", "当前轮没有唯一匹配的企业用途规则证据，请核对参考日期。"
         rule, = matches
+        subset_filters, edit_source = _rule_subset_filters(source_request, proposal["new_value"])
+        if len(subset_filters) > 1 and "或" in source_request:
+            return None, "AMBIGUOUS", "附加筛选包含多个备选条件，请拆分或明确各条件的适用范围。"
+        # The proposal flag describes intent. It cannot authorize an unexplained subset.
+        cohort = not (named or subset_filters)
 
-    if not invoice_change_evidence(source_request, proposal["field"], proposal["new_value"],
+    if not invoice_change_evidence(edit_source, proposal["field"], proposal["new_value"],
                                    rule_field="purpose" if rule else None):
         return None, "AMBIGUOUS", "请明确允许修改的字段及来自用户原话的新值。"
 
@@ -164,10 +204,11 @@ def plan_invoice_change(agent, source_request, proposal, selection, *, authorize
                     if len(expected) > MAX_BATCH_INVOICES:
                         return None, "INVALID_ARGUMENTS", f"规则缺项全集超过 {MAX_BATCH_INVOICES} 张，未创建确认清单。"
                     if invoice_nos != expected:
-                        return None, "SCOPE_MISMATCH", (f"规则全集核验失败：应处理 {len(expected)} 张，"
-                                                        f"候选清单有 {len(invoice_nos)} 张。请重新查询，未进入确认。")
-                elif any(not missing_required_purpose(current_rule.params, row) for row in rows):
-                    return None, "SCOPE_MISMATCH", "清单含有不符合参考规则筛选条件的发票。"
+                        return None, "SCOPE_MISMATCH", (f"规则缺项全集有 {len(expected)} 张，候选清单有 {len(invoice_nos)} 张，"
+                                                        "且无可核验的独立筛选依据。请重新查询或明确附加条件，未进入确认。")
+                elif any(not missing_required_purpose(current_rule.params, row)
+                         or not _matches_subset_filters(row, subset_filters) for row in rows):
+                    return None, "SCOPE_MISMATCH", "清单含有不符合参考规则或原话附加条件的发票。"
     except (OSError, sqlite3.Error, ValueError):
         return None, "ERROR", "无法核验账簿、企业权限或发票实际日期。"
 
@@ -185,7 +226,8 @@ def plan_invoice_change(agent, source_request, proposal, selection, *, authorize
     request = {key: proposal[key] for key in ("field", "new_value", "mode")}
     if rule:
         request["rule_reference"] = {"business_date": rule_date, "rule_id": rule["rule_id"],
-                                     "version": rule["version"], "params": rule["params"], "cohort": cohort}
+                                     "version": rule["version"], "params": rule["params"], "cohort": cohort,
+                                     "subset_filters": subset_filters}
     return {**request, "company_id": company, "year": year, "month": month,
             "invoice_nos": tuple(sorted(invoice_nos)), "excluded": tuple(sorted(excluded)),
             "source_request": source_request, "actor": agent.user_id,
@@ -221,8 +263,9 @@ def run_invoice_batch(agent, message, request, *, approve_batch, approve_item, c
             if any(not row or row["invoice_date"][:7] != period for row in rows):
                 return "CONFLICT", "清单内发票已失效或账期已变更，未执行修改。"
             if rule_reference:
-                if any(not missing_required_purpose(rule_reference["params"], row) for row in rows):
-                    return "CONFLICT", "发票已不符合参考规则筛选条件，未执行修改。"
+                if any(not missing_required_purpose(rule_reference["params"], row)
+                       or not _matches_subset_filters(row, rule_reference["subset_filters"]) for row in rows):
+                    return "CONFLICT", "发票已不符合参考规则或原话附加条件，未执行修改。"
                 if rule_reference["cohort"] and set(invoice_nos) != _required_invoice_ids(
                         db, agent.user_id, company, (year, month), rule_reference["params"], request["excluded"]):
                     return "CONFLICT", "规则缺项全集已变化，请重新查询，未执行修改。"
