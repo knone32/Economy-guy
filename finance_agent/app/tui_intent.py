@@ -32,26 +32,43 @@ def literal_value(text):
     return [text] if text.strip() and not _PLACEHOLDER.fullmatch(text) else []
 
 
+def _edit_scope(match, text):
+    target = match["target"] if match["target"] is not None else match["direct"]
+    scope = explicit_scope(target, include_update_aliases=True)
+    field = match["field"] or match["direct_field"]
+    scope["field"] = ["purpose" if field == "用途" else "remark"]
+    value = text[match.end():].strip()
+    if (match["verb"] or match["direct_verb"]) == "清空":
+        values = [""] if not value else []
+    else:
+        if not match["field"]:
+            value = re.sub(r"^(?:修改为|设置为|改成|改为|设为|为)\s*", "", value)
+        values = literal_value(value)
+    if values:
+        scope["new_value"] = values
+    return scope
+
+
 def edit_turn(text, pending, *, guided=False):
     text = text.strip().rstrip("。！!").strip()
     if pending and _CANCEL.fullmatch(text):
         return {"cancel": True}
+    parts = re.split(r"\s*[，,；;。]?\s*(?:并且|并|然后|再)\s*"
+                     r"(?=把|将|修改|更正|更新|补填|填写|清空)", text, maxsplit=1)
+    if len(parts) == 2 and re.match(r"(?:先\s*)?(?:查询|查|汇总|列出|检查)", parts[0]):
+        read_request, write_request = parts
+        match = _EDIT.match(write_request)
+        if match:
+            scope = _edit_scope(match, write_request)
+            value = write_request[match.end():].strip()
+            quoted = re.fullmatch(r'“[^”]*”|"[^"]*"', value, re.S)
+            if (not quoted and re.search(r"[，,；;。]|\n|(?:并且|并|然后|再)\s*(?:把|将|修改|更正|更新|清空|查询|查)", value)
+                    or any(len(scope.get(key, ())) != 1 for key in ("company_id", "invoice_no", "field", "new_value"))):
+                scope.pop("new_value", None)
+            return {"allow_prepare": True, "edit_scope": scope, "read_request": read_request}
     match = _EDIT.match(text)
     if match:
-        target = match["target"] if match["target"] is not None else match["direct"]
-        scope = explicit_scope(target, include_update_aliases=True)
-        field = match["field"] or match["direct_field"]
-        scope["field"] = ["purpose" if field == "用途" else "remark"]
-        value = text[match.end():].strip()
-        if (match["verb"] or match["direct_verb"]) == "清空":
-            values = [""] if not value else []
-        else:
-            if not match["field"]:
-                value = re.sub(r"^(?:修改为|设置为|改成|改为|设为|为)\s*", "", value)
-            values = literal_value(value)
-        if values:
-            scope["new_value"] = values
-        return {"allow_prepare": True, "edit_scope": scope}
+        return {"allow_prepare": True, "edit_scope": _edit_scope(match, text)}
     if not pending:
         return {}
     correction = _CORRECTION.fullmatch(text)

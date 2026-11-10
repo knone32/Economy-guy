@@ -11,9 +11,10 @@ from .write_coordination import WriteCoordinator
 from .updates import commit_invoice_update
 from .responses import (explicit_scope, parse_final, render_information, render_clarification,
                         render_explanation_evidence, render_grounded_explanation, render_invoice_comparison, render_reference_error, render_stopped,
-                        render_task_scope_negotiation, render_tool_failure)
+                        render_task_scope_negotiation, render_tool_failure, QUERY_GOALS, query_goal,
+                        verified_query_goal, render_goal_coverage)
 from .persistence import ManagementIntent, ManagementTurn, ManagementProposals
-from .context import ContextBuilder, ContextLimitError, reference_hint
+from .context import ContextBuilder, ContextLimitError, RELATIVE_PERIOD, reference_hint
 from .scheduler import BudgetPolicy, TurnExecution
 from .thinking_protocol import ThinkingProtocol, ProtocolError
 from .model_config import resolve_connection,ProfileError
@@ -253,11 +254,11 @@ class Agent:
                 warn_trace_degraded()
 
     def ask(self, text, allow_prepare=False, continue_edit=False, management=None, management_action=None, *,
-            edit_scope=None, edit_correction=False, read_workspace=None, task_note_from_request=False):
+            edit_scope=None, edit_correction=False, read_workspace=None, task_note_from_request=False, read_request=None):
         if self._active or self._retired: raise ProfileError('Agent正在运行或已结束，不能重入')
         self._active=True
         try: return self._ask(text,allow_prepare,continue_edit,management,management_action,edit_scope,edit_correction,
-                              read_workspace,task_note_from_request)
+                              read_workspace,task_note_from_request,read_request)
         finally: self._active=False
 
     def switch_model(self,connection):
@@ -336,7 +337,7 @@ class Agent:
         return anchors
 
     def _ask(self, text, allow_prepare=False, continue_edit=False, management=None, management_action=None,
-             edit_scope=None, edit_correction=False, read_workspace=None, task_note_from_request=False):
+             edit_scope=None, edit_correction=False, read_workspace=None, task_note_from_request=False, read_request=None):
         """执行一轮有界请求；每个 tool_call 都配对结果后才停止。"""
         self._check_identity()
         if self.workbook_guard:
@@ -361,11 +362,50 @@ class Agent:
         self.execution = execution = TurnExecution(self.budget_policy,self.trace)
         read_results = []
         retrieval_corrected = False
-        explicit = explicit_scope(text, include_update_aliases=True)
         read_only = not (allow_prepare or management or self.teaching)
+        mixed = allow_prepare and read_request is not None and not (management or self.teaching)
+        query_text = read_request if mixed else text
+        deferred = False
+        if read_only:
+            parts = re.split(r"\s*[，,；;。]?\s*(?:然后|接着|再)\s*(?=查看|看|查)", text, maxsplit=1)
+            if len(parts) == 2 and query_goal(parts[0]) == "directory":
+                forward = reference_hint(parts[1])
+                if forward and type(forward["ordinal"]) is int:
+                    query_text, deferred = parts[0], True
+        explicit = explicit_scope(query_text, include_update_aliases=True)
+        goal = query_goal(query_text)
+        corrected = False
+        date_sources = {}
+        if (read_only and len(explicit.get("company_id", ())) == 1 and "invoice_no" not in explicit
+                and re.match(r"^\s*(?:刚才|上一轮)?(?:说错了|查错了|更正(?:一下)?)\s*[，,：:]?", text)):
+            prior = {(name, scope["company_id"], scope["year"], scope["month"])
+                     for name, outcome in (self.last_response or {}).get("tool_results", ())
+                     if name in {"get_finance_summary", "list_invoice_directory"}
+                     and outcome["status"] in {"SUCCESS", "NO_DATA"}
+                     and outcome["evidence"].get("source") == "current_sqlite"
+                     and {"company_id", "year", "month"} <= (scope := outcome["evidence"].get("scope", {})).keys()}
+            if len(prior) == 1:
+                name, _, year, month = prior.pop()
+                goal = "finance" if name == "get_finance_summary" else "directory"
+                if not {"year", "month", "periods"} & explicit.keys():
+                    explicit.update(year=[year], month=[month], periods=[(year, month)])
+                    date_sources.update(dict.fromkeys(("year", "month", "periods"), "current_sqlite"))
+                corrected = True
+        if (read_only or mixed) and "month" in explicit and "year" not in explicit and not re.search(RELATIVE_PERIOD, query_text):
+            years = set(self.context.scope.get("year", ())) if self.context.sources.get("year") in {
+                "user_current", "session_confirmed", "trusted_reference", "current_sqlite"} else set()
+            workspace = self._workspace_read_scope(read_workspace, "")
+            if workspace:
+                years.update(workspace.get("year") or workspace.get("annual_year") or ())
+            if years:
+                explicit["year"] = sorted(years)
+                date_sources["year"] = "session_confirmed"
+                if len(years) == len(explicit["month"]) == 1:
+                    explicit["periods"] = [(explicit["year"][0], explicit["month"][0])]
+                    date_sources["periods"] = "session_confirmed"
         previous_facts = self.context.explanation_facts(
             (self.last_response or {}).get("tool_results", ()), explicit, historical=True) if read_only else {}
-        hint = reference_hint(text)
+        hint = reference_hint(query_text)
         comparison = None
         if (read_only and len(explicit.get("company_id", [])) == len(explicit.get("invoice_no", [])) == 1
                 and hint and hint["ordinal"] is None and not hint["anchor_id"]
@@ -376,21 +416,22 @@ class Agent:
         awaiting_year = bool(self.context.scope.get("month") and not self.context.scope.get("year"))
         # Probe an unscoped read reference before changing the last valid query focus.
         probe_reference = read_only and hint is not None and not explicit
-        reference = self.context.resolve(text, explicit=explicit) if probe_reference else None
+        reference = self.context.resolve(query_text, explicit=explicit) if probe_reference else None
         expected_scope = {}
         if not reference or reference["ok"]:
             independent_read = (read_only and hint is None and len(explicit.get("company_id", ())) == 1
                                 and len(explicit.get("periods", ())) == 1)
-            expected_scope = self.context.begin(text, len(self.messages) - 1, reset=management == "task",
-                                                independent_read=independent_read)
+            expected_scope = self.context.begin(query_text, len(self.messages) - 1, reset=management == "task",
+                                                independent_read=independent_read, explicit=explicit,
+                                                date_sources=date_sources)
             if not probe_reference:
-                reference = self.context.resolve(text, explicit=explicit)
+                reference = self.context.resolve(query_text, explicit=explicit)
         reference_context = None
         if reference and reference["ok"]:
             self.context.accept_reference(reference['evidence'])
             read_results.append(("resolve_invoice_reference",reference))
             expected_scope = dict(self.context.scope)
-            reference_context = {**reference_hint(text),"scope":expected_scope,
+            reference_context = {**hint,"scope":expected_scope,
                                  "anchor_id":reference["evidence"]["reference"]["anchor_id"],
                                  "display_ids":self.context.display_ids}
             self.trace("reference.resolved",reference)
@@ -411,7 +452,7 @@ class Agent:
                 if read_workspace and read_workspace != directory_scope:
                     previous_directory = directory_scope = None
         selection = self.context.annual_focus or read_workspace or (prior_annual_focus if has_dates else None)
-        read_workspace = self._workspace_read_scope(selection, text) if not (allow_prepare or management or reference) else None
+        read_workspace = self._workspace_read_scope(selection, query_text) if (not (allow_prepare or management) or mixed) and not reference else None
         annual_year = None
         if not (allow_prepare or management or reference) and not re.search(
                 r"今年|去年|明年|本月|上月|下月|最近|季度|半年|上半|下半|此前|之后|以前|以后|"
@@ -425,6 +466,30 @@ class Agent:
                 annual_year = next(iter(read_workspace.get("annual_year", [])), None)
         if self.context.annual_focus and annual_year is None and not (allow_prepare or management or reference):
             self.context.annual_focus = None
+        covered_turn = mixed or deferred or corrected or (read_only and len(explicit.get("company_id", ())) > 1)
+        trusted_scope = {**self.context.scope, **(read_workspace or {}), **explicit}
+        companies = trusted_scope.get("company_id", ())
+        periods = trusted_scope.get("periods", ())
+        goals = [(goal, company, *periods[0]) for company in companies] if (
+            covered_turn and goal and companies and set(companies) <= {"C001", "C002"} and len(periods) == 1) else []
+        if covered_turn:
+            turn_tools = [tool for tool in turn_tools if tool["function"]["name"] != "set_schedule"]
+
+        query_attempts = []
+
+        def coverage():
+            reads = []
+            for kind, company, year, month in goals:
+                if verified_query_goal(kind, company, year, month, read_results):
+                    state = "VERIFIED"
+                else:
+                    attempted = next((status for name, target, status in reversed(query_attempts)
+                                      if target == company and name in QUERY_GOALS[kind][1]), None)
+                    state = (attempted if attempted in {"DENIED", "SCOPE_MISMATCH"}
+                             else "FAILED" if attempted else "UNEXECUTED")
+                reads.append((kind, company, state))
+            return {"reads": reads, "write": mixed, "deferred": deferred, "unknown": not goals}
+
         # 动作由可信CLI命令指定；模型不能把只读意图变成创建/删除。
         if management in {'task','preference'} and management_action:
             self.management_turn=ManagementTurn(self.user_id)
@@ -463,9 +528,17 @@ class Agent:
                 chat_notice = text
             if not (allow_prepare or management):
                 self.context.remember_annual_read(read_results)
-            self.coordinator.assess_current_match(read_results)
+            if mixed:
+                self.coordinator.pending = None
+            else:
+                self.coordinator.assess_current_match(read_results)
+            goal_coverage = coverage() if covered_turn else None
             if not execution.stop_reason:
-                execution.stop("WAITING_USER" if category=="clarification" else "MODEL_FINISHED_WITH_PENDING_WORK" if execution.schedule else "ANSWERED")
+                partial = goal_coverage and (goal_coverage["unknown"] or deferred
+                          or any(state != "VERIFIED" for _, _, state in goal_coverage["reads"])
+                          or (mixed and self.write_receipt["status"] not in {"NO_CHANGE", "CURRENT_VALUE_MATCHES"}))
+                execution.stop("PARTIAL_RESULT" if partial else "WAITING_USER" if category=="clarification"
+                               else "MODEL_FINISHED_WITH_PENDING_WORK" if execution.schedule else "ANSWERED")
             if not self.teaching and category not in {'database_query','general_unverified'}:
                 evidence=render_stopped(read_results,execution.stop_reason)
                 if evidence:
@@ -482,6 +555,10 @@ class Agent:
             api={key:self.transport.counts()[key]-api_before[key] for key in api_before} if api_before is not None else None
             self.last_response["chat_notice"] = chat_notice
             self.last_response["tool_results"] = tuple(read_results)
+            if goal_coverage:
+                self.last_response["goal_coverage"] = goal_coverage
+                text += "\n" + render_goal_coverage(goal_coverage, self.write_receipt)
+                self.last_response["text"] = text
             closure = self.task_closure(read_results)
             if closure:
                 self.last_response["task_closure"] = closure
@@ -493,7 +570,7 @@ class Agent:
             self.trace("turn.finished", {"answer": text, "tools_attempted": execution.actual_tools, "write_receipt": self.write_receipt,"execution":execution.snapshot(),'api_counts':api})
             self.last_response["trace_degraded"] = self.trace_degraded
             return text
-        if (not self.teaching and not management and not explicit.get("invoice_no")
+        if (not self.teaching and not management and not mixed and not explicit.get("invoice_no")
                 and re.search(r"银行(?:流水|收入|支出|收支|统计|总额)", text)
                 and re.search(r"修改|更改|调整|改成|改为|改一下|改掉|更新", text)):
             self.coordinator.pending = None
@@ -535,6 +612,15 @@ class Agent:
                     "本轮尚无当前业务查询证据。不要复述历史金额、规则或记录。"
                     "请根据原始用户请求和可信范围调用所需查询工具；范围或对象不明确则返回 clarification。"
                     "不创建待办、不保存偏好、不修改发票。只纠正本轮的查询回答。"})
+            if covered_turn:
+                context.append({"role": "system", "content":
+                    f"本轮可核验的只读目标（类型、企业、年份、月份）：{goals}。"
+                    "finance 用 get_finance_summary，bank_income 用 list_bank_transactions 或 get_finance_summary，"
+                    "directory 用 list_invoice_directory 第1页，purpose_rule 用 get_applicable_rules(rule_type=purpose)。"
+                    "各企业分别查询，缺项清单不等于全部必填对象。"
+                    + ("查询目标核验后才可 prepare_invoice_update，目标和值只取本轮修改分句。" if mixed else "")
+                    + ("只执行前置目录，序数留到下一轮，勿引用旧列表。" if deferred else "")
+                    + ("这是查询范围更正，请按目标重新查询，不复用旧值。" if corrected else "")})
             self.trace("model_input", redact({"messages": context, "tools": turn_tools}))
             try:
                 reply = self.transport(context,turn_tools) if self.transport and self.model is _BUILTIN_LIVE_MODEL else self.model(context, turn_tools)
@@ -660,6 +746,9 @@ class Agent:
                     stop = True
                 elif stop:
                     result = tool_result("DENIED", error="本轮执行已停止，不再授权执行后续调用")
+                elif mixed and fn.get("name") == "prepare_invoice_update" and (
+                        not goals or not all(verified_query_goal(*item, read_results) for item in goals)):
+                    result = tool_result("NOT_READY", error="先执行并核验本轮查询，再准备发票修改")
                 elif not self.workbook_available():
                     result = tool_result("ERROR", error="工作库身份已变化，请重新打开账簿")
                     stop = True
@@ -696,6 +785,8 @@ class Agent:
                         else:
                             args = validate_arguments(fn.get("name"), fn.get("arguments"),
                                                       directory_sort=tool_proof.directory_sort)
+                            if covered_turn:
+                                query_attempts.append((fn["name"], args.get("company_id"), result["status"]))
                             execution.observe(fn.get("name"), args, result)
                         stop = bool(execution.stop_reason)
                 if stop and stop_result is None:

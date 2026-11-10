@@ -97,8 +97,11 @@ def explicit_scope(text, include_update_aliases=False):
     companies = sorted(set(re.findall(r"(?<![A-Za-z0-9])C\d+(?![A-Za-z0-9])",text,flags=re.IGNORECASE)))
     invoices = re.findall(r"(?<![A-Za-z0-9])F\d+(?![A-Za-z0-9])",text,flags=re.IGNORECASE)
     if include_update_aliases:
-        # 官方初赛明确简称；仅写入目标使用，不泛化为自然语言指代解析。
-        companies += [company for alias,company in (("甲企业","C001"),("乙企业","C002")) if alias in text]
+        # Only official company identifiers and their explicit aliases.
+        companies += [company for alias, company in (("甲", "C001"), ("乙", "C002"))
+                      if re.search(rf"{alias}(?:企业|公司)", text)]
+        if re.search(r"甲\s*(?:[、和与及]\s*)?乙\s*(?:两家(?:公司|企业)?|两(?:公司|企业)|公司|企业)", text):
+            companies.extend(("C001", "C002"))
     names = {'一':1,'二':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9,'十':10,'十一':11,'十二':12}
     month_number = r"1[0-2]|0?[1-9]"
     month_literal = month_number + r"|十一|十二|[一二三四五六七八九十]"
@@ -130,6 +133,67 @@ def explicit_scope(text, include_update_aliases=False):
     if months:
         result["month"] = sorted(months)
     return result
+
+
+QUERY_GOALS = {
+    "finance": ("发票和银行收支汇总", {"get_finance_summary"}),
+    "bank_income": ("银行收入", {"get_finance_summary", "list_bank_transactions"}),
+    "directory": ("发票目录", {"list_invoice_directory"}),
+    "purpose_rule": ("用途必填规则", {"get_applicable_rules"}),
+}
+
+
+def query_goal(text):
+    """Recognize only the read goals for which composite coverage is verifiable."""
+    if "用途" in text and re.search(r"必填|必须填写|规则|要求", text):
+        return "purpose_rule"
+    if "发票" in text and re.search(r"列出|目录|清单|全部|所有", text):
+        return "directory"
+    if "发票" in text and re.search(r"银行|收支", text):
+        return "finance"
+    if re.search(r"银行.{0,8}收入", text):
+        return "bank_income"
+    if re.search(r"收支|综合金额|财务汇总", text):
+        return "finance"
+    return None
+
+
+def verified_query_goal(goal, company, year, month, results):
+    for name, outcome in results:
+        evidence = outcome["evidence"]
+        scope = evidence.get("scope", {})
+        if (name not in QUERY_GOALS[goal][1] or outcome["status"] not in {"SUCCESS", "NO_DATA"}
+                or evidence.get("source") != "current_sqlite"
+                or (scope.get("company_id"), scope.get("year"), scope.get("month")) != (company, year, month)):
+            continue
+        if goal == "purpose_rule" and scope.get("rule_type") != "purpose":
+            continue
+        if goal == "directory" and outcome["data"]["page"] != 1:
+            continue
+        return True
+    return False
+
+
+def render_goal_coverage(coverage, receipt):
+    labels = {"VERIFIED": "查询已核验", "UNEXECUTED": "尚未执行", "DENIED": "读取被拒绝",
+              "SCOPE_MISMATCH": "查询范围冲突", "FAILED": "未取得可信结果"}
+    parts = [f"{company} · {QUERY_GOALS[goal][0]}：{labels[state]}。"
+             for goal, company, state in coverage["reads"]]
+    if coverage["deferred"]:
+        parts.append("目录中的序数引用尚未执行。请在目录展示后下一轮提出。")
+    if coverage["write"]:
+        status = receipt["status"]
+        if status == "NOT_SUBMITTED":
+            parts.append("发票修改尚未执行。")
+        elif status == "COMMITTED" and not receipt.get("readback_verified"):
+            parts.append("发票修改的回读尚未核实。")
+        else:
+            parts.append(receipt["message"])
+    if coverage["unknown"]:
+        parts.append("本轮无法核定全部查询目标的覆盖情况。")
+    if any(goal == "purpose_rule" and state == "VERIFIED" for goal, _, state in coverage["reads"]):
+        parts.append("这里核验的是必填规则。缺项清单与全部必填对象的清单含义不同。")
+    return "\n".join(parts)
 
 
 def scope_mismatch(expected, actual):

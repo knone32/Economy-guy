@@ -23,7 +23,7 @@ from .model_config import ModelConnection, ProfileError, load_profiles, resolve_
 from .persistence import ManagementIntent, ManagementTurn, confirm_management
 from .queries import QueryError, available_periods, get_invoice, invoice_directory
 from .responses import (DIRECTORY_SORT_LABELS, display_rule_amounts, explicit_scope, needs_progress_evidence,
-                        render_rule_history, render_scope, scope_key)
+                        render_goal_coverage, render_rule_history, render_scope, scope_key)
 from .rules import RuleError, check_missing_purpose
 from .session_store import workbook_identity
 from .stage2_schema import open_existing
@@ -40,6 +40,7 @@ CHAT_MAX_WIDTH = 108
 FINAL_FORMAT_ERROR = "HTTP 成功 · 模型最终回复协议无效"
 STATUS = {
     "ANSWERED": "本轮回复完成", "COMPLETED": "本轮处理完成", "SUCCESS": "执行成功",
+    "PARTIAL_RESULT": "有目标未完成或未核验", "VERIFIED_GOALS": "已核验所列业务目标",
     "NO_DATA": "没有符合条件的记录", "NO_CHANGE": "当前无需变更",
     "WAITING_USER": "等待补充", "AMBIGUOUS": "请补充范围", "WAITING_CONFIRMATION": "等待确认",
     "OUT_OF_RANGE": "发票序号超出展示范围",
@@ -1136,17 +1137,28 @@ class AgentWorkspace(ConversationUI, App):
             self.query_focus = scopes
         shown = self.show_turn_results(results)
         self.workspace_widget("#chat-invoices").display = bool(self.chat_invoice_routes)
+        coverage = response.get("goal_coverage")
+        final_receipt = receipt or response["operation_receipt"]
+        if coverage and status != "UNKNOWN_OUTCOME":
+            covered = (not coverage["unknown"] and not coverage["deferred"]
+                       and all(state == "VERIFIED" for _, _, state in coverage["reads"]))
+            if coverage["write"]:
+                covered = covered and (final_receipt["status"] in {"NO_CHANGE", "CURRENT_VALUE_MATCHES"}
+                                       or (final_receipt["status"] == "COMMITTED" and final_receipt.get("readback_verified")))
+            status = "VERIFIED_GOALS" if covered else "PARTIAL_RESULT"
         notice = response["chat_notice"]
         if notice:
             self.chat_message("Agent", notice)
         elif stop == "INVALID_RESPONSE" and shown:
             self.chat_message("Agent", "上方结果已核验。模型未能整理本轮回复。")
-        elif stop not in {"ANSWERED", "COMPLETED", "TASK_FINISHED", "WAITING_CONFIRMATION"}:
+        elif stop not in {"ANSWERED", "COMPLETED", "TASK_FINISHED", "WAITING_CONFIRMATION", "PARTIAL_RESULT"}:
             self.chat_message("Agent", status_label(stop))
         elif response["operation_receipt"]["status"] == "CURRENT_VALUE_MATCHES":
             self.chat_message("发票回执", "当前发票值已经符合要求，本轮无需再次保存。")
-        elif not (shown or verified or receipt):
+        elif not (coverage or shown or verified or receipt):
             self.chat_message("Agent", "本轮没有可核实的业务结果。请补充查询对象或查看执行记录。")
+        if coverage:
+            self.chat_message("本轮目标", render_goal_coverage(coverage, final_receipt))
         closure = response.get("task_closure")
         if closure:
             self.chat_message("当前待办", closure)
@@ -1155,7 +1167,8 @@ class AgentWorkspace(ConversationUI, App):
         for detail in verified:
             self.chat_message("业务回执", detail)
         if receipt:
-            self.chat_message("发票回执", receipt["message"])
+            if not (coverage and coverage["write"]):
+                self.chat_message("发票回执", receipt["message"])
             if receipt.get("task_progress"):
                 progress = receipt["task_progress"]
                 if progress["status"] == "SUCCESS":

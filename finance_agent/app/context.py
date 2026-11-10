@@ -67,9 +67,10 @@ class ContextBuilder:
         self.restored_turns = []
         self.personal_detail = "普通"
 
-    def begin(self,text,message_index,reset=False,*,independent_read=False):
+    def begin(self,text,message_index,reset=False,*,independent_read=False,explicit=None,date_sources=None):
         """明确范围更正后弃用旧焦点；不更改长期任务，也不产生提交许可。"""
-        explicit = explicit_scope(text,include_update_aliases=True)
+        if explicit is None:
+            explicit = explicit_scope(text,include_update_aliases=True)
         if reset or (self.annual_focus and scope_mismatch(
                 explicit, dict(zip(("company_id", "year", "month"), self.annual_focus)))):
             self.annual_focus = None
@@ -108,6 +109,7 @@ class ContextBuilder:
             self.sources.pop("periods", None)
         self.scope.update(explicit)
         self.sources.update({key:'user_current' for key in explicit})
+        self.sources.update(date_sources or {})
         if len(date_fields.intersection(explicit)) == 1 and all(
                 len(self.scope.get(key, [])) == 1 and self.sources.get(key) in SOURCES for key in date_fields):
             self.scope["periods"] = [(self.scope["year"][0], self.scope["month"][0])]
