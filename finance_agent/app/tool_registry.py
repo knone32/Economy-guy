@@ -40,6 +40,7 @@ REGISTRY = {
     "get_applicable_rules": (None, {"company_id":"string", "rule_type":"string", "business_date":"string"}),
     "list_rule_versions": (None, {"company_id": "string", "rule_id": "string"}),
     "prepare_invoice_update": (None, {"company_id":"string", "invoice_no":"string", "field":"string", "new_value":"string"}),
+    "propose_invoice_edit": (None, {"source":"string", "field":"string", "new_value":"string"}),
     "add": (None, {"a": "integer", "b": "integer"}),
     "list_tasks": (None, {"company_id":"string"}),
     "manage_task": (None, {"company_id":"string","action":"string","task_id":"string","year":"integer","month":"integer","note":"string"}),
@@ -58,7 +59,7 @@ TEACHING_TOOLS = TOOLS
 TOOLS = [tool for tool in TOOLS if tool["function"]["name"] in ANNUAL | {
     "get_finance_summary", "list_invoices", "list_invoice_directory", "get_invoice", "list_bank_transactions",
     "check_missing_purpose", "get_applicable_rules", "list_rule_versions", "prepare_invoice_update",
-    "list_tasks", "manage_task", "manage_preference", "manage_display_preference", "resolve_invoice_reference", "resolve_recent_invoice", "set_schedule"}]
+    "list_tasks", "manage_task", "manage_preference", "manage_display_preference", "resolve_invoice_reference", "resolve_recent_invoice", "propose_invoice_edit", "set_schedule"}]
 DESCRIPTIONS = {
     "get_annual_finance_summary":"仅用于可信的完整年度，分别汇总发票、银行收入和银行支出。",
     "list_annual_blank_purpose":"仅用于可信的完整年度，按页列出用途字段为空的发票；不判定必填或合规。",
@@ -71,6 +72,7 @@ DESCRIPTIONS = {
     "check_missing_purpose":"用户问哪些发票用途未填写、还剩多少缺项时，使用本工具。采用可信只读账期或当前明确范围，按有效规则返回实际缺项和发票编号；不要改为财务汇总。备注不代替用途。",
     "get_applicable_rules":"按企业、业务日期和规则类型获取唯一启用依据。R001对应amount，R002/R003对应purpose，R004对应bank。查询旧版是否仍适用也使用其规则类型，不用金额汇总规则替代用途门槛规则；不提供管理权限。",
     "prepare_invoice_update":"只生成用途/备注草稿，展示旧值，不保存；必须等待可信CLI最终确认。",
+    "propose_invoice_edit":"仅提出最近唯一可信发票的口语化修改候选。source选queried或modified，field只选purpose或remark，new_value必须为用户本轮明确指定的原文。Harness独立验证后才允许Prepare；无数据库写权限。",
     "list_rule_versions":"读取企业可见的规则历史版本与启停状态。问 R002 v1.0、旧版或版本区别时使用，无需月份；停用版本不能用于当前合规判断。",
     "list_tasks":"列出当前用户指定企业的持久任务，不创建或修改待办。",
     "manage_task":"为普通自然语言后续待办提出创建/更正/取消等候选，或查询任务；候选无写入权限，需可信CLI展示具体对象和内容并确认。恢复重查规则与发票，完成必须有业务证据；不能修改发票。",
@@ -105,6 +107,9 @@ for tool in TOOLS:
         for key, choices in DIRECTORY_SORT_FIELDS.items():
             tool["function"]["parameters"]["properties"][key]["enum"] = list(choices)
     if tool["function"]["name"] == "prepare_invoice_update":
+        tool["function"]["parameters"]["properties"]["field"]["enum"] = ["purpose", "remark"]
+    if tool["function"]["name"] == "propose_invoice_edit":
+        tool["function"]["parameters"]["properties"]["source"]["enum"] = ["queried", "modified"]
         tool["function"]["parameters"]["properties"]["field"]["enum"] = ["purpose", "remark"]
     if tool["function"]["name"] == "manage_task":
         tool["function"]["parameters"]["properties"]["action"]["enum"] = ["create","show","update","correct","wait","pause","resume","complete","cancel"]
@@ -393,6 +398,9 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
             return _confirm_proposal(service(intent),service,intent,user_id,action,management_confirmation)
         if name == "add":
             return tool_result("SUCCESS", args["a"] + args["b"])
+        if name == "propose_invoice_edit":
+            # Direct registry calls cannot establish a trusted editing session.
+            return tool_result("DENIED", error="修改候选只可由Harness核实，不授予Prepare权限")
         if name == "prepare_invoice_update":
             if update_session is None or update_session.user_id != user_id:
                 return tool_result("DENIED", error="缺少可信更新Session")

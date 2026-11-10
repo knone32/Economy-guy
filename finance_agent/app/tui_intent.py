@@ -49,6 +49,24 @@ def _edit_scope(match, text):
     return scope
 
 
+def quoted_edit_candidate(text):
+    """Extract a uniquely quoted user value; this is evidence, never permission."""
+    if re.search(r"(?:不用|无需|不必|跳过).{0,12}确认|[?？]|(?:不要|别)\s*(?:修改|改|换)", text):
+        return None
+    fields = {"purpose" if item == "用途" else "remark"
+              for item in re.findall(r"用途|备注", text)}
+    if len(fields) != 1:
+        return None
+    values = re.findall(
+        r"(?:换成|改成|修改为|设置为|填成|写成|设为)\s*(?:“([^”]*)”|‘([^’]*)’|\"([^\"]*)\")",
+        text,
+    )
+    extracted = [next((part for part in group if part), "") for group in values]
+    if len(extracted) != 1 or not extracted[0].strip():
+        return None
+    return {"field": fields.pop(), "new_value": extracted[0]}
+
+
 def edit_turn(text, pending, *, guided=False):
     text = text.strip().rstrip("。！!").strip()
     if pending and _CANCEL.fullmatch(text):
