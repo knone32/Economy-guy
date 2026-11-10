@@ -18,12 +18,14 @@ from .persistence import can_manage, can_propose, confirm_management, Management
 from contextlib import closing
 from copy import deepcopy
 from .provenance import ANNUAL, MONTHLY, ScopeProof, is_annual_query, validate_scope
+from .business_sql import BusinessSQLError
 
 YEAR = {"company_id": "string", "year": "integer"}
 MONTH = {**YEAR, "month": "integer"}
 DIRECTORY_SORT_FIELDS = {"sort_by": ("date", "amount"), "sort_order": ("asc", "desc")}
 OPTIONAL_FIELDS = {"list_invoice_directory": DIRECTORY_SORT_FIELDS.keys()}
 REGISTRY = {
+    "query_business_sql": (None, {"sql": "string"}),
     "list_invoices": (queries.list_invoices, MONTH),
     "list_invoice_directory": (queries.invoice_directory, {**MONTH, "page": "integer", "sort_by": "string", "sort_order": "string"}),
     "get_invoice": (queries.get_invoice, {"company_id": "string", "invoice_no": "string"}),
@@ -58,10 +60,11 @@ TOOLS = [{"type": "function", "function": {"name": name,
          for name, (_, fields) in REGISTRY.items()]
 TEACHING_TOOLS = TOOLS
 TOOLS = [tool for tool in TOOLS if tool["function"]["name"] in ANNUAL | {
-    "get_finance_summary", "list_invoices", "list_invoice_directory", "get_invoice", "list_bank_transactions",
+    "query_business_sql", "get_finance_summary", "list_invoices", "list_invoice_directory", "get_invoice", "list_bank_transactions",
     "check_missing_purpose", "count_invoice_fields", "get_applicable_rules", "list_rule_versions", "prepare_invoice_update",
     "list_tasks", "manage_task", "manage_preference", "manage_display_preference", "resolve_invoice_reference", "resolve_recent_invoice", "propose_invoice_edit", "set_schedule"}]
 DESCRIPTIONS = {
+    "query_business_sql":"普通只读业务分析首选。在按可信企业和账期隔离的账簿快照上执行单条 SELECT 或只读 WITH。支持筛选、分组、JOIN 和子查询。金额原值是整数分；is_blank(value) 检查 NULL、空串与纯空白。规则判定仍用规则工具。",
     "get_annual_finance_summary":"仅用于可信的完整年度，分别汇总发票、银行收入和银行支出。",
     "list_annual_blank_purpose":"仅用于可信的完整年度，按页列出用途字段为空的发票；不判定必填或合规。",
     "list_annual_bank_income":"按可信完整年度分页查询银行收入流水明细，每页10条；不判断对应发票。",
@@ -84,7 +87,8 @@ DESCRIPTIONS = {
     "resolve_recent_invoice":"只读解析用户本轮语义明确指向的近期发票来源，并重新鉴权读取当前值。modified 指已核验的实际提交，queried 指已核验的详情查询。来源不明先追问。",
     "set_schedule":"仅真正多步依赖时提出本轮粗计划；不是长期任务或授权。再次调用为一次显式重规划，不创造进展或预算。简单查询直接调用业务工具。",
 }
-PARAMETERS = {"company_id":"企业编号，例如C001；不能凭空猜测。", "year":"明确的业务年份。",
+PARAMETERS = {"sql":"单条 SELECT 或只读 WITH 查询。严格遵守运行时给出的企业、账期与投影字段。",
+              "company_id":"企业编号，例如C001；不能凭空猜测。", "year":"明确的业务年份。",
               "month":"业务月份，1到12。", "page":"目录页码，从1开始。",
               "selector":"要统计的发票字段条件。",
               "sort_by":"date 按日期，amount 按金额。", "sort_order":"asc 升序，desc 降序。", "invoice_no":"与企业共同确定发票的精确编号。",
@@ -349,7 +353,7 @@ def annual_amount_rule(connection, user_id, company_id, year):
     return asdict(decisions[0])
 
 
-def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allowed_tools=None, expected_scope=None, management_intent=None, reference_context=None, execution=None, management_confirmation=None, management_proposals=None,provenance=None,display_preference=None,recent_context=None):
+def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allowed_tools=None, expected_scope=None, management_intent=None, reference_context=None, execution=None, management_confirmation=None, management_proposals=None,provenance=None,display_preference=None,recent_context=None,sql_workspace=None):
     """严格按 Schema 校验，身份仅取可信 Session，并复用业务函数。"""
     try:
         if not isinstance(name, str) or name not in REGISTRY:
@@ -361,6 +365,21 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
         directory_sort = provenance.directory_sort if isinstance(provenance, ScopeProof) and provenance.actor == user_id else None
         args = validate_arguments(name, raw_arguments, directory_sort=directory_sort)
         function = REGISTRY[name][0]
+        if name == "query_business_sql":
+            if (sql_workspace is None or sql_workspace.actor != user_id
+                    or Path(sql_workspace.path).resolve() != Path(db_path).resolve()):
+                return tool_result("DENIED", error="本轮没有可用的可信 SQL 工作区")
+            if execution:
+                rejection = execution.guard(name, args)
+                if rejection:
+                    return rejection
+            try:
+                scope, data = sql_workspace.query(args["sql"])
+            except BusinessSQLError as error:
+                evidence = {"missing_fields": list(error.missing)} if error.missing else {}
+                return tool_result(error.status, evidence=evidence, error=str(error))
+            status = "SUCCESS" if data["rows"] or data["truncated"] else "NO_DATA"
+            return tool_result(status, data, {"scope": scope, "source": "current_sqlite"})
         if name == "resolve_recent_invoice":
             if execution:
                 rejection = execution.guard(name, args)

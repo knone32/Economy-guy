@@ -2,7 +2,7 @@
 import json
 import re
 from pathlib import Path
-from contextlib import closing
+from contextlib import ExitStack, closing
 from uuid import uuid4
 from .tool_registry import (TOOLS, TEACHING_TOOLS, REGISTRY, handle_tool, tool_result,
                             remaining_work_allowed, validate_arguments)
@@ -10,6 +10,7 @@ from .trace import redact, write_trace, warn_trace_degraded
 from .write_coordination import WriteCoordinator
 from .updates import commit_invoice_update, edit_scope_error
 from .provenance import ScopeProof
+from .business_sql import BusinessSQL, BusinessSQLError, TABLES as SQL_TABLES
 from .tui_intent import quoted_edit_candidate
 from .responses import (explicit_scope, parse_final, render_information, render_clarification,
                         render_explanation_evidence, render_grounded_explanation, render_invoice_comparison, render_reference_error, render_stopped,
@@ -23,6 +24,13 @@ from .model_config import resolve_connection,ProfileError
 from .model_transport import ModelTransport
 from .permissions import check_permission
 import sqlite3
+
+SQL_ANSWER_TOOLS = {
+    "query_business_sql", "get_finance_summary", "get_annual_finance_summary", "get_invoice",
+    "list_invoices", "list_invoice_directory", "list_bank_transactions", "list_annual_bank_income",
+    "count_invoice_fields", "list_annual_blank_purpose", "check_missing_purpose", "get_applicable_rules",
+    "list_rule_versions", "resolve_invoice_reference", "resolve_recent_invoice",
+}
 
 SYSTEM = """你是财税助手。甲企业=C001，乙企业=C002。需要业务事实时调用工具，不能凭历史结果猜金额。
 企业、年份、月份缺失且对话没有明确依据时先追问，不默认当前月份。不能改变身份。
@@ -267,8 +275,10 @@ class Agent:
             edit_scope=None, edit_correction=False, read_workspace=None, task_note_from_request=False, read_request=None):
         if self._active or self._retired: raise ProfileError('Agent正在运行或已结束，不能重入')
         self._active=True
-        try: return self._ask(text,allow_prepare,continue_edit,management,management_action,edit_scope,edit_correction,
-                              read_workspace,task_note_from_request,read_request)
+        try:
+            with ExitStack() as turn_resources:
+                return self._ask(text,allow_prepare,continue_edit,management,management_action,edit_scope,edit_correction,
+                                 read_workspace,task_note_from_request,read_request,turn_resources)
         finally: self._active=False
 
     def switch_model(self,connection):
@@ -362,7 +372,8 @@ class Agent:
         return anchors
 
     def _ask(self, text, allow_prepare=False, continue_edit=False, management=None, management_action=None,
-             edit_scope=None, edit_correction=False, read_workspace=None, task_note_from_request=False, read_request=None):
+             edit_scope=None, edit_correction=False, read_workspace=None, task_note_from_request=False, read_request=None,
+             turn_resources=None):
         """执行一轮有界请求；每个 tool_call 都配对结果后才停止。"""
         self._check_identity()
         if self.workbook_guard:
@@ -411,7 +422,7 @@ class Agent:
                 if forward and type(forward["ordinal"]) is int:
                     query_text, deferred = parts[0], True
         explicit = explicit_scope(query_text, include_update_aliases=True)
-        goal = query_goal(query_text)
+        goal = query_goal(query_text) if mixed or deferred else None
         corrected = False
         date_sources = {}
         if (read_only and len(explicit.get("company_id", ())) == 1 and "invoice_no" not in explicit
@@ -532,7 +543,22 @@ class Agent:
                 annual_year = next(iter(read_workspace.get("annual_year", [])), None)
         if self.context.annual_focus and annual_year is None and not (allow_prepare or management or reference):
             self.context.annual_focus = None
-        covered_turn = mixed or deferred or corrected or (read_only and len(explicit.get("company_id", ())) > 1)
+        covered_turn = mixed or deferred or corrected
+        sql_analysis = read_only and not (bulk_no_confirmation or covered_turn or reference or exact_invoice)
+        sql_workspace = None
+        sql_context = None
+        if sql_analysis:
+            sql_workspace = BusinessSQL(self.db_path, self.user_id, self.context.proof(
+                read_workspace, annual_year=annual_year))
+            turn_resources.callback(sql_workspace.close)
+            execution.unscheduled_sql = True
+            try:
+                sql_context = {"trusted_scope": sql_workspace.scope(), "tables": SQL_TABLES}
+            except BusinessSQLError as error:
+                sql_context = {"scope_status": error.status, "message": str(error),
+                               "missing_fields": error.missing, "tables": SQL_TABLES}
+        else:
+            turn_tools = [tool for tool in turn_tools if tool["function"]["name"] != "query_business_sql"]
         trusted_scope = {**self.context.scope, **(read_workspace or {}), **explicit}
         companies = trusted_scope.get("company_id", ())
         periods = trusted_scope.get("periods", ())
@@ -613,8 +639,11 @@ class Agent:
                 summaries.append(compared)
                 if goal_coverage and not complete:
                     goal_coverage["unknown"] = True
-            if goal == "purpose_rule":
-                hypothetical = render_hypothetical_purpose_rules(read_results, text_request, goals)
+            rule_goals = goals if goal == "purpose_rule" else []
+            if not rule_goals and len(periods) == 1 and any(name == "get_applicable_rules" for name, _ in read_results):
+                rule_goals = [("purpose_rule", company, *periods[0]) for company in companies]
+            if rule_goals:
+                hypothetical = render_hypothetical_purpose_rules(read_results, text_request, rule_goals)
                 if hypothetical:
                     summaries.append(hypothetical)
             if bulk_no_confirmation:
@@ -703,6 +732,19 @@ class Agent:
                 return finish('协议安全停止：'+str(error)+'；未执行新的业务操作。')
             if not execution.start_request():
                 break
+            if sql_context is not None:
+                context.append({"role": "system", "content": (
+                    "普通业务分析优先用 query_business_sql，根据用户原话选筛选、排除、分组和指标；"
+                    "可以继续查询，无需 set_schedule。日期和企业以以下可信范围为限，缺少范围时追问。"
+                    "执行时按当前账号重新鉴权。目录分页、近期对象引用、规则适用性/必填检查和管理操作仍用各自专用工具。"
+                    "SQL 的 amount_cents 和以 _cents 结尾的金额列均为整数分。derived 中数字键是零起点列索引，"
+                    "对应已格式化的元金额。需要百分比时用整数 numerator、denominator 列；分母为零无法求比例。"
+                    "用 is_blank 判断 NULL、空串和纯空白。范围内的全部数据参与计算；"
+                    "truncated=true 只代表展示部分行，不能当作全量；需要合计或计数时直接做聚合。"
+                    "不要把有界账期说成全账簿，也不要把两个无可信关联的表连接结果当成实际付款凭证。"
+                    "用 information 信封自然回答原始问题，明确指标与证据限制。"
+                    "工具未执行的操作不声称成功；SQL 不提供写入回执或替代规则判定。\n"
+                    + json.dumps(sql_context, ensure_ascii=False))})
             if retrieval_corrected and not read_results:
                 context.append({"role": "system", "content":
                     "本轮尚无当前业务查询证据。不要复述历史金额、规则或记录。"
@@ -758,6 +800,14 @@ class Agent:
                         return finish(render_clarification(missing["evidence"]), store=False,
                                       category="clarification")
                 natural = parse_final(reply.get("content"))
+                if (sql_analysis and natural is not None and natural["kind"] in {"information", "explanation"}
+                        and read_results and all(
+                            name in SQL_ANSWER_TOOLS and outcome["status"] in {"SUCCESS", "NO_DATA"}
+                            and outcome.get("evidence", {}).get("source") == "current_sqlite"
+                            for name, outcome in read_results)):
+                    notice = "模型分析（以核验结果为准）\n" + natural["text"]
+                    return finish(notice + "\n\n" + render_information(read_results), store=False,
+                                  category="database_query", chat_notice=notice)
                 wants_explanation = natural is not None and natural["kind"] == "explanation"
                 if wants_explanation and read_only:
                     explanation = render_grounded_explanation(natural["text"], facts, text)
@@ -792,7 +842,7 @@ class Agent:
                     notice = "已展示本轮数据库核验结果，仅覆盖列出的查询对象和范围；未据此确认其他请求已完成。"
                     return finish(render_information(read_results) + "\n" + notice, store=False, category="database_query", chat_notice=notice)
                 # One bounded repair, using the same loop, budget and authorization guards.
-                needs_retrieval = (not read_results and not allow_prepare and not management and not self.teaching
+                needs_retrieval = (not sql_analysis and not read_results and not allow_prepare and not management and not self.teaching
                     and bool(expected_scope or read_workspace or previous_directory)
                     and (previous_directory or re.search(r"查|汇总|财务|发票|金额|流水|收支|用途|规则|R00[1-4]", text, re.I))
                     and (natural is None or natural["kind"] == "information"))
@@ -837,7 +887,10 @@ class Agent:
                     # 一般说明作为未核实模型表达单独标注，绝不写入操作回执。
                     return finish("一般说明（模型生成，未核实；不代表数据库执行或当前业务事实）：\n" + natural["text"],
                                   store=False,category="general_unverified")
-                # 合法JSON不证明信息内容真实；正式入口只渲染执行证据。
+                if sql_analysis and not read_results:
+                    return finish("本轮尚未取得当前账簿结果。请补充查询范围或明确要核对的内容。",
+                                  store=False, category="clarification")
+                # 非普通分析路径继续使用既有执行证据渲染。
                 return finish(natural["text"] if self.teaching else render_information(read_results), store=False,
                               category="database_query" if read_results else "unverified")
             stop = False
@@ -950,7 +1003,8 @@ class Agent:
                                              management_confirmation=confirm_proposal if self.management_confirmation else None,
                                              management_proposals=self.management_proposals if management is None else None,
                                              provenance=tool_proof,
-                                             display_preference=self.display_preference, recent_context=recent_context)
+                                             display_preference=self.display_preference, recent_context=recent_context,
+                                             sql_workspace=sql_workspace)
                         if fn.get("name") == "resolve_recent_invoice" and result["ok"]:
                             source = result["evidence"]["reference_source"]
                             recent_context["candidates"] = {source: recent_invoices[source]}

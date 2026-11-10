@@ -25,7 +25,7 @@ from .persistence import ManagementIntent, ManagementTurn, confirm_management, t
 from .queries import QueryError, available_periods, get_invoice, invoice_directory
 from .responses import (DIRECTORY_SORT_LABELS, display_rule_amounts, explicit_scope, needs_progress_evidence,
                         render_goal_coverage, render_invoice_field_count, render_recent_commit,
-                        render_rule_history, render_scope, scope_key)
+                        render_rule_history, render_scope, render_sql_evidence, scope_key)
 from .rules import RuleError, check_missing_purpose
 from .session_store import workbook_identity
 from .stage2_schema import open_existing
@@ -1033,6 +1033,8 @@ class AgentWorkspace(ConversationUI, App):
                                          ("银行支出", "bank_expense", "条"))))
         if tool in {"get_invoice", "resolve_invoice_reference"} and data:
             return ("发票详情", AgentWorkspace.invoice_text(data))
+        if tool == "query_business_sql":
+            return ("SQL 查询证据", render_sql_evidence(data))
         if tool == "count_invoice_fields":
             return ("发票字段统计", render_invoice_field_count(data))
         if tool == "list_annual_blank_purpose":

@@ -181,8 +181,10 @@ class ContextBuilder:
                   if outcome["status"] in {"SUCCESS", "NO_DATA"}
                   and outcome["evidence"].get("source") == "current_sqlite"
                   and "scope" in outcome["evidence"]
-                  and name in ANNUAL | {"list_invoice_directory", "get_finance_summary",
-                                       "list_invoices", "list_bank_transactions", "check_missing_purpose"}]
+                  and (name in ANNUAL | {"list_invoice_directory", "get_finance_summary",
+                                         "list_invoices", "list_bank_transactions", "check_missing_purpose"}
+                       or (name == "query_business_sql" and "company_id" in outcome["evidence"]["scope"]
+                           and "year" in outcome["evidence"]["scope"]))]
         if scopes:
             focus = {(scope["company_id"], scope.get("year"), scope.get("month", 0)) for scope in scopes}
             self.annual_focus = next(iter(focus)) if len(focus) == 1 and all(

@@ -312,6 +312,9 @@ def scope_mismatch(expected, actual):
 
 def scope_key(evidence):
     scope = evidence.get("scope", {})
+    if "company_ids" in scope:
+        return (tuple(scope["company_ids"]), tuple(map(tuple, scope.get("periods", ()))),
+                scope.get("year"), evidence.get("source"))
     rule = evidence.get("rule") or {}
     period = (scope["year"], scope.get("month")) if "year" in scope else scope.get("business_date")
     return (scope.get("company_id"), period, evidence.get("source"),
@@ -320,6 +323,11 @@ def scope_key(evidence):
 
 def render_scope(evidence, *, conversational=False):
     scope = evidence.get("scope",{})
+    if "company_ids" in scope:
+        companies = "、".join(scope["company_ids"])
+        periods = ("、".join(f"{year:04d}-{month:02d}" for year, month in scope["periods"])
+                   if "periods" in scope else f"{scope['year']} 年")
+        return f"企业 {companies} · {periods}（当前账簿 SQL 快照）"
     company = scope.get("company_id","未限定")
     if "year" in scope and "month" in scope:
         period = f"{scope['year']:04d}-{scope['month']:02d}"
@@ -500,6 +508,22 @@ def render_invoice_field_count(data):
     return f"{INVOICE_FIELD_LABELS[data['selector']]}的发票共 {data['count']} 张。"
 
 
+def render_sql_evidence(data):
+    columns = data["columns"]
+    lines = ["SQL", data["sql"], "列 " + " · ".join(columns)]
+    for row, derived in zip(data["rows"], data["derived"]):
+        amount = [f"{columns[int(key)]} = ¥{value}" for key, value in derived.items() if key != "percentage"]
+        if "percentage" in derived:
+            amount.append(f"比例 = {derived['percentage']}" if derived["percentage"] is not None else "比例无法计算（分母为零）")
+        suffix = ("　" + "；".join(amount)) if amount else ""
+        lines.append(json.dumps(row, ensure_ascii=False) + suffix)
+    if data["truncated"]:
+        lines.append(f"仅显示前 {data['row_count']} 行，后续结果未展示。该行数不代表总数。")
+    else:
+        lines.append(f"返回 {data['row_count']} 行。")
+    return "\n".join(lines)
+
+
 def render_information(results):
     """保留执行摘要，从本轮真实证据按结构化范围合并说明。"""
     parts = []
@@ -539,6 +563,8 @@ def render_information(results):
             parts.append(f"发票目录 · {DIRECTORY_SORT_LABELS[order]} · 共 {data['total']} 张 · "
                          f"第 {data['page']} 页 · 每页 {data['page_size']} 张。")
             parts.append(json.dumps(data["rows"], ensure_ascii=False))
+        elif name == "query_business_sql":
+            parts.append(render_sql_evidence(data))
         elif name == "count_invoice_fields":
             parts.append(render_invoice_field_count(data))
         elif name == "list_annual_blank_purpose":
@@ -650,6 +676,8 @@ def render_clarification(value):
 
 def render_tool_failure(status, tool=None, outcome=None):
     """User-facing guidance; diagnostic codes and provider details stay in Trace."""
+    if tool == "query_business_sql" and status in {"SQL_SCOPE_LIMIT", "SQL_QUERY_LIMIT", "SQL_REJECTED", "SCOPE_MISMATCH"}:
+        return outcome["error"] + "。"
     if status == "CONFLICT" and tool == "manage_task" and ((outcome or {}).get("data") or {}).get("existing_task_id"):
         return "该企业已有未完成待办，本次未创建。可打开待办列表查看或继续原待办。"
     if status == "INVALID_ARGUMENTS" and tool == "check_missing_purpose":
