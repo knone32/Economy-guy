@@ -1,17 +1,15 @@
-# 初赛发布 · preliminary-2026-v1.0.0
+# 初赛发布 · preliminary-2026-v2.0.0
 
-- 冻结日期 2026-11-10。冻结分支为 `release/preliminary-2026-v1`，annotated tag 为 `preliminary-2026-v1.0.0`。
-- 两包均以冻结 Tag 指向的同一提交构建。**冻结源码 SHA** 以 ZIP 根目录 `VERSION.txt` 的 `source_sha` 为准。在 Git 克隆中可用 `git rev-parse "preliminary-2026-v1.0.0^{commit}"` 读取相同值。
-- 下载和 SHA-256 校验见 [GitHub Release](https://github.com/knone32/Economy-guy/releases/tag/preliminary-2026-v1.0.0)。
+冻结标识为 annotated tag `preliminary-2026-v2.0.0`。两个 ZIP 均从该 Tag 对应的同一提交构建，包根目录 `VERSION.txt` 的 `source_sha` 可用 `git rev-parse "preliminary-2026-v2.0.0^{commit}"` 核对。
 
-| 本地生成路径 | 用途 |
+| 下载文件 | 用途 |
 | --- | --- |
-| `dist/preliminary-2026-v1.0.0/Economy-guy-Preliminary-2026-v1.0.0.zip` | 初赛运行。仅包含运行源码、资源、虚构 Excel 和必要说明 |
-| `dist/preliminary-2026-v1.0.0/Economy-guy-Developer-Source.zip` | 后续研发。包含 Git 跟踪的开发源码、测试、工具和历史文档 |
-| `dist/preliminary-2026-v1.0.0/SHA256SUMS.txt` | 两个 ZIP 的 SHA-256 校验值 |
+| `Economy-guy-Preliminary-2026-v2.0.0.zip` | 评审运行。含 Python 运行源码、依赖清单、配置模板、官方虚构 Excel 和启动及演示说明 |
+| `Economy-guy-Developer-Source-v2.0.0.zip` | 工程审阅。另含测试源码、开发脚本和架构资料 |
+| `SHA256SUMS.txt` | 两个 ZIP 的 SHA-256 |
 
-解压后按[项目首页](../../README.md)安装依赖并导入 `finance_agent/tests/fixtures/example.xlsx`。它是比赛官方 1.1.0 虚构数据的已跟踪副本，包含两家虚构企业、两个模拟账号、40 张发票及 48 条银行流水。初赛包不含预生成账簿；不要用真人验收库覆盖导入目标。模型密钥由使用者在本机提供。
+从 [GitHub Release](https://github.com/knone32/Economy-guy/releases/tag/preliminary-2026-v2.0.0) 下载后，在 PowerShell 执行 `Get-FileHash -Algorithm SHA256 -LiteralPath <ZIP 路径>`，与校验清单比对。按[项目首页](../../README.md)安装 Python 3.11+ 依赖并导入 `finance_agent/tests/fixtures/example.xlsx`。发布包包含虚构 Excel 种子，账簿与模型密钥由评审在本机创建和配置。
 
-在 PowerShell 执行 `Get-FileHash -Algorithm SHA256 -LiteralPath <ZIP 文件路径>` 并与 `SHA256SUMS.txt` 比较。此核对只确认下载文件内容。真人验收范围见[验收记录](LIVE-ACCEPTANCE.md)。
+建议终端至少 137 列。低于该宽度时，通过「查看业务历史」访问结果。左侧「记录」可按操作编号展开工具、规则和审计信息。模型检测与业务验收分别进行，评审可按[演示脚本](DEMO-SCRIPT.md)验证查询、修改与待办恢复。
 
-后续开发从 `main` 继续。若需修订初赛交付，使用独立提交及新版本 Tag，保持本版引用与资产固定。
+[v1.0.0 发布说明](https://github.com/knone32/Economy-guy/blob/preliminary-2026-v1.0.0/docs/delivery/PRELIMINARY-RELEASE.md)与[原发布资产](https://github.com/knone32/Economy-guy/releases/tag/preliminary-2026-v1.0.0)供历史查阅。
