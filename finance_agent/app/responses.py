@@ -213,7 +213,7 @@ def render_bank_income_comparison(results, goals):
         amounts[target] = amount
     missing = sorted(target[0] for target in targets if target not in amounts)
     if missing:
-        return "银行进账金额比较未完成：尚未取得 " + "、".join(missing) + " 同一账期的可信收入总额；已成功的单侧查询仍有效。", False
+        return "还无法比较银行收入。缺少 " + "、".join(missing) + " 同一账期的收入总额。", False
     (left, right) = sorted(targets)
     a, b = amounts[left], amounts[right]
     year, month = left[1:]
@@ -224,7 +224,7 @@ def render_bank_income_comparison(results, goals):
     else:
         higher = left[0] if a > b else right[0]
         conclusion = f"{higher} 银行收入更多，相差 ¥{abs(a-b):,.2f}。"
-    return f"{year} 年 {month} 月银行收入比较（当前 SQLite）：{first}；{second}。{conclusion}", True
+    return f"{year} 年 {month} 月，{conclusion}{first}，{second}。", True
 
 
 def render_hypothetical_purpose_rules(results, request, goals):
@@ -529,6 +529,95 @@ def render_sql_evidence(data):
     return "\n".join(lines)
 
 
+def render_query_conclusion(results):
+    """Summarize verified reads without copying the detail pane or guessing coverage."""
+    lines = []
+    for name, outcome in results:
+        evidence = outcome["evidence"]
+        if evidence.get("source") != "current_sqlite" or outcome["status"] not in {"SUCCESS", "NO_DATA"}:
+            continue
+        data, scope = outcome["data"], evidence.get("scope", {})
+        companies = scope.get("company_ids") or ([scope["company_id"]] if scope.get("company_id") else [])
+        periods = scope.get("periods")
+        if periods:
+            period = "、".join(f"{year:04d}-{month:02d}" for year, month in periods)
+        elif scope.get("business_date"):
+            period = scope["business_date"]
+        elif scope.get("year"):
+            period = (f"{scope['year']:04d}-{scope['month']:02d}" if scope.get("month") else f"{scope['year']} 年")
+        else:
+            period = ""
+        heading = " ".join(filter(None, ("、".join(companies), period)))
+        if name in {"get_finance_summary", "get_annual_finance_summary"}:
+            rule = evidence.get("rule") or {}
+            rule_id = rule.get("rule_id") or rule.get("id")
+            basis = f"（{rule_id} v{rule['version']}）" if rule_id and rule.get("version") else ""
+            detail = (f"发票价税合计 {data['invoice_total']} 元，银行收入 {data['bank_income_total']} 元，"
+                      f"支出 {data['bank_expense_total']} 元{basis}。")
+            if outcome["status"] == "NO_DATA":
+                detail = "该账期没有发票或银行流水。" + detail
+        elif name == "count_invoice_fields":
+            detail = render_invoice_field_count(data)
+            rule = evidence.get("rule")
+            if rule:
+                detail = f"按 {rule['rule_id']} v{rule['version']} 检查，" + detail
+        elif name == "list_annual_blank_purpose":
+            detail = f"查到 {data['total']} 张用途为空的发票。空值本身不足以判定违规。"
+        elif name == "check_missing_purpose":
+            rule = data["rule"]
+            basis = f"{rule['rule_id']} v{rule['version']}"
+            if data.get("reference_rule_screening"):
+                detail = (f"按 {data['rule_business_date']} 的 {basis} 筛出 {data['count']} 张必填用途缺失的发票。"
+                          "这是按参考规则筛选的结果。")
+            else:
+                detail = f"按 {basis} 检查，有 {data['count']} 张发票缺少必填用途。"
+        elif name in {"get_invoice", "resolve_invoice_reference"} and data:
+            purpose = data["purpose"] or "未填写"
+            remark = data["remark"] or "无"
+            detail = f"{data['invoice_no']} 的用途是{purpose}，备注为{remark}。"
+        elif name == "get_applicable_rules":
+            detail = f"适用 {data['rule_id']} v{data['version']}。{display_rule_amounts(data['content'])}"
+        elif name == "query_business_sql":
+            if outcome["status"] == "NO_DATA":
+                detail = "本次筛选没有匹配的记录。"
+            elif data["truncated"]:
+                detail = f"本次筛选显示了 {data['row_count']} 行，总数尚未核实。"
+            else:
+                detail = f"本次筛选返回 {data['row_count']} 行，明细见业务记录。"
+                columns = data["columns"]
+                # Only summarize SQL cells when all dimensions and values fit in the reply.
+                if 1 <= data["row_count"] <= 2 and all(
+                    column.endswith("_cents") or column in {"company_id", "numerator", "denominator"}
+                    for column in columns
+                ):
+                    values = []
+                    for row, derived in zip(data["rows"], data["derived"]):
+                        cells = [f"{column.removesuffix('_cents')} {derived[str(i)]} 元"
+                                 if str(i) in derived else f"{column} {row[i]}"
+                                 for i, column in enumerate(columns)]
+                        if "percentage" in derived:
+                            cells.append(f"比例 {derived['percentage']}" if derived["percentage"] is not None
+                                         else "比例无法计算（分母为零）")
+                        values.append("，".join(cells))
+                    detail = "按本次筛选，" + "；".join(values) + "。"
+        elif name == "list_invoice_directory":
+            order = DIRECTORY_SORT_LABELS[(data.get("sort_by", "date"), data.get("sort_order", "asc"))]
+            kind = "发票目录" if period else "全部账期的发票目录"
+            detail = f"{kind}共 {data['total']} 张，{order}。"
+        elif name in {"list_invoices", "list_bank_transactions", "list_tasks"}:
+            item = {"list_invoices": "张发票", "list_bank_transactions": "条银行流水", "list_tasks": "项待办"}[name]
+            detail = f"查到 {len(data)} {item}，明细见业务记录。"
+        elif name == "list_annual_bank_income":
+            detail = f"查到 {data['total']} 条银行收入流水，明细见业务记录。"
+        else:
+            detail = ("没有匹配的记录。" if outcome["status"] == "NO_DATA"
+                      else "查询结果见业务记录。")
+        line = f"{heading}：{detail}" if heading else detail
+        if line not in lines:
+            lines.append(line)
+    return "\n".join(lines)
+
+
 def render_information(results):
     """保留执行摘要，从本轮真实证据按结构化范围合并说明。"""
     parts = []
@@ -677,8 +766,8 @@ def render_clarification(value):
     # 追问信封不授予字段/写入权限；未知标签与任意模型text均不直接展示。
     questions=[labels[field] for field in fields if field in labels]
     if any(field not in labels for field in fields):
-        questions.append("本次请求的具体对象、操作和内容（无法确定所缺信息）")
-    return "请提供" + "和".join(questions)
+        questions.append("要处理的对象和具体要求")
+    return "请补充" + "、".join(questions) + "。"
 
 
 def render_tool_failure(status, tool=None, outcome=None):
@@ -694,14 +783,16 @@ def render_tool_failure(status, tool=None, outcome=None):
             "RULE_CONFLICT": "指定日期无法确定唯一有效的用途规则，本轮未判定缺项。",
         }[status]
     return {
-        "DENIED": "当前账号没有执行这项操作的权限，已停止。请使用有相应权限的账号。",
-        "SCOPE_MISMATCH": "查询参数与您确认的范围不一致，已停止。请明确企业、年份和月份，或明确完整年度后重试。",
+        "DENIED": "当前账号没有权限执行这项操作。",
+        "SCOPE_MISMATCH": "查询范围与已确认的范围不一致，请核对企业和账期。",
         "INVALID_ARGUMENTS": "本次操作的参数不完整或不适用，已停止。请明确查询对象和范围；修改时还需说明字段和新内容。",
+        "RULE_CONFLICT": "无法确定唯一有效的规则，暂不能按规则判定。",
+        "NO_APPLICABLE_RULE": "指定日期没有适用规则。",
         "UNKNOWN_OUTCOME": "提交结果未知，请先检查本次操作的审计与当前记录，不要直接重复提交。",
         "SCHEDULE_MISMATCH": "本轮步骤与已确认的执行顺序不一致，已停止；尚未执行剩余步骤。",
         "CANCELLED": "已取消本次操作，没有保存本次候选内容。",
         "WAITING_CONFIRMATION": "请核对具体对象和内容，确认后才会保存。",
         "NOT_FOUND": "在当前权限和范围内未找到目标，请核对编号或重新查询列表。",
         "CONFLICT": "当前记录与本次操作冲突，请重新读取并核对后再操作。",
-        "NO_PROGRESS": "本轮没有取得新的结果，已停止重复操作。请补充或更正查询条件。",
-    }.get(status, "本轮操作未能继续，请核对查询对象和范围后重试；已核验结果仍按实际执行情况保留。")
+        "NO_PROGRESS": "没有新的查询进展，已停止。",
+    }.get(status, "这项操作未能继续，具体原因可查看执行记录。")

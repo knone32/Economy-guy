@@ -24,7 +24,8 @@ from .model_config import ModelConnection, ProfileError, load_profiles, resolve_
 from .persistence import ManagementIntent, ManagementTurn, confirm_management, task_note_from_request
 from .queries import QueryError, available_periods, get_invoice, invoice_directory
 from .responses import (DIRECTORY_SORT_LABELS, display_rule_amounts, explicit_scope, needs_progress_evidence,
-                        render_invoice_field_count, render_recent_commit, render_rule_history, render_scope)
+                        render_invoice_field_count, render_recent_commit, render_rule_history, render_scope,
+                        render_query_conclusion, render_sql_evidence)
 from .rules import RuleError, check_missing_purpose
 from .session_store import workbook_identity
 from .stage2_schema import open_existing
@@ -1248,17 +1249,32 @@ class AgentWorkspace(ConversationUI, App):
         operation = response["operation_receipt"]
         unchanged = not receipt and not batch and operation["status"] == "CURRENT_VALUE_MATCHES"
         notice = response["chat_notice"]
-        if notice and not (unchanged and notice == operation["message"]):
+        if unchanged and notice == operation["message"]:
+            notice = None
+        if notice:
             for tool, result in results:
-                if tool == "query_business_sql" and result["status"] in {"SUCCESS", "NO_DATA"}:
-                    sql = result["data"]["sql"]
+                if result["status"] not in {"SUCCESS", "NO_DATA"} or result["evidence"].get("source") != "current_sqlite":
+                    continue
+                data = result["data"]
+                if tool == "query_business_sql":
+                    sql = data["sql"]
                     fence = chr(96) * 3
+                    notice = notice.replace(render_sql_evidence(data), "")
                     notice = notice.replace(f"{fence}sql\n{sql}\n{fence}", "").replace(sql, "")
-            if notice.strip():
-                self.chat_message("Agent", notice.strip())
+                    data = data["rows"]
+                if isinstance(data, (dict, list)) and data:
+                    notice = notice.replace(json.dumps(data, ensure_ascii=False), "")
+            notice = notice.strip()
+            if not notice and response["category"] == "database_query":
+                notice = render_query_conclusion(results)
+            if notice:
+                self.chat_message("Agent", notice)
         detail = response["fulfillment"]["detail"]
         if detail:
-            self.chat_message("本轮目标", detail)
+            shown = set((notice or "").splitlines())
+            detail = "\n".join(line for line in detail.splitlines() if line not in shown)
+            if detail:
+                self.chat_message("本轮目标", detail)
         closure = response.get("task_closure")
         if closure:
             self.chat_message("当前待办", closure)

@@ -13,7 +13,7 @@ from .provenance import SOURCES, ScopeProof
 from .business_sql import BusinessSQL, BusinessSQLError, TABLES as SQL_TABLES
 from .tui_intent import invoice_intent_source, invoice_supplement
 from .invoice_batch import plan_invoice_change
-from .responses import (explicit_scope, parse_final, render_information, render_clarification,
+from .responses import (explicit_scope, parse_final, render_information, render_query_conclusion, render_clarification,
                         render_explanation_evidence, render_grounded_explanation, render_invoice_comparison, render_reference_error, render_stopped,
                         render_task_scope_negotiation, render_tool_failure, QUERY_GOALS, query_goal,
                         verified_query_goal, render_goal_coverage, render_bank_income_comparison, render_hypothetical_purpose_rules, scope_mismatch)
@@ -60,6 +60,8 @@ SYSTEM += """
 最终文本必须是JSON对象：信息回答 {"kind":"information","text":"自然语言回答"}；
 问候、无须数据库的一般知识解释使用 {"kind":"general","text":"自然语言说明"}，不作任何保存/提交/数据库当前状态声明。
 追问 {"kind":"clarification","text":"自然语言问题","missing_fields":["invoice_no"]}。
+直接回答问题。简单问题用一两句，复杂问题按需解释，不预告过程、不强制列点总结，避免客套、宣传语和复述。界面已展示的明细不逐项重念，统计、比较和规则原因仍要给结论。
+只用可信事实，保留数字、企业、账期、规则、否定、条件和比较对象。空用途不足以判定违规，待确认尚未保存，部分完成不能说成全部完成。缺信息直接问，失败或结果未知照实说明。工具调用、JSON 信封和权限约束照旧。
 若问题需要解释已有可信查询，且 context_data.explanation_facts 提供相应证据，使用
 {"kind":"explanation","text":"根据已核验事实写自然说明"}。年度解释可直接引用证据中的企业、账期、张数和规则版本；
 也可用 [[result]] 代表已核验张数、[[boundary]] 代表规则引用。银行流水与发票付款关系可使用 [[boundary]]，程序仅展示可信关联边界。
@@ -772,29 +774,29 @@ class Agent:
             fulfillment = self.summarize_fulfillment(response)
             response["fulfillment"] = fulfillment
 
-            budget_stops = {"MODEL_LIMIT": "已达到模型请求上限", "TOOL_LIMIT": "已达到工具调用上限",
-                            "CONTEXT_LIMIT": "已达到上下文上限", "NO_LEGAL_WORK": "没有满足续期条件的后续步骤",
-                            "EXTENSION_LIMIT": "已达到预算续期上限"}
+            budget_stops = {"MODEL_LIMIT": "已达到本次模型请求上限", "TOOL_LIMIT": "已达到本次操作次数上限",
+                            "CONTEXT_LIMIT": "本次可处理的信息量已达上限", "NO_LEGAL_WORK": "目前无法继续核实",
+                            "EXTENSION_LIMIT": "已达到本次处理上限"}
             if not self.teaching and (stop == "NO_PROGRESS" or (facts and stop in budget_stops)):
                 if stop == "NO_PROGRESS":
                     if any(outcome["status"] == "NO_PROGRESS" for _, outcome in read_results):
-                        reason = "重复请求相同工具和参数，未再次执行"
+                        reason = "已停止重复执行相同请求"
                     elif any(outcome["status"] == "NO_CHANGE" for _, outcome in read_results):
-                        reason = "工具核验未产生新的业务进展"
+                        reason = "这次核对没有产生新的结果，已停止"
                     else:
-                        reason = "当前预算块没有新的执行证据，未续期"
+                        reason = "没有新的结果可供继续，已停止"
                 else:
                     reason = budget_stops[stop]
-                progress = {"VERIFIED_GOALS": "所列请求目标已核验完成。", "PARTIAL_RESULT": "目前只核验了部分目标。",
-                            "UNVERIFIED_RESULT": "现有证据不足以核验原请求是否全部完成。"}[fulfillment["status"]]
-                retained = "已保留此前核验的查询结果。" if facts else "本轮尚无已核验的查询结果。"
-                chat_notice = f"{retained}执行停止（{stop}）：{reason}。{progress}"
+                progress = {"VERIFIED_GOALS": "请求的目标已核验。", "PARTIAL_RESULT": "只完成了部分要求。",
+                            "UNVERIFIED_RESULT": "还无法确认是否满足全部要求。"}[fulfillment["status"]]
+                conclusion = render_query_conclusion(facts) if not summaries else ""
+                chat_notice = "\n".join(filter(None, (conclusion, f"{reason}。{progress}")))
                 if write_expected and self.write_receipt["status"] == "NOT_SUBMITTED":
-                    chat_notice += "修改尚未执行，本轮没有提交发票修改。"
+                    chat_notice += "发票修改尚未执行。"
                 text = "\n".join(filter(None, (render_information(facts), chat_notice)))
             elif not self.teaching and category not in {"database_query", "general_unverified"}:
                 if chat_notice is None and stop not in {"ANSWERED", "COMPLETED", "TASK_FINISHED", "WAITING_CONFIRMATION"}:
-                    chat_notice = ("已保留此前核验的查询结果。\n" if facts else "") + text
+                    chat_notice = text
                 evidence = render_stopped(read_results, stop)
                 if evidence:
                     text = "\n".join(filter(None, (evidence, chat_notice or text)))
@@ -804,6 +806,8 @@ class Agent:
                     text += "\n引用锚点未能保存，请使用明确的企业和发票号。"
                 for anchor in anchors or ():
                     text += "\n已展示引用列表 anchor:" + anchor["anchor_id"] + "；" + json.dumps(anchor,ensure_ascii=False)
+            if chat_notice is None and facts and category == "database_query" and not summaries:
+                chat_notice = render_query_conclusion(facts)
             if summaries:
                 summary = "\n".join(summaries)
                 chat_notice = "\n".join(filter(None, (chat_notice, summary)))
@@ -1001,14 +1005,14 @@ class Agent:
                             name in SQL_ANSWER_TOOLS and outcome["status"] in {"SUCCESS", "NO_DATA"}
                             and outcome.get("evidence", {}).get("source") == "current_sqlite"
                             for name, outcome in read_results)):
-                    notice = "模型分析（以核验结果为准）\n" + natural["text"]
+                    notice = natural["text"]
                     return finish(notice + "\n\n" + render_information(read_results), store=False,
                                   category="database_query", chat_notice=notice)
                 wants_explanation = natural is not None and natural["kind"] == "explanation"
                 if wants_explanation and read_only:
                     explanation = render_grounded_explanation(natural["text"], facts, text)
                     if explanation:
-                        notice = "模型说明（引用已核验事实）\n" + explanation
+                        notice = explanation
                         answer = render_information(read_results) + "\n" + notice if read_results else notice
                         return finish(answer, store=False,
                                       category="database_query" if read_results else "operation_result", chat_notice=notice)
@@ -1035,7 +1039,7 @@ class Agent:
                     self.messages.pop()
                     self.trace("error", {"category": "invalid_final_envelope"})
                     execution.stop("EVIDENCE_RETURNED")
-                    notice = "已展示本轮数据库核验结果，仅覆盖列出的查询对象和范围；未据此确认其他请求已完成。"
+                    notice = render_query_conclusion(read_results) + "\n还无法核实是否回答了全部问题。"
                     return finish(render_information(read_results) + "\n" + notice, store=False, category="database_query", chat_notice=notice)
                 # One bounded repair, using the same loop, budget and authorization guards.
                 needs_retrieval = (not sql_analysis and not read_results and not allow_prepare and not management and not self.teaching
@@ -1262,7 +1266,7 @@ class Agent:
         if not execution.stop_reason:
             execution.stop("MODEL_LIMIT")
         self.trace("error", "模型请求上限")
-        return finish(f"本轮执行已停止（{execution.stop_reason}），尚未核验原请求是否全部完成。")
+        return finish("处理已停止，尚未核实是否满足全部要求。")
 
 
 def scripted_model(replies):
