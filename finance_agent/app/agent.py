@@ -1126,7 +1126,10 @@ class Agent:
                     + ("查询目标核验后才可 prepare_invoice_update，目标和值只取本轮修改分句。" if mixed else "")
                     + ("只执行前置目录，序数留到下一轮，勿引用旧列表。" if deferred else "")
                     + ("这是查询范围更正，请按目标重新查询，不复用旧值。" if corrected else "")})
-            self.trace("model_input", redact({"messages": context, "tools": turn_tools}))
+            diagnostic_request = (self.transport and self.model is _BUILTIN_LIVE_MODEL
+                                  and self.transport.diagnose_next_request)
+            if not diagnostic_request:
+                self.trace("model_input", redact({"messages": context, "tools": turn_tools}))
             try:
                 reply = self.transport(context,turn_tools) if self.transport and self.model is _BUILTIN_LIVE_MODEL else self.model(context, turn_tools)
                 if not isinstance(reply, dict) or reply.get("role") != "assistant":
@@ -1147,7 +1150,8 @@ class Agent:
                 self.trace("error", "API请求失败或模型响应结构无效")
                 execution.stop("API_OR_RESPONSE_ERROR")
                 return finish("请求失败：API请求失败或模型响应结构无效，未确认业务成功。")
-            self.trace("model_reply", redact(wire_reply))
+            if not diagnostic_request:
+                self.trace("model_reply", redact(wire_reply))
             self.messages.append(reply)
             if not calls:
                 if self.update_session.explicit_edit_only:

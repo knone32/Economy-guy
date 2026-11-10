@@ -1,4 +1,5 @@
 """一个会话绑定一份解析后的连接；SDK调用与非敏感真实指标，不拥有业务状态。"""
+from collections import Counter
 import json
 import re
 import time
@@ -24,7 +25,8 @@ _PARAMETER = re.compile(
     r"(?:model|messages|tools|tool_choice|response_format|max_tokens|max_completion_tokens|temperature|top_p|"
     r"enable_thinking|thinking|reasoning_effort|preserve_thinking|stream)"
     r"(?:\[[0-9]{1,4}\]|\.[0-9]{1,4}|\.(?:role|name|content|tool_call_id|tool_calls|function|arguments|"
-    r"parameters|type|properties|required|additionalProperties|strict)){0,10}"
+    r"parameters|type|properties|required|additionalProperties|strict|items|enum|description|minItems|maxItems|"
+    r"steps|depends_on|selection_id|excluded_invoice_ids|rule_business_date|rule_cohort|target_year|target_month)){0,16}"
 )
 _MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/@-]{0,199}")
 _STATUS_CATEGORIES = {400: "INVALID_REQUEST", 401: "AUTHENTICATION", 403: "FORBIDDEN",
@@ -70,6 +72,85 @@ def _safe_error_fields(error, credential):
     return code, param
 
 
+def _schema_issues(schema):
+    """Small structural check for the JSON Schema forms used by the tool registry."""
+    if not isinstance(schema, dict):
+        return {"invalid_schema"}
+    kind = schema.get("type")
+    if kind == "array":
+        return _schema_issues(schema["items"]) if "items" in schema else {"missing_array_items"}
+    if kind == "object":
+        properties = schema.get("properties", {})
+        required = schema.get("required", [])
+        if not isinstance(properties, dict):
+            return {"invalid_properties"}
+        issues = set()
+        if (not isinstance(required, list) or any(not isinstance(name, str) for name in required)
+                or len(set(required)) != len(required) or not set(required) <= properties.keys()):
+            issues.add("invalid_required")
+        for child in properties.values():
+            issues.update(_schema_issues(child))
+        if type(schema.get("additionalProperties", True)) is not bool:
+            issues.update(_schema_issues(schema["additionalProperties"]))
+        return issues
+    return set() if kind in ("string", "integer", "number", "boolean", "null") else {"invalid_type"}
+
+
+def tool_schema_summary(tool):
+    function = tool.get("function") or {}
+    name = function.get("name")
+    schema = function.get("parameters")
+    valid_name = isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name)
+    issues = _schema_issues(schema)
+    if not isinstance(schema, dict) or schema.get("type") != "object":
+        issues.add("parameters_not_object")
+    if tool.get("type") != "function" or not valid_name:
+        issues.add("invalid_function")
+    return {"name": name if valid_name else None, "schema_present": schema is not None,
+            "schema_issues": sorted(issues)}
+
+
+def _request_shape(messages, tools, kwargs):
+    roles, named, contents = [], Counter(), Counter()
+    pending = set()
+    unpaired = orphaned = duplicate_or_missing_ids = 0
+    for message in messages:
+        role = message.get("role")
+        role = role if role in ("system", "user", "assistant", "tool", "developer") else "other"
+        roles.append(role)
+        if "name" in message:
+            named[role] += 1
+        content = message.get("content")
+        kind = {str: "text", list: "parts", type(None): "null"}.get(type(content), "other")
+        contents[kind if "content" in message else "absent"] += 1
+        if role == "tool":
+            identifier = message.get("tool_call_id")
+            if isinstance(identifier, str) and identifier in pending:
+                pending.remove(identifier)
+            else:
+                orphaned += 1
+        else:
+            unpaired += len(pending)
+            pending.clear()
+            if role == "assistant":
+                for call in message.get("tool_calls") or ():
+                    identifier = call.get("id")
+                    if not isinstance(identifier, str) or not identifier or identifier in pending:
+                        duplicate_or_missing_ids += 1
+                    else:
+                        pending.add(identifier)
+    return {
+        "message_roles": roles, "role_counts": dict(Counter(roles)), "named_by_role": dict(named),
+        "content_types": dict(contents), "private_reasoning_count": sum("reasoning_content" in m for m in messages),
+        "tool_pairing": {"missing_results": unpaired + len(pending), "orphan_results": orphaned,
+                         "duplicate_or_missing_call_ids": duplicate_or_missing_ids},
+        "tool_count": len(tools), "tools": [tool_schema_summary(tool) for tool in tools],
+        "tool_choice": kwargs.get("tool_choice"), "response_format_present": "response_format" in kwargs,
+        "extra_body_fields": sorted(kwargs.get("extra_body", {})),
+        "request_body_bytes": None, "sdk_route_matches": None,
+    }
+
+
 class ModelTransport:
     def __init__(self,connection,trace=None):
         self.connection,self.trace=connection,trace
@@ -83,6 +164,7 @@ class ModelTransport:
                               QWEN_PREFLIGHT if self.official_qwen and p.protocol == QWEN_PREFLIGHT else "standard")
         self.attempts=self.successes=self.failures=0
         self.last_response = None
+        self.diagnose_next_request = False
 
     def counts(self):
         return {'attempts':self.attempts,'successes':self.successes,'failures':self.failures}
@@ -91,12 +173,17 @@ class ModelTransport:
         if self.trace:
             try:
                 key = self.connection.api_key
-                metadata = {name: value.replace(key, "[REDACTED]") if key and isinstance(value, str) else value
-                            for name, value in self.connection.metadata().items()}
+                metadata = {} if event == "api.request_diagnostic" else {
+                    name: value.replace(key, "[REDACTED]") if key and isinstance(value, str) else value
+                    for name, value in self.connection.metadata().items()
+                }
                 self.trace(event, {**metadata, "protocol_mode": self.protocol_mode, **data})
             except OSError: warn_trace_degraded()
 
     def __call__(self, messages, tools, *, stage="agent"):
+        diagnose = stage == "agent" and self.diagnose_next_request
+        if diagnose:
+            self.diagnose_next_request = False
         messages=self.protocol.wire(messages,bool(tools))
         profile = self.connection.profile
         json_mode = stage != "connection" and (
@@ -107,24 +194,47 @@ class ModelTransport:
         request = {"stage": stage, "has_tools": bool(tools), "model": model, "protocol_mode": self.protocol_mode}
         timeout=60 if self.connection.profile.provider=='deepseek' else 30
         self.attempts+=1
+        self.last_response = None
         self.emit('api.request',{'attempt':self.attempts,'message_chars':len(json.dumps(messages,ensure_ascii=False)),
             'tool_schema_chars':len(json.dumps(tools,ensure_ascii=False)),'usage_status':'UNKNOWN',
             'json_mode':json_mode,'timeout_seconds':timeout,**request})
         started=time.perf_counter()
         http_status = None
         response_received = False
+        shape = None
+        base_url = profile.base_url
+        suffix = "/chat/completions"
+        if base_url.lower().endswith(suffix):
+            # A legacy profile keeps its saved endpoint and vault identity.
+            base_url = base_url[:-len(suffix)]
+
+        def observe_wire(http_request):
+            if shape["request_body_bytes"] is not None:
+                return
+            # Do not decode or store the serialized body, URL, or headers.
+            shape["request_body_bytes"] = len(http_request.content)
+            endpoint = urlsplit(base_url)
+            url = http_request.url
+            shape["sdk_route_matches"] = ((url.scheme, url.host, url.port or 443)
+                == (endpoint.scheme, endpoint.hostname, endpoint.port or 443)
+                and url.path == endpoint.path.rstrip("/") + suffix)
+
+        def observe_status(http_response):
+            nonlocal http_status
+            http_status = http_response.status_code
+
         try:
             from openai import OpenAI
             client_options = {}
-            if self.official_qwen or stage != "agent":
-                # Probes stay on the explicitly selected address, including for redirects that retain a POST body.
+            if self.official_qwen or stage != "agent" or diagnose:
                 from openai import DefaultHttpxClient
-                client_options["http_client"] = DefaultHttpxClient(follow_redirects=False)
-            base_url = profile.base_url
-            suffix = "/chat/completions"
-            if base_url.lower().endswith(suffix):
-                # A legacy profile keeps its saved endpoint and vault identity.
-                base_url = base_url[:-len(suffix)]
+                options = {}
+                if self.official_qwen or stage != "agent":
+                    # Probes and verified Qwen endpoints reject redirects that retain the POST.
+                    options["follow_redirects"] = False
+                if diagnose:
+                    options["event_hooks"] = {"request": [observe_wire], "response": [observe_status]}
+                client_options["http_client"] = DefaultHttpxClient(**options)
             with OpenAI(api_key=key, base_url=base_url, max_retries=0, timeout=timeout, **client_options) as client:
                 kwargs={}
                 if json_mode:
@@ -144,6 +254,8 @@ class ModelTransport:
                 raw_response = self.official_qwen or stage != "agent"
                 if raw_response:
                     completions = completions.with_raw_response
+                if diagnose:
+                    shape = _request_shape(messages, tools, kwargs)
                 response = completions.create(model=profile.model, messages=messages, **kwargs)
                 response_received = True
                 if raw_response:
@@ -201,6 +313,11 @@ class ModelTransport:
                 'latency_ms':round((time.perf_counter()-started)*1000,3)}
             self.emit("api.response", self.last_response)
             raise ModelRequestError(describe_failure(self.last_response)) from None
+        finally:
+            if diagnose and shape is not None:
+                outcome = {key: (self.last_response or {}).get(key) for key in
+                           ("success", "http_status", "error_category", "provider_error_code", "error_param")}
+                self.emit("api.request_diagnostic", {**request, **shape, **outcome, "attempt": self.attempts})
 
     def probe(self, can_continue):
         """At most two synthetic requests. Nothing invokes or registers the dummy function."""

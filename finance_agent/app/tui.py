@@ -848,6 +848,13 @@ class AgentWorkspace(ConversationUI, App):
         message = event.value.strip()
         if not message or self.busy or not self.user:
             return
+        command, _, argument = message.partition(" ")
+        diagnose = command == "/diag"
+        if diagnose:
+            message = argument.strip()
+            if not message:
+                self.note("输入 /diag 加原查询，仅记录下一次请求的结构。")
+                return
         if self.conversation_blocked:
             self.note("此账号的账簿对话已在另一窗口打开。请关闭后重新登录。")
             return
@@ -856,6 +863,9 @@ class AgentWorkspace(ConversationUI, App):
         except (OSError, ProfileError, ValueError, sqlite3.Error):
             self.update_header()
             self.note("暂时无法发送。请使用「配置 AI 模型」检查设置。")
+            return
+        if diagnose and (not self.agent.transport or not self.trace_path):
+            self.note("一次性诊断需要真实模型和已配置的 Trace。")
             return
         if self.conversation:
             try:
@@ -886,7 +896,7 @@ class AgentWorkspace(ConversationUI, App):
         self.workspace_widget("#chat-invoices").display = False
         self.busy = True
         event.input.disabled = True
-        self.note("正在处理，请稍候。")
+        self.note("正在处理。下一次模型请求只记录结构诊断。" if diagnose else "正在处理，请稍候。")
         self.supplement = False
         self.workspace_widget("#supplement", Button).display = False
         scope = self.read_workspace or self.resume_focus
@@ -894,7 +904,7 @@ class AgentWorkspace(ConversationUI, App):
             scope = self.resume_focus
         if scope and scope[2] == 0:
             scope = None  # The Agent owns the annual focus and invalidates it on range changes.
-        self.run_turn(message, args, scope)
+        self.run_turn(message, args, scope, diagnose=diagnose)
 
     def wait_confirmation(self, title, body, action, *, danger=False):
         return self.wait_approval(lambda: Approval(title, body, action, danger=danger)) is True
@@ -998,8 +1008,11 @@ class AgentWorkspace(ConversationUI, App):
         return accepted
 
     @work(thread=True, group="agent", exit_on_error=False)
-    def run_turn(self, message, args, read_workspace):
+    def run_turn(self, message, args, read_workspace, *, diagnose=False):
         agent = self.agent
+        transport = agent.transport if diagnose else None
+        if transport:
+            transport.diagnose_next_request = True
         offset = len(agent.messages)
         receipt = None
         batch = None
@@ -1068,6 +1081,9 @@ class AgentWorkspace(ConversationUI, App):
                 trace = agent.trace_id if agent.trace_id != trace_before else None
                 self.call_from_thread(self.fail_turn, turn_tools(agent.messages[offset:]), trace, message,
                                       attempted_request_id)
+        finally:
+            if transport:
+                transport.diagnose_next_request = False
 
     @staticmethod
     def business_card(tool, data, evidence):
