@@ -101,7 +101,11 @@ def run_invoice_batch(agent, message, request, *, approve_batch, approve_item, c
         return "INVALID_ARGUMENTS", f"本次超过 {MAX_BATCH_INVOICES} 张的处理上限，请缩小范围。"
 
     field_label = "用途" if field == "purpose" else "备注"
-    scope = f"企业　{company} · {year:04d}-{month:02d}\n筛选　{INVOICE_FIELD_LABELS[selector]}\n字段　{field_label}"
+    label = "该月全部发票" if selector == "all" else INVOICE_FIELD_LABELS[selector]
+    scope = f"企业　{company} · {year:04d}-{month:02d}\n筛选　{label}\n字段　{field_label}"
+    if selector == "all":
+        overwrites = sum(bool((old or "").strip()) and old != value for _, old in targets)
+        scope += f"\n覆盖提示　将替换 {overwrites} 张发票已填写的{field_label}。"
     item_lines = [f"{invoice}\n原值　{_preview(old)}\n新值　{_preview(value)}" for invoice, old in targets]
     if redact(item_lines) != item_lines:
         return "DENIED", "预览含有需隐藏的内容，无法进行完整核对，未提交。"
@@ -109,8 +113,17 @@ def run_invoice_batch(agent, message, request, *, approve_batch, approve_item, c
     counts = {"committed": 0, "skipped": 0, "failed": 0, "unknown": 0}
     details = []
     status = "COMPLETED"
-    if mode != "item" and not approve_batch(scope + f"\n共 {len(targets)} 张，确认后将连续处理。\n\n"
-                                            + "\n\n".join(item_lines), mode):
+    full_preview = f"全部匹配 {len(targets)} 张\n\n" + "\n\n".join(item_lines)
+    preview_pending = selector == "all"
+
+    def confirm_item(body):
+        nonlocal preview_pending
+        if preview_pending:
+            body += "\n\n" + full_preview
+            preview_pending = False
+        return approve_item(body)
+
+    if mode != "item" and not approve_batch(f"{scope}\n确认后将连续处理。\n\n{full_preview}", mode):
         status = "CANCELLED"
     else:
         try:
@@ -119,7 +132,7 @@ def run_invoice_batch(agent, message, request, *, approve_batch, approve_item, c
                 body = f"{scope}\n第 {index + 1} / {len(targets)} 张\n{item_lines[index]}"
                 status, request_id = _apply_target(
                     agent, message, values, f"{year:04d}-{month:02d}", old,
-                    lambda: approve_item(body) if mode == "item" else "confirm", checkpoint,
+                    lambda: confirm_item(body) if mode == "item" else "confirm", checkpoint,
                 )
                 if coordinator.receipt["status"] == "WAITING_CONFIRMATION":
                     outcome = "NOT_SUBMITTED" if status in {"SKIPPED", "NO_CHANGE"} else status

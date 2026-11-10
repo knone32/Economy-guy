@@ -71,12 +71,20 @@ def quoted_edit_candidate(text):
     return {"field": fields.pop(), "new_value": value}
 
 
+_BATCH_START = r"^(?:(?:请帮我|帮我|麻烦|请)\s*)?(?:把|将)\s*"
+_BATCH_SET = r"(?:所有|全部)"
+_BATCH_ACTION = r"(?:修改为|改成|改为|填成|填为|设置为)"
 _BATCH_EDIT = re.compile(
-    rf"^(?:(?:请帮我|帮我|麻烦|请)\s*)?(?:把|将)\s*(?P<company>{_COMPANY}|[甲乙]公司)\s*"
+    _BATCH_START + rf"(?P<company>{_COMPANY}|[甲乙]公司)\s*"
     r"(?P<period>\d{4}\s*(?:年\s*\d{1,2}\s*月|[-/]\s*\d{1,2}))\s*(?:的\s*)?"
-    r"(?P<selector>用途为空|备注为空|有备注|必填用途缺失)\s*的\s*(?:(?P<all_before>所有)\s*)?发票"
+    r"(?:(?P<selector>用途为空|备注为空|有备注|必填用途缺失)\s*的\s*)?"
+    rf"(?:(?P<all_before>{_BATCH_SET})\s*(?:的\s*)?)?发票"
     r"(?:\s*的?\s*(?P<field>用途|备注))?\s*(?P<all_after>全部|都|统一|批量)?\s*"
-    r"(?:修改为|改成|改为|填成|填为|设置为)\s*(?P<value>.+)$", re.I,
+    rf"{_BATCH_ACTION}\s*(?P<value>.+)$", re.I,
+)
+_BATCH_INTENT = re.compile(
+    _BATCH_START + r"(?P<target>[^，,。；;？?\n]*?发票[^，,。；;？?\n]*?)"
+    rf"(?P<action>{_BATCH_ACTION}|改掉|改一下|清空|修改|改)\s*(?P<value>.*)$", re.I,
 )
 _BATCH_MODES = {
     "逐项确认": "item", "逐张确认": "item", "一张张让我确认": "item",
@@ -88,29 +96,60 @@ _BATCH_SELECTORS = {
 }
 
 
+def _batch_request_hint(text):
+    match = _BATCH_INTENT.fullmatch(text)
+    if not match:
+        return None
+    target = match["target"]
+    scope = explicit_scope(target, include_update_aliases=True)
+    explicit_set = re.search(rf"{_BATCH_SET}\s*(?:的\s*)?发票", target)
+    plural_target = re.search(r"发票\s*(?:的?\s*(?:用途|备注))?\s*(?:全部|都|统一|批量)\s*$", target)
+    single = scope.get("invoice_no") or re.search(r"(?:第[^张]{1,8}|这|那|某|单|一)张", target)
+    if not explicit_set and (not plural_target or single):
+        return None
+    missing = []
+    if len(scope.get("company_id", ())) != 1:
+        missing.append("一个明确的企业")
+    if any(len(scope.get(key, ())) != 1 for key in ("periods", "year", "month")):
+        missing.append("完整且唯一的年月（例如 2026 年 9 月）")
+    if not re.fullmatch(_BATCH_ACTION, match["action"]) or not match["value"].strip():
+        missing.append("具体新值")
+    if missing:
+        return "批量修改还需要：" + "、".join(missing) + "。"
+    return "无法核定批量集合。请明确该月的所有发票，或使用用途为空、备注为空、有备注、必填用途缺失筛选。"
+
+
 def batch_edit_request(text):
-    """Return an explicit fixed-filter request, an invalid-request marker, or None."""
+    """Return a trusted batch request, an actionable hint, or None for ordinary chat."""
     text = text.strip().rstrip("。！!").strip()
     match = _BATCH_EDIT.fullmatch(text)
     if not match:
-        return None
+        return _batch_request_hint(text)
+    selector = _BATCH_SELECTORS.get(match["selector"])
+    if not (match["all_before"] or match["all_after"]):
+        return "请明确是否要修改全部匹配发票。" if selector else None
     scope = explicit_scope(match["company"] + " " + match["period"], include_update_aliases=True)
-    if len(scope.get("company_id", ())) != 1 or len(scope.get("periods", ())) != 1:
-        return {}
+    if len(scope.get("periods", ())) != 1 or not scope["periods"][0][0]:
+        return "批量修改需要完整且有效的年月（例如 2026 年 9 月）。"
     mode_suffix = re.search(r"[，,]\s*(" + "|".join(_BATCH_MODES) + r")$", match["value"])
     mode = _BATCH_MODES[mode_suffix[1]] if mode_suffix else "item"
-    if not (match["all_before"] or match["all_after"]):
-        return {}
+    if selector is None:
+        if not (match["all_before"] or match["all_after"] in {"全部", "都"}):
+            return "请明确该月的所有发票，或指定支持的发票筛选。"
+        if not match["field"]:
+            return "请明确要批量修改用途还是备注。"
+        selector = "all"
     value = (match["value"][:mode_suffix.start()] if mode_suffix else match["value"]).strip()
-    if not re.fullmatch(r'“[^”]+”|"[^"]+"|[^“”"，,。！？?；;\r\n]+', value):
-        return {}
-    if not value.startswith(("“", '"')) and re.search(
+    if not re.fullmatch(r'“[^”]+”|‘[^’]+’|"[^"]+"|[^“”‘’"，,。！？?；;\r\n]+', value):
+        return "请提供具体新值。新值含标点时请用引号包住，并在引号外指定确认方式。"
+    if not value.startswith(("“", "‘", '"')) and re.search(
             r"(?:不用|无需|不必|跳过).{0,14}确认|(?:并且|并|然后|再)\s*(?:把|将|修改|更正|更新|清空|查询)", value):
-        return {}
+        return "请提供独立的新值。批量修改需要逐张确认或整批授权。"
+    if value.startswith("‘"):
+        value = "“" + value[1:-1] + "”"
     values = literal_value(value)
     if not values:
-        return {}
-    selector = _BATCH_SELECTORS[match["selector"]]
+        return "请提供具体新值。"
     field = match["field"] or ("备注" if selector.startswith("remark") else "用途")
     year, month = scope["periods"][0]
     return {"company_id": scope["company_id"][0], "year": year, "month": month,

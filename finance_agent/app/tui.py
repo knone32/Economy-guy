@@ -813,6 +813,10 @@ class AgentWorkspace(ConversationUI, App):
         if self.conversation_blocked:
             self.note("此账号的账簿对话已在另一窗口打开。请关闭后重新登录。")
             return
+        batch = batch_edit_request(message)
+        if isinstance(batch, str):
+            self.note(batch)
+            return
         try:
             self.ensure_agent()
         except (OSError, ProfileError, ValueError, sqlite3.Error):
@@ -825,10 +829,6 @@ class AgentWorkspace(ConversationUI, App):
             except (OSError, ValueError, sqlite3.Error):
                 self.note("工作库身份或会话存储已变化，请重新打开。")
                 return
-        batch = batch_edit_request(message)
-        if batch == {}:
-            self.note("请明确一个企业、年月、筛选、全部匹配项及完整新值。新值含标点时请用引号包住。")
-            return
         if batch and not self.can_change_conversation():
             return
         args = {} if batch else edit_turn(message, self.agent.pending_edit, guided=self.supplement)

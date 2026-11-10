@@ -81,11 +81,14 @@ def filter_monthly_invoices(connection, user_id, company_id, year, month, select
     """Count matching fields, or snapshot a bounded set for trusted batch editing."""
     _authorize(connection, user_id, company_id)
     prefix = _check_month(year, month)
-    predicate = _FIELD_FILTERS.get(selector)
-    if predicate is None:
-        raise QueryError("不支持此发票字段筛选")
-    where = f"company_id=? AND invoice_date LIKE ? AND {predicate}"
-    values = (company_id, prefix + "-%", PURPOSE_WHITESPACE)
+    where = "company_id=? AND invoice_date LIKE ?"
+    values = (company_id, prefix + "-%")
+    if selector != "all":
+        predicate = _FIELD_FILTERS.get(selector)
+        if predicate is None:
+            raise QueryError("不支持此发票字段筛选")
+        where += f" AND {predicate}"
+        values += (PURPOSE_WHITESPACE,)
     if limit is None:
         return connection.execute(f"SELECT count(*) FROM invoices WHERE {where}", values).fetchone()[0]
     return list(connection.execute(
