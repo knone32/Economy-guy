@@ -186,6 +186,15 @@ class ModelTransport:
             self.diagnose_next_request = False
         messages=self.protocol.wire(messages,bool(tools))
         profile = self.connection.profile
+        if (profile.provider == "openai-compatible" and self.protocol_mode == "standard"
+                and not (self.official_qwen or self.official_deepseek)):
+            system = [message for message in messages if message["role"] == "system"]
+            if (system and (len(system) > 1 or messages[0] is not system[0])
+                    and all(set(message) == {"role", "content"} and isinstance(message["content"], str)
+                            for message in system)):
+                # Some chat templates accept a system message only in position zero.
+                leading = {"role": "system", "content": "\n\n".join(message["content"] for message in system)}
+                messages = [leading, *(message for message in messages if message["role"] != "system")]
         json_mode = stage != "connection" and (
             (profile.provider == "deepseek" and profile.base_url.rstrip("/") == "https://api.deepseek.com")
             or (self.official_qwen and profile.protocol == "standard"))
