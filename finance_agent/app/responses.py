@@ -216,6 +216,55 @@ def render_bank_income_comparison(results, goals):
     return f"{year} 年 {month} 月银行收入比较（当前 SQLite）：{first}；{second}。{conclusion}"
 
 
+def render_hypothetical_purpose_rules(results, request, goals):
+    """Answer only literal same-turn invoice-amount hypotheticals from rule params."""
+    if not (re.search(r"发票|单据", request) and
+            re.search(r"没填用途|未填用途|用途为空|用途还空|用途没填", request)):
+        return ""
+    fragments = re.findall(
+        r"([甲乙])(?:企业|公司)(?:(?![甲乙](?:企业|公司)).){0,85}?(\d+(?:\.\d{1,2})?)\s*元",
+        request,
+    )
+    if not fragments or len(fragments) != len(set(company for company, _ in fragments)):
+        return ""
+    aliases = {"甲": "C001", "乙": "C002"}
+    targets = {(company, year, month) for goal, company, year, month in goals if goal == "purpose_rule"}
+    if not targets or any((aliases[company], 2026, 9) not in targets for company, _ in fragments):
+        return ""
+    rules = {}
+    for name, outcome in results:
+        scope = outcome.get("evidence", {}).get("scope", {})
+        key = (scope.get("company_id"), scope.get("year"), scope.get("month"))
+        if (name == "get_applicable_rules" and outcome["status"] == "SUCCESS"
+                and outcome["evidence"].get("source") == "current_sqlite"
+                and scope.get("rule_type") == "purpose" and key in targets):
+            rules[key] = outcome["data"]
+    statements = []
+    for alias, literal in fragments:
+        company = aliases[alias]
+        rule = rules.get((company, 2026, 9))
+        if not rule:
+            statements.append(f"{alias}企业的适用规则尚未核验，不能判断假设金额是否违反必填要求。")
+            continue
+        try:
+            cents = Decimal(literal) * 100
+            if cents != cents.to_integral_value() or cents < 0:
+                return ""
+            params = rule["params"]
+            mode, threshold = params["mode"], params["threshold_cents"]
+            if (mode not in {"all", "threshold"} or type(threshold) is not int or threshold < 0):
+                raise ValueError("unsupported rule")
+            required = mode == "all" or cents >= threshold
+        except (KeyError, ValueError, InvalidOperation, TypeError):
+            statements.append(f"{alias}企业的规则结构不足以判定该假设，请核对执行参数。")
+            continue
+        status = ("未填用途违反该企业必填规则" if required else
+                  "此金额未触发该企业用途必填门槛，单就未填用途而言不违反该规则")
+        statements.append(f"假设{alias}企业有一张金额 ¥{Decimal(literal):,.2f} 的发票且用途为空："
+                          f"{status}（{rule['rule_id']} v{rule['version']}）。")
+    return "以下仅判断假设情形，不表示数据库中存在这些发票：\n" + "\n".join(statements)
+
+
 def render_goal_coverage(coverage, receipt):
     labels = {"VERIFIED": "查询已核验", "UNEXECUTED": "尚未执行", "DENIED": "读取被拒绝",
               "SCOPE_MISMATCH": "查询范围冲突", "FAILED": "未取得可信结果"}

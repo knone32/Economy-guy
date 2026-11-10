@@ -15,7 +15,7 @@ from .updates import prepare_invoice_update
 from .responses import (explicit_scope, parse_final, render_information, render_clarification,
                         render_explanation_evidence, render_grounded_explanation, render_invoice_comparison, render_reference_error, render_stopped,
                         render_task_scope_negotiation, render_tool_failure, QUERY_GOALS, query_goal,
-                        verified_query_goal, render_goal_coverage, render_bank_income_comparison, scope_mismatch)
+                        verified_query_goal, render_goal_coverage, render_bank_income_comparison, render_hypothetical_purpose_rules, scope_mismatch)
 from .persistence import ManagementIntent, ManagementTurn, ManagementProposals
 from .context import ContextBuilder, ContextLimitError, RELATIVE_PERIOD, reference_hint
 from .scheduler import BudgetPolicy, TurnExecution
@@ -391,6 +391,7 @@ class Agent:
         read_only = not (allow_prepare or management or self.teaching)
         mixed = allow_prepare and read_request is not None and not (management or self.teaching)
         query_text = read_request if mixed else text
+        text_request = text
         deferred = False
         if read_only:
             parts = re.split(r"\s*[，,；;。]?\s*(?:然后|接着|再)\s*(?=查看|看|查)", text, maxsplit=1)
@@ -609,6 +610,10 @@ class Agent:
                 compared = render_bank_income_comparison(read_results, goals)
                 if compared:
                     text += "\n" + compared
+            if goal == "purpose_rule":
+                hypothetical = render_hypothetical_purpose_rules(read_results, text_request, goals)
+                if hypothetical:
+                    text += "\n" + hypothetical
             if self.write_receipt['status']=='CURRENT_VALUE_MATCHES':text+='\n'+self.write_receipt['message']
             self.last_response = {"source":"runtime_output", "category":category, "text":text, "operation_receipt":self.write_receipt, "trace_degraded":self.trace_degraded,"execution":execution.snapshot()}
             api={key:self.transport.counts()[key]-api_before[key] for key in api_before} if api_before is not None else None
