@@ -630,7 +630,8 @@ def preference_receipt(results):
 def render_stopped(results, stop_reason):
     """失败不能回滚此前真实结果；也不展示拒绝项的业务data。"""
     verified=[(name,outcome) for name,outcome in results
-              if outcome['status'] in {'SUCCESS','NO_DATA','NO_CHANGE'} and name!='prepare_invoice_update']
+              if outcome['status'] in {'SUCCESS','NO_DATA','NO_CHANGE'} and name!='prepare_invoice_update'
+              and outcome.get('evidence', {}).get('source') in {'current_sqlite', 'local_display_preference'}]
     if not verified:
         return None
     failures=[]

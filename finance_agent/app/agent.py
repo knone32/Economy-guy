@@ -40,7 +40,7 @@ SYSTEM = """你是财税助手。甲企业=C001，乙企业=C002。需要业务�
 用户只补充企业或年月时，应继续最近未完成的查询目标，不能把原目标缩减成明细。
 context_data的prior_query_tools只是历史查询类型线索：当前轮仅更正范围时可延续查询目标，不能继承旧金额、范围或修改许可。
 指定月份的备注或用途字段数量用count_invoice_fields；空字段不等于规则缺项。核查用途合规缺项明细用check_missing_purpose，不能用财务汇总替代。context_data.read_workspace.scope中的唯一企业及完整年月可直接用于只读查询，无需再次追问；当前明确要求优先。
-完整年度或可信工作区 annual_year 可用于本轮及未更正范围的后续只读查询。目录/所有发票用 list_invoice_directory（可信年份、month=0），不能用汇总代替目录。
+完整年度或可信工作区 annual_year 可用于本轮及未更正范围的后续只读查询。单企业年度目录可传可信年份和 month=0。
 用 list_annual_bank_income 分页查年度银行收入流水，用 get_annual_finance_summary 查年度合计，用 list_annual_blank_purpose 查年度用途空值。
 对象混淆（例如“银行收入发票”）时，追问 missing_fields=["business_object"]，不要推测流水与发票的关系，不重复询问已确认范围。
 规则旧版、停用状态和版本差异用 list_rule_versions；当前适用性用 get_applicable_rules。
@@ -48,7 +48,7 @@ context_data的prior_query_tools只是历史查询类型线索：当前轮仅更
 银行流水和发票没有可靠的逐条关联，不能凭流水推断某张发票是否付款。
 用户要求全年用途待办时，可先查全年字段空值；不能替用户改成9月。待办建议需要用户下一轮明确同意具体企业、年月和动作，再按原流程请求可信确认。
 发票与银行收支的综合概览使用get_finance_summary，一次取得价税合计/数量、收入/支出/条数及R001；
-list_invoice_directory用于企业发票目录，每次只返回一页。目录排序必须用此工具重新读取整个查询范围，由数据库先排序再分页。
+单企业普通发票目录和分页用 list_invoice_directory，由数据库先排序再分页。跨企业合并排序、多字段复合排序及其他复杂组合用 query_business_sql。规则定义的完整用途缺项用 check_missing_purpose。只读证据足够时直接回答，不重复相同查询。
 当前问题在延续同一目录时，可从 context_data.previous_invoice_directory 取上一轮已核验的企业与账期。没有唯一目录则追问，不猜范围。
 金额排序用sort_by=amount，日期排序用sort_by=date，方向不明时用asc。改变排序从第1页开始，继续翻页沿用相同排序。
 本轮明确的企业与账期优先。get_invoice用于已明确企业和发票号的详情。list_invoices/list_bank_transactions用于指定月份明细。不要用明细代替完整汇总。
@@ -347,6 +347,32 @@ class Agent:
         self.context.sources["task_id"] = "current_sqlite"
         self.context.accept_task(details)
         return details
+
+    @staticmethod
+    def summarize_fulfillment(response, *, receipt=None, batch=None):
+        """Use goal evidence and actual receipts, independent of the execution stop code."""
+        coverage = response.get("goal_coverage")
+        stop = response["execution"]["stop_reason"]
+        operation = receipt or response["operation_receipt"]
+        write_expected = response["write_expected"]
+        write_verified = write_expected and (
+            operation["status"] == "CURRENT_VALUE_MATCHES"
+            or (operation["status"] in {"COMMITTED", "NO_CHANGE"} and operation.get("readback_verified")))
+        reads_verified = (coverage and not coverage["unknown"] and not coverage["deferred"]
+                          and all(state == "VERIFIED" for _, _, state in coverage["reads"]))
+        business_failure = stop in {"DENIED", "SCOPE_MISMATCH", "ERROR", "INVALID_ARGUMENTS", "RULE_CONFLICT",
+                                    "NO_APPLICABLE_RULE", "CONFLICT", "UNKNOWN_OUTCOME"}
+        if receipt is None and batch is None and stop in {"WAITING_USER", "AMBIGUOUS", "WAITING_CONFIRMATION"}:
+            state = "WAITING_USER"
+        elif reads_verified and not business_failure and (not write_expected or write_verified):
+            state = "VERIFIED_GOALS"
+        elif write_verified or (batch and batch[0] == "PARTIAL_RESULT") or (
+                response["query_evidence_count"] and (coverage or write_expected or business_failure)):
+            state = "PARTIAL_RESULT"
+        else:
+            state = "UNVERIFIED_RESULT"
+        detail = render_goal_coverage(coverage, operation) if coverage else None
+        return {"status": state, "detail": detail}
 
     def task_closure(self, results):
         from .responses import render_task_closure, verified_task_progress
@@ -729,21 +755,49 @@ class Agent:
                 summaries.append("本轮未执行批量无确认修改：发票用途修改必须逐项明确真实用途并由用户确认。"
                                  "用途字段为空，不能据此认定实际用途是所提类别。")
                 if not execution.stop_reason:
-                    verified_read = any(result["status"] in {"SUCCESS", "NO_DATA"}
-                                        and result["evidence"].get("source") == "current_sqlite"
-                                        for _, result in read_results)
-                    execution.stop("PARTIAL_RESULT" if verified_read else "DENIED")
+                    execution.stop("DENIED")
             if not execution.stop_reason:
-                partial = goal_coverage and (goal_coverage["unknown"] or deferred
-                          or any(state != "VERIFIED" for _, _, state in goal_coverage["reads"])
-                          or (mixed and self.write_receipt["status"] not in {"NO_CHANGE", "CURRENT_VALUE_MATCHES"}))
-                execution.stop("PARTIAL_RESULT" if partial else "WAITING_USER" if category=="clarification"
+                execution.stop("WAITING_USER" if category == "clarification"
                                else "MODEL_FINISHED_WITH_PENDING_WORK" if execution.schedule else "ANSWERED")
-            if not self.teaching and category not in {'database_query','general_unverified'}:
-                evidence=render_stopped(read_results,execution.stop_reason)
+
+            facts = [(name, outcome) for name, outcome in read_results
+                     if name in SQL_ANSWER_TOOLS | {"list_tasks"} and outcome["status"] in {"SUCCESS", "NO_DATA"}
+                     and outcome.get("evidence", {}).get("source") == "current_sqlite"]
+            stop = execution.stop_reason
+            write_expected = bool(allow_prepare or invoice_write or mixed or invoice_change or bulk_no_confirmation)
+            response = {"source": "runtime_output", "category": category, "operation_receipt": self.write_receipt,
+                        "execution": execution.snapshot(), "query_evidence_count": len(facts), "write_expected": write_expected}
+            if goal_coverage:
+                response["goal_coverage"] = goal_coverage
+            fulfillment = self.summarize_fulfillment(response)
+            response["fulfillment"] = fulfillment
+
+            budget_stops = {"MODEL_LIMIT": "已达到模型请求上限", "TOOL_LIMIT": "已达到工具调用上限",
+                            "CONTEXT_LIMIT": "已达到上下文上限", "NO_LEGAL_WORK": "没有满足续期条件的后续步骤",
+                            "EXTENSION_LIMIT": "已达到预算续期上限"}
+            if not self.teaching and (stop == "NO_PROGRESS" or (facts and stop in budget_stops)):
+                if stop == "NO_PROGRESS":
+                    if any(outcome["status"] == "NO_PROGRESS" for _, outcome in read_results):
+                        reason = "重复请求相同工具和参数，未再次执行"
+                    elif any(outcome["status"] == "NO_CHANGE" for _, outcome in read_results):
+                        reason = "工具核验未产生新的业务进展"
+                    else:
+                        reason = "当前预算块没有新的执行证据，未续期"
+                else:
+                    reason = budget_stops[stop]
+                progress = {"VERIFIED_GOALS": "所列请求目标已核验完成。", "PARTIAL_RESULT": "目前只核验了部分目标。",
+                            "UNVERIFIED_RESULT": "现有证据不足以核验原请求是否全部完成。"}[fulfillment["status"]]
+                retained = "已保留此前核验的查询结果。" if facts else "本轮尚无已核验的查询结果。"
+                chat_notice = f"{retained}执行停止（{stop}）：{reason}。{progress}"
+                if write_expected and self.write_receipt["status"] == "NOT_SUBMITTED":
+                    chat_notice += "修改尚未执行，本轮没有提交发票修改。"
+                text = "\n".join(filter(None, (render_information(facts), chat_notice)))
+            elif not self.teaching and category not in {"database_query", "general_unverified"}:
+                if chat_notice is None and stop not in {"ANSWERED", "COMPLETED", "TASK_FINISHED", "WAITING_CONFIRMATION"}:
+                    chat_notice = ("已保留此前核验的查询结果。\n" if facts else "") + text
+                evidence = render_stopped(read_results, stop)
                 if evidence:
-                    detail = text if category == "clarification" else chat_notice
-                    text = "\n".join(filter(None, (evidence, detail)))
+                    text = "\n".join(filter(None, (evidence, chat_notice or text)))
             if category == "database_query" and not (self.teaching or self.defer_display_anchors):
                 anchors = self.record_query_display(read_results)
                 if anchors is None:
@@ -754,18 +808,23 @@ class Agent:
                 summary = "\n".join(summaries)
                 chat_notice = "\n".join(filter(None, (chat_notice, summary)))
                 text = "\n".join(filter(None, (text, summary)))
-            if self.write_receipt['status']=='CURRENT_VALUE_MATCHES':text+='\n'+self.write_receipt['message']
+            if self.write_receipt["status"] == "CURRENT_VALUE_MATCHES" and not (goal_coverage and goal_coverage["write"]):
+                text += "\n" + self.write_receipt["message"]
+                if chat_notice is None:
+                    chat_notice = self.write_receipt["message"]
+            if (chat_notice is None and not facts and not goal_coverage and not read_results
+                    and self.write_receipt["status"] == "NOT_SUBMITTED" and stop != "WAITING_CONFIRMATION"):
+                chat_notice = text or "本轮没有取得可核实的业务结果。"
             if unresolved_receipt is not None and read_only:
                 self.write_receipt = unresolved_receipt
-            self.last_response = {"source":"runtime_output", "category":category, "text":text, "operation_receipt":self.write_receipt, "trace_degraded":self.trace_degraded,"execution":execution.snapshot()}
+            self.last_response = {**response, "text": text, "operation_receipt": self.write_receipt,
+                                  "trace_degraded": self.trace_degraded, "chat_notice": chat_notice,
+                                  "tool_results": tuple(read_results)}
             api={key:self.transport.counts()[key]-api_before[key] for key in api_before} if api_before is not None else None
-            self.last_response["chat_notice"] = chat_notice
-            self.last_response["tool_results"] = tuple(read_results)
-            if invoice_change is not None and execution.stop_reason == "WAITING_CONFIRMATION":
+            if invoice_change is not None and stop == "WAITING_CONFIRMATION":
                 self.last_response["invoice_change"] = invoice_change
-            if goal_coverage:
-                self.last_response["goal_coverage"] = goal_coverage
-                text += "\n" + render_goal_coverage(goal_coverage, self.write_receipt)
+            if fulfillment["detail"]:
+                text += "\n" + fulfillment["detail"]
                 self.last_response["text"] = text
             closure = self.task_closure(read_results)
             if closure:
@@ -775,7 +834,9 @@ class Agent:
             self.last_response['api_counts']=api
             if store:
                 self.messages.append({"role": "assistant", "name":"harness_output", "content": text})
-            self.trace("turn.finished", {"answer": text, "tools_attempted": execution.actual_tools, "write_receipt": self.write_receipt,"execution":execution.snapshot(),'api_counts':api})
+            self.trace("turn.finished", {"answer": text, "tools_attempted": execution.actual_tools, "write_receipt": self.write_receipt,
+                                         "execution": execution.snapshot(), "api_counts": api,
+                                         "fulfillment": fulfillment["status"], "query_evidence_count": len(facts)})
             self.last_response["trace_degraded"] = self.trace_degraded
             return text
         if (not self.teaching and not management and not mixed and not explicit.get("invoice_no")
@@ -841,9 +902,9 @@ class Agent:
                                 + reference["data"]["selection_id"] + "。仅可用于本轮提案。"})
             if sql_context is not None:
                 context.append({"role": "system", "content": (
-                    "普通业务分析优先用 query_business_sql，根据用户原话选筛选、排除、分组和指标；"
-                    "可以继续查询，无需 set_schedule。日期和企业以以下可信范围为限，缺少范围时追问。"
-                    "执行时按当前账号重新鉴权。跨企业统一排序使用 SQL。目录分页、近期对象引用、规则适用性、正式合规检查和管理操作仍用各自专用工具。"
+                    "复杂只读组合、跨企业合并排序或多字段排序用 query_business_sql；单企业普通目录和分页用 list_invoice_directory，"
+                    "规则定义的完整用途缺项用 check_missing_purpose。只读证据够用即回答，不重复相同查询。"
+                    "日期和企业以以下可信范围为限，缺少范围时追问。执行时按当前账号重新鉴权。"
                     "SQL 的 amount_cents 和以 _cents 结尾的金额列均为整数分。derived 中数字键是零起点列索引，"
                     "对应已格式化的元金额。需要百分比时用整数 numerator、denominator 列；分母为零无法求比例。"
                     "用 is_blank 判断 NULL、空串和纯空白。范围内的全部数据参与计算；"
@@ -925,13 +986,13 @@ class Agent:
                         continue
                     else:
                         self.messages.pop()
-                        execution.stop("PARTIAL_RESULT" if read_results else "UNVERIFIED_RESULT")
+                        execution.stop("MODEL_FINISHED_WITH_PENDING_WORK")
                         notice = "本轮账期已经核验，其余操作尚未完成。请按原条件重试。"
                         return finish(notice, store=False, chat_notice=notice)
                 if (read_only and not bulk_no_confirmation and invoice_intent_source(text_request)
                         and natural is not None and natural["kind"] != "clarification"):
                     self.messages.pop()
-                    execution.stop("PARTIAL_RESULT" if read_results else "UNVERIFIED_RESULT")
+                    execution.stop("MODEL_FINISHED_WITH_PENDING_WORK")
                     notice = ("上一次提交结果仍未知，请先核查审计。" if unresolved_receipt
                               else "本轮尚未核验发票修改提案，没有提交发票修改。")
                     return finish(notice, store=False, chat_notice=notice)
@@ -999,7 +1060,8 @@ class Agent:
                     self.messages.pop()
                     self.trace("error", {"category": "invalid_final_envelope"})
                     execution.stop("INVALID_RESPONSE")
-                    return finish(self.write_receipt["message"], category="unverified")
+                    return finish("模型最终回复格式无效。" if read_only else self.write_receipt["message"],
+                                  category="unverified")
                 if natural["kind"] == "clarification" and allow_prepare:
                     # 只保留业务意图；本轮草稿/最终确认已在begin时清空。
                     return finish(render_clarification(natural) + "\n操作回执：" + self.write_receipt["message"], store=False, category="clarification")
@@ -1190,12 +1252,6 @@ class Agent:
                 if any(outcome is stop_result and name == "propose_invoice_changes" for name, outcome in read_results):
                     notice = (stop_result.get("error") or "无法核验本轮发票修改提案。") + " 本轮没有提交发票修改。"
                     return finish(notice, store=False, chat_notice=notice)
-                if (execution.stop_reason == "NO_PROGRESS" and stop_result["status"] == "NO_PROGRESS" and any(
-                        name == "query_business_sql" and outcome["status"] == "SUCCESS"
-                        and outcome["data"].get("selection_id") for name, outcome in read_results)):
-                    notice = ("SQL 清单已取得并保留。模型重复请求同一工具调用，运行已停止（NO_PROGRESS）。"
-                              "本轮未生成或核验修改提案，没有提交任何发票修改。")
-                    return finish(notice, store=False, chat_notice=notice)
                 if self.update_session.drafts:
                     return finish(self.write_receipt["message"])
                 if execution.stop_reason in {"COMPLETED","WAITING_USER","TASK_FINISHED"}:
@@ -1206,7 +1262,7 @@ class Agent:
         if not execution.stop_reason:
             execution.stop("MODEL_LIMIT")
         self.trace("error", "模型请求上限")
-        return finish("已达到本轮预算上限或不满足续期条件（"+execution.stop_reason+"），未确认业务完成。实际工具结果：" + json.dumps(read_results, ensure_ascii=False))
+        return finish(f"本轮执行已停止（{execution.stop_reason}），尚未核验原请求是否全部完成。")
 
 
 def scripted_model(replies):

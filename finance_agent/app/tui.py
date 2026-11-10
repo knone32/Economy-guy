@@ -24,7 +24,7 @@ from .model_config import ModelConnection, ProfileError, load_profiles, resolve_
 from .persistence import ManagementIntent, ManagementTurn, confirm_management, task_note_from_request
 from .queries import QueryError, available_periods, get_invoice, invoice_directory
 from .responses import (DIRECTORY_SORT_LABELS, display_rule_amounts, explicit_scope, needs_progress_evidence,
-                        render_goal_coverage, render_invoice_field_count, render_recent_commit,
+                        render_invoice_field_count, render_recent_commit,
                         render_rule_history, render_scope, render_sql_evidence, scope_key)
 from .rules import RuleError, check_missing_purpose
 from .session_store import workbook_identity
@@ -55,6 +55,7 @@ STATUS = {
     "CONFLICT": "当前状态有变化，请重新核对", "NOT_FOUND": "没有找到目标",
     "API_OR_RESPONSE_ERROR": "模型连接或响应失败，请检查设置与执行记录",
     "EVIDENCE_RETURNED": "已返回本轮核验结果",
+    "NO_PROGRESS": "执行因无新进展停止",
     "INVALID_RESPONSE": "模型回复格式无效，请重新描述",
     "PROTOCOL_ERROR": "模型响应异常，请查看执行记录",
     "RULE_CONFLICT": "当前规则存在冲突", "NO_APPLICABLE_RULE": "没有适用规则",
@@ -986,6 +987,9 @@ class AgentWorkspace(ConversationUI, App):
                                         "偏好已提交，当前值尚未核实，请打开偏好设置。")
                     else:
                         verified.append("已按本次确认保存，业务库记录可重新查看。")
+            if receipt is not None or batch is not None:
+                agent.last_response["fulfillment"] = agent.summarize_fulfillment(
+                    agent.last_response, receipt=receipt, batch=batch)
             self.call_from_thread(self.finish_turn, calls, receipt, verified,
                                   batch is None and not args.get("allow_prepare") and not args.get("continue_edit"), batch)
         except Exception:
@@ -1177,30 +1181,15 @@ class AgentWorkspace(ConversationUI, App):
                               for name, result in results if result["evidence"].get("source") == "current_sqlite")
         if scopes:
             self.query_focus = scopes
-        shown = self.show_turn_results(results)
+        self.show_turn_results(results)
         self.workspace_widget("#chat-invoices").display = bool(self.chat_invoice_routes)
         coverage = response.get("goal_coverage")
-        final_receipt = receipt or response["operation_receipt"]
-        if coverage and status != "UNKNOWN_OUTCOME":
-            covered = (not coverage["unknown"] and not coverage["deferred"]
-                       and all(state == "VERIFIED" for _, _, state in coverage["reads"]))
-            if coverage["write"]:
-                covered = covered and (final_receipt["status"] in {"NO_CHANGE", "CURRENT_VALUE_MATCHES"}
-                                       or (final_receipt["status"] == "COMMITTED" and final_receipt.get("readback_verified")))
-            status = "VERIFIED_GOALS" if covered else "PARTIAL_RESULT"
         notice = response["chat_notice"]
         if notice:
             self.chat_message("Agent", notice)
-        elif stop == "INVALID_RESPONSE" and shown:
-            self.chat_message("Agent", "上方结果已核验。模型未能整理本轮回复。")
-        elif stop not in {"ANSWERED", "COMPLETED", "TASK_FINISHED", "WAITING_CONFIRMATION", "PARTIAL_RESULT"}:
-            self.chat_message("Agent", status_label(stop))
-        elif response["operation_receipt"]["status"] == "CURRENT_VALUE_MATCHES":
-            self.chat_message("发票回执", "当前发票值已经符合要求，本轮无需再次保存。")
-        elif not (coverage or shown or verified or receipt or batch):
-            self.chat_message("Agent", "本轮没有可核实的业务结果。请补充查询对象或查看执行记录。")
-        if coverage:
-            self.chat_message("本轮目标", render_goal_coverage(coverage, final_receipt))
+        detail = response["fulfillment"]["detail"]
+        if detail:
+            self.chat_message("本轮目标", detail)
         closure = response.get("task_closure")
         if closure:
             self.chat_message("当前待办", closure)
