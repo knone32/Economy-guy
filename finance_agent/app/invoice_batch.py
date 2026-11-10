@@ -117,14 +117,15 @@ def plan_invoice_change(agent, source_request, proposal, selection, *, authorize
     if len(companies) != 1:
         return None, "SCOPE_MISMATCH", "一次只能确认一家企业，请分企业请求修改。"
     company, = companies
-    collection = source in {"query_business_sql", "check_missing_purpose"}
+    rule_selection = source == "check_missing_purpose"
+    collection = source == "query_business_sql" or rule_selection
     requested = explicit_scope(source_request, include_update_aliases=True)
     if (requested.get("company_id") and requested["company_id"] != [company]
             or source == "query_business_sql" and tuple(scope["company_ids"]) != (company,)):
         return None, "SCOPE_MISMATCH", "候选集合与用户明确的企业不一致。"
     excluded = excluded_invoice_ids(source_request)
     invoice_nos = {invoice for _, invoice in keys}
-    if source == "check_missing_purpose":
+    if rule_selection:
         invoice_nos -= excluded
     if not invoice_nos:
         return None, "NO_DATA", "排除指定发票后没有可修改的记录。"
@@ -141,6 +142,13 @@ def plan_invoice_change(agent, source_request, proposal, selection, *, authorize
 
     target_period = (proposal["target_year"], proposal["target_month"]) if "target_year" in proposal else None
     rule_date = proposal.get("rule_business_date")
+    if rule_selection:
+        selected_period = (scope["year"], scope["month"])
+        selected_date = scope["rule_business_date"]
+        if ((target_period is not None and target_period != selected_period)
+                or (rule_date is not None and rule_date != selected_date)):
+            return None, "SCOPE_MISMATCH", "提案目标年月或参考日期与本轮规则选集不一致。"
+        target_period, rule_date = selected_period, selected_date
     if len(authorized_periods) > 1 and (target_period is None or not rule_date):
         return None, "AMBIGUOUS", "请分别明确规则参考日期与唯一的发票目标年月。"
     if target_period is None and len(authorized_periods) == 1:
@@ -157,26 +165,45 @@ def plan_invoice_change(agent, source_request, proposal, selection, *, authorize
     if rule_date:
         day = date.fromisoformat(rule_date)
         rule_period = (day.year, day.month)
-        if rule_period not in (literal_periods or authorized_periods) or source != "query_business_sql":
-            return None, "SCOPE_MISMATCH", "请使用本轮已核验的参考日期和目标发票 SQL 清单。"
+        if rule_selection and len(authorized_periods) > 1 and (
+                not scope["reference_rule_screening"] or rule_period == target_period):
+            return None, "AMBIGUOUS", "跨月选集须分别使用可信参考日期和发票目标账期。"
+        trusted_periods = authorized_periods if rule_selection else (literal_periods or authorized_periods)
+        if rule_period not in trusted_periods or not collection:
+            return None, "SCOPE_MISMATCH", "请使用本轮已核验的规则日期和目标发票清单。"
         matches = []
         for name, outcome in read_results:
             evidence = outcome.get("evidence", {})
             rule_scope = evidence.get("scope", {})
-            if (name == "get_applicable_rules" and outcome["status"] == "SUCCESS"
-                    and evidence.get("source") == "current_sqlite"
-                    and rule_scope.get("company_id") == company and rule_scope.get("rule_type") == "purpose"
-                    and rule_scope.get("business_date") == rule_date and outcome["data"] == evidence.get("rule")
-                    and outcome["data"] not in matches):
-                matches.append(outcome["data"])
+            if (outcome["status"] != "SUCCESS" or evidence.get("source") != "current_sqlite"
+                    or rule_scope.get("company_id") != company):
+                continue
+            data = outcome["data"]
+            if rule_selection:
+                if (name != "check_missing_purpose" or data.get("selection_id") != proposal["selection_id"]
+                        or (data["target_year"], data["target_month"]) != target_period
+                        or data["rule_business_date"] != rule_date):
+                    continue
+                decision = data["rule"]
+            else:
+                if (name != "get_applicable_rules" or rule_scope.get("rule_type") != "purpose"
+                        or rule_scope.get("business_date") != rule_date):
+                    continue
+                decision = data
+            if decision == evidence.get("rule") and decision["rule_type"] == "purpose" and decision not in matches:
+                matches.append(decision)
         if len(matches) != 1:
             return None, "SCOPE_MISMATCH", "当前轮没有唯一匹配的企业用途规则证据，请核对参考日期。"
         rule, = matches
         subset_filters, edit_source = _rule_subset_filters(source_request, proposal["new_value"])
+        if rule_selection:
+            criteria = source_request.replace(proposal["new_value"], "", 1) if proposal["new_value"] else source_request
+            if named or subset_filters or any(label in criteria for label in ("销售方", "销方", "备注", "项目", "金额", "价税", "开票日期")):
+                return None, "AMBIGUOUS", "规则全集工具不应用附加筛选，请使用含这些条件的 SQL 选集。"
         if len(subset_filters) > 1 and "或" in source_request:
             return None, "AMBIGUOUS", "附加筛选包含多个备选条件，请拆分或明确各条件的适用范围。"
         # The proposal flag describes intent. It cannot authorize an unexplained subset.
-        cohort = not (named or subset_filters)
+        cohort = rule_selection or not (named or subset_filters)
 
     if not invoice_change_evidence(edit_source, proposal["field"], proposal["new_value"],
                                    rule_field="purpose" if rule else None):
@@ -227,7 +254,8 @@ def plan_invoice_change(agent, source_request, proposal, selection, *, authorize
     if rule:
         request["rule_reference"] = {"business_date": rule_date, "rule_id": rule["rule_id"],
                                      "version": rule["version"], "params": rule["params"], "cohort": cohort,
-                                     "subset_filters": subset_filters}
+                                     "subset_filters": subset_filters,
+                                     "screening": not rule_selection or scope["reference_rule_screening"]}
     return {**request, "company_id": company, "year": year, "month": month,
             "invoice_nos": tuple(sorted(invoice_nos)), "excluded": tuple(sorted(excluded)),
             "source_request": source_request, "actor": agent.user_id,
@@ -279,10 +307,12 @@ def run_invoice_batch(agent, message, request, *, approve_batch, approve_item, c
     scope = (f"企业　{company} · {period}\n字段　{field_label}\n"
              f"覆盖提示　将替换 {overwrites} 张发票已填写的{field_label}。")
     if rule_reference:
-        scope += (f"\n参考规则　{rule_reference['business_date']} · "
+        label = "参考规则" if rule_reference["screening"] else "适用规则"
+        scope += (f"\n{label}　{rule_reference['business_date']} · "
                   f"{rule_reference['rule_id']} v{rule_reference['version']}"
-                  f"\n发票目标账期　{period}"
-                  "\n按指定参考月份规则筛选目标月份发票，不代表目标月份正式合规认定。")
+                  f"\n发票目标账期　{period}")
+        if rule_reference["screening"]:
+            scope += "\n按指定参考月份规则筛选目标月份发票，不代表目标月份正式合规认定。"
         if not rule_reference["cohort"]:
             scope += "\n仅确认以下 SQL 清单；程序未核验附加筛选条件的全集。"
     scope += "\n原始要求　" + message

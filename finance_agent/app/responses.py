@@ -318,7 +318,8 @@ def scope_key(evidence):
     rule = evidence.get("rule") or {}
     period = (scope["year"], scope.get("month")) if "year" in scope else scope.get("business_date")
     return (scope.get("company_id"), period, evidence.get("source"),
-            rule.get("rule_id") or rule.get("id"), rule.get("version"), rule.get("name"), evidence.get("rule_status"))
+            rule.get("rule_id") or rule.get("id"), rule.get("version"), rule.get("name"), evidence.get("rule_status"),
+            scope.get("rule_business_date"))
 
 
 def render_scope(evidence, *, conversational=False):
@@ -337,6 +338,9 @@ def render_scope(evidence, *, conversational=False):
         period = scope.get("business_date","未按年月限定")
     rule = evidence.get("rule")
     rule_text = f"{rule.get('rule_id',rule.get('id',''))} {rule['name']} v{rule['version']}" if rule else evidence.get("rule_status","不适用（无财税规则判定）")
+    if evidence.get("reference_rule_screening"):
+        return (f"企业 {company} · 目标账期 {period} · 参考日期 {scope['rule_business_date']} · {rule_text}。"
+                "按参考规则重新筛选，不代表目标月份正式合规认定。")
     if conversational:
         heading = f"企业 {company}" if "company_id" in scope else ""
         if "year" in scope and "month" in scope:
@@ -385,7 +389,7 @@ def verified_task_progress(results):
             reads.extend((task, evidence["scope"]) for task in outcome["data"])
         elif name == "manage_task" and "task" in outcome["data"]:
             reads.append((outcome["data"]["task"], evidence["scope"]))
-        elif name == "check_missing_purpose":
+        elif name == "check_missing_purpose" and not evidence.get("reference_rule_screening"):
             checks.append(outcome)
     if len(checks) != 1:
         return None
@@ -417,7 +421,8 @@ def render_task_closure(data):
 
 
 def needs_progress_evidence(results):
-    return (any(name == "check_missing_purpose" for name, _ in results)
+    return (any(name == "check_missing_purpose" and not outcome.get("evidence", {}).get("reference_rule_screening")
+                for name, outcome in results)
             and any(outcome["status"] in {"SUCCESS", "NO_DATA"} and
                     (name == "list_tasks" or (name == "manage_task" and
                      outcome.get("evidence", {}).get("operation", {}).get("action") in {None, "show"}))
@@ -441,7 +446,7 @@ def render_task_scope_negotiation(stopped, results):
                for name, outcome in results):
             parts.append("本轮年度用途空值查询已完成。")
         parts.append("全年空值只说明用途字段未填写，不能判定全年用途不合规。")
-    parts.append("当前仅支持2026年9月用途合规检查。本轮尚未创建待办。")
+    parts.append("用途待办仅支持2026年9月。本轮尚未创建待办。")
     alternative = guidance.get("alternative_scope")
     if alternative:
         counts = {outcome["data"]["count"] for name, outcome in results
@@ -681,8 +686,12 @@ def render_tool_failure(status, tool=None, outcome=None):
         return outcome["error"] + "。"
     if status == "CONFLICT" and tool == "manage_task" and ((outcome or {}).get("data") or {}).get("existing_task_id"):
         return "该企业已有未完成待办，本次未创建。可打开待办列表查看或继续原待办。"
-    if status == "INVALID_ARGUMENTS" and tool == "check_missing_purpose":
-        return "当前用途合规检查仅支持2026年9月。本轮未完成检查；请明确企业并选择该月，或改查指定年度的用途字段空值。空值查询不代表合规判断。"
+    if tool == "check_missing_purpose" and status in {"INVALID_ARGUMENTS", "NO_APPLICABLE_RULE", "RULE_CONFLICT"}:
+        return {
+            "INVALID_ARGUMENTS": "用途缺项查询参数不适用，请核对企业、目标年月和参考规则日期。",
+            "NO_APPLICABLE_RULE": "指定日期没有适用的用途规则，无法判定缺项。",
+            "RULE_CONFLICT": "指定日期无法确定唯一有效的用途规则，本轮未判定缺项。",
+        }[status]
     return {
         "DENIED": "当前账号没有执行这项操作的权限，已停止。请使用有相应权限的账号。",
         "SCOPE_MISMATCH": "查询参数与您确认的范围不一致，已停止。请明确企业、年份和月份，或明确完整年度后重试。",

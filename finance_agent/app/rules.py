@@ -164,7 +164,7 @@ OFFICIAL_NOTES = {
         "不根据金额、日期、交易方认定某张发票已经付款。",
     ),
     "purpose": (
-        "来源：官方业务规则1.1.0；初赛仅检查2026-09，不恢复8月历史用途规则。",
+        "来源：官方业务规则1.1.0；待办账期为2026-09，已停用的历史用途规则不恢复。",
         "以本RuleDecision的mode/threshold_cents执行，等于门槛也必填；空白字符为未填，备注不能替代。",
         "不从销售方或票面项目推测用途。修改仅限用户明确要求的用途/备注，须授权、确认、提交后回读。",
         "已停用版本不作当前依据；不同企业不能混用规则。",
@@ -201,11 +201,13 @@ def missing_required_purpose(params, invoice):
     return required and not (invoice["purpose"] or "").strip()
 
 
-def check_missing_purpose(connection, user_id, company_id, year, month):
-    """仅检查初赛2026-09，使用同一个RuleDecision判定与引用。"""
-    if (year, month) != (2026, 9):
-        raise RuleError("初赛仅支持2026年9月用途检查")
-    decision = resolve_rule(connection, user_id, company_id, "purpose", "2026-09-01")
+def check_missing_purpose(connection, user_id, company_id, year, month, rule_business_date=None):
+    """Read the full target month and apply the rule effective on the chosen date."""
+    target_start = date(year, month, 1).isoformat()
+    reference_date = rule_business_date if rule_business_date is not None else target_start
+    decision = resolve_rule(connection, user_id, company_id, "purpose", reference_date)
     invoices = list_invoices(connection, user_id, company_id, year, month)
     missing = [invoice for invoice in invoices if missing_required_purpose(decision.params, invoice)]
-    return {"missing_invoices": missing, "count": len(missing), "rule": asdict(decision)}
+    return {"missing_invoices": missing, "count": len(missing), "rule": asdict(decision),
+            "rule_business_date": reference_date, "target_year": year, "target_month": month,
+            "reference_rule_screening": rule_business_date is not None}

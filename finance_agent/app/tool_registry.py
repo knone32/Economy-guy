@@ -26,6 +26,7 @@ MONTH = {**YEAR, "month": "integer"}
 DIRECTORY_SORT_FIELDS = {"sort_by": ("date", "amount"), "sort_order": ("asc", "desc")}
 OPTIONAL_FIELDS = {
     "list_invoice_directory": DIRECTORY_SORT_FIELDS.keys(),
+    "check_missing_purpose": {"rule_business_date"},
     "propose_invoice_changes": {"rule_business_date", "target_year", "target_month", "rule_cohort"},
 }
 REGISTRY = {
@@ -39,7 +40,7 @@ REGISTRY = {
     "bank_expense_total": (finance.bank_expense_total, MONTH),
     "summary": (None, MONTH),
     "get_finance_summary": (finance.get_finance_summary, MONTH),
-    "check_missing_purpose": (check_missing_purpose, MONTH),
+    "check_missing_purpose": (check_missing_purpose, {**MONTH, "rule_business_date": "string"}),
     "count_invoice_fields": (None, {**MONTH, "selector": "string"}),
     "get_annual_finance_summary": (finance.get_annual_finance_summary, YEAR),
     "list_annual_blank_purpose": (queries.list_annual_blank_purpose, {**YEAR, "page": "integer"}),
@@ -81,7 +82,7 @@ DESCRIPTIONS = {
     "get_invoice":"企业编号和发票号联合定位当前发票，不猜测模糊指代。",
     "list_bank_transactions":"查询指定企业年月的银行流水，只读，不推断发票已付款。",
     "count_invoice_fields":"按明确企业及月份统计发票数量。可统计有备注、空备注、空用途或按有效规则必填用途缺失。普通空值与规则缺项是不同条件。",
-    "check_missing_purpose":"用户问哪些发票按规则必填用途但仍缺失时，使用本工具。采用可信只读账期或当前明确范围，按有效规则返回实际缺项和发票编号；不要改为财务汇总。备注不代替用途。",
+    "check_missing_purpose":"读取 year/month 目标月全部发票，返回适用用途规则下的完整缺项清单。可选 rule_business_date 为可信参考规则日期，跨月时按参考规则重新筛选，不是目标月正式合规认定。不处理销售方、备注、金额等独立附加条件。",
     "get_applicable_rules":"按企业、业务日期和规则类型获取唯一启用依据。R001对应amount，R002/R003对应purpose，R004对应bank。查询旧版是否仍适用也使用其规则类型，不用金额汇总规则替代用途门槛规则；不提供管理权限。",
     "prepare_invoice_update":"只生成用途/备注草稿，展示旧值，不保存；必须等待可信CLI最终确认。",
     "propose_invoice_changes":"对本轮可信 selection_id 提出一个字段的发票修改候选。新值必须是用户原话。整批确认用 batch，逐张或未指定用 item。excluded_invoice_ids 保留用户指定的全部排除编号，SQL 选取时也要排除。候选必须经可信界面授权，不能提交。",
@@ -107,7 +108,7 @@ PARAMETERS = {"sql":"单条 SELECT 或只读 WITH 查询。严格遵守运行时
               "source":"近期发票的可信来源，不能自行填企业、发票号或审计编号。",
               "selection_id":"本轮真实查询结果返回的 selection_id，不能猜测或复用历史引用。",
               "mode":"item 逐张确认，batch 整批确认。",
-              "rule_business_date":"可选。与本轮实际用途规则结果完全一致的 YYYY-MM-DD 参考日期。",
+              "rule_business_date":"可选。YYYY-MM-DD 参考规则日期，须在本轮可信范围内。提案时应与选集所用参考日期一致。",
               "target_year":"可选。要修改的发票年份，与 target_month 一起提供。",
               "target_month":"可选。要修改的发票月份，不能填参考规则月份代替目标月份。",
               "rule_cohort":"可选。只有用户要处理规则定义的完整缺项集合，且无其他独立筛选时才传 true。",
@@ -580,6 +581,16 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
                 return task_request_error
             missing=validate_scope(provenance,user_id,name,actual_scope)
             if missing:return tool_result(**missing)
+            if name == "check_missing_purpose" and "rule_business_date" in args:
+                reference = date.fromisoformat(args["rule_business_date"])
+                if reference.isoformat() != args["rule_business_date"]:
+                    raise ValueError("参考规则日期必须为 YYYY-MM-DD")
+                ref_scope = {"company_id": args["company_id"], "year": reference.year, "month": reference.month}
+                if expected_scope and scope_mismatch(expected_scope, ref_scope):
+                    return tool_result("SCOPE_MISMATCH", error="参考规则日期不在本轮可信账期内")
+                missing = validate_scope(provenance, user_id, "get_applicable_rules", ref_scope)
+                if missing:
+                    return tool_result(**missing)
             if execution:
                 rejection=execution.guard(name,args)
                 if rejection:
@@ -655,7 +666,8 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
                 return tool_result("SUCCESS", {"selector": selector, "count": count}, evidence)
             if name == "check_missing_purpose":
                 data = check_missing_purpose(connection, user_id, **args)
-                return tool_result("SUCCESS", data, {"rule":data["rule"], "source":"current_sqlite", "scope":args})
+                return tool_result("SUCCESS", data, {"rule": data["rule"], "source": "current_sqlite", "scope": args,
+                                                     "reference_rule_screening": data["reference_rule_screening"]})
             if name in ANNUAL:
                 data = function(connection, user_id, **args)
                 evidence = {"source": "current_sqlite", "scope": {"company_id": args["company_id"], "year": args["year"]}}
