@@ -692,6 +692,20 @@ def render_invoice_sql_coverage(coverage, *, filtered=False):
     return detail
 
 
+def render_summary_basis(rule):
+    rule = rule or {}
+    rule_id = rule.get("rule_id") or rule.get("id")
+    version = rule.get("version")
+    if not (rule_id and version):
+        return None
+    if (rule_id, version) == ("R001", "1.0"):
+        return ("统计依据为 R001 v1.0：发票按开票日期汇总价税合计，银行流水按交易日期"
+                "分别汇总收入和支出，两者不抵销。")
+    if rule.get("content"):
+        return f"统计依据为 {rule_id} v{version}：{rule['content']}"
+    return None
+
+
 def render_query_conclusion(results, *, invoice_coverage=None):
     """Summarize verified reads without copying the detail pane or guessing coverage."""
     lines = []
@@ -965,6 +979,8 @@ def render_clarification(value):
 
 def render_tool_failure(status, tool=None, outcome=None):
     """User-facing guidance; diagnostic codes and provider details stay in Trace."""
+    if status == "DENIED" and (outcome or {}).get("evidence", {}).get("source") == "tool_dispatch":
+        return "模型请求了本轮不可用的操作，该操作未执行。"
     if tool == "query_business_sql" and status in {"SQL_SCOPE_LIMIT", "SQL_QUERY_LIMIT", "SQL_REJECTED", "SCOPE_MISMATCH"}:
         return outcome["error"] + "。"
     if status == "CONFLICT" and tool == "manage_task" and ((outcome or {}).get("data") or {}).get("existing_task_id"):

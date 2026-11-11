@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 from app.agent import Agent, handle_tool, scripted_model, redact
 from app.importer import initialize_database
 from tests.helpers import DatabaseTestCaseMixin, EXCEL
@@ -102,10 +103,15 @@ class AgentTests(DatabaseTestCaseMixin, unittest.TestCase):
         self.assertEqual(agent.pending_intent["request"], request)
         self.assertEqual(agent.pending_intent["scope"]["company_id"], ["C001"])
 
-        agent.model = self.agent([call()]).model
+        agent.model = scripted_model([
+            {"role": "assistant", "tool_calls": [call()]},
+            {"role": "assistant", "content": json.dumps({"kind": "explanation", "text": "[[result]]"})},
+        ])
         answer = agent.ask("2026年9月")
         self.assertIn(request, agent.last_user_request)
         self.assert_summary_result(agent, answer)
+        self.assertIn("交易日期", answer)
+        self.assertEqual(agent.last_response["fulfillment"]["status"], "VERIFIED_GOALS")
 
     def assert_summary_result(self, agent, answer):
         (name, result), = agent.last_response["tool_results"]
@@ -123,7 +129,7 @@ class AgentTests(DatabaseTestCaseMixin, unittest.TestCase):
         denied = Agent("U002", self.db_path, scripted_model([
             {"role": "assistant", "tool_calls": [call(arguments='{"company_id":"C002","year":2026,"month":9}')]}
         ]), mode="mock")
-        denied.ask("查询乙企业2026年9月的发票价税合计、银行收入和支出")
+        self.assertIn("当前账号没有权限", denied.ask("查询乙企业2026年9月的发票价税合计、银行收入和支出"))
         self.assertEqual(denied.last_response["execution"]["stop_reason"], "DENIED")
         self.assertEqual(denied.last_response["tool_results"][0][1]["status"], "DENIED")
         undated = Agent("U002", self.db_path, scripted_model([]), mode="mock")
@@ -131,6 +137,56 @@ class AgentTests(DatabaseTestCaseMixin, unittest.TestCase):
         self.assertEqual(undated.last_response["execution"]["stop_reason"], "DENIED")
         self.assertEqual(undated.last_response["execution"]["model_requests"], 0)
         self.assertEqual(undated.last_response["tool_results"], ())
+
+    def test_summary_explanation_keeps_current_amounts_and_rule(self):
+        for extra, expected in (("", "VERIFIED_GOALS"), ("，再列出银行流水明细", "PARTIAL_RESULT")):
+            with self.subTest(extra=extra):
+                agent = Agent("U001", self.db_path, scripted_model([
+                    {"role": "assistant", "tool_calls": [call()]},
+                    {"role": "assistant", "content": json.dumps({
+                        "kind": "explanation", "text": "[[result]]\n[[boundary]]",
+                    })},
+                ]), mode="mock")
+                answer = agent.ask(
+                    "查询甲企业的发票价税合计、银行收入和支出，并且说明统计依据" + extra,
+                    read_workspace=("C001", 2026, 9),
+                )
+                self.assert_summary_result(agent, answer)
+                response = agent.last_response
+                self.assertEqual(response["chat_notice"], answer)
+                self.assertEqual(response["fulfillment"]["status"], expected)
+                self.assertEqual(response["execution"]["model_requests"], 2)
+                self.assertIn("交易日期", answer)
+                self.assertNotIn("[[", answer)
+                self.assertEqual("其他要求尚未核实" in answer, bool(extra))
+
+    def test_summary_explanation_without_rule_keeps_the_amounts(self):
+        def without_rule(*args, **kwargs):
+            result = handle_tool(*args, **kwargs)
+            result["evidence"].pop("rule")
+            return result
+
+        agent = Agent("U001", self.db_path, scripted_model([
+            {"role": "assistant", "tool_calls": [call()]},
+            {"role": "assistant", "content": json.dumps({"kind": "explanation", "text": "[[result]]"})},
+        ]), mode="mock")
+        with patch("app.agent.handle_tool", side_effect=without_rule):
+            answer = agent.ask("查询甲企业2026年9月的发票价税合计、银行收入和支出，并且说明统计依据")
+        self.assertEqual(agent.last_response["chat_notice"], answer)
+        self.assertEqual(agent.last_response["fulfillment"]["status"], "PARTIAL_RESULT")
+        for amount in ("9622.06", "13000.50", "7180.74"):
+            self.assertIn(amount, answer)
+        self.assertIn("统计依据尚未核实", answer)
+        self.assertNotIn("R001", answer)
+
+    def test_tool_dispatch_denial_does_not_report_account_acl(self):
+        agent = self.agent([call("clarification", '{"missing_fields":["year","month"]}')])
+        agent.ask("查询甲企业2026年9月的发票价税合计、银行收入和支出")
+        response = agent.last_response
+        self.assertEqual(response["execution"]["stop_reason"], "DENIED")
+        self.assertEqual(response["tool_results"][0][1]["status"], "DENIED")
+        self.assertIn("本轮不可用的操作", response["chat_notice"])
+        self.assertNotIn("账号没有权限", response["chat_notice"])
 
     def test_invalid_invoice_final_uses_exact_detail_coverage(self):
         for prompt, complete in (

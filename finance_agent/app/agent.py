@@ -15,7 +15,7 @@ from .business_sql import BusinessSQL, BusinessSQLError, TABLES as SQL_TABLES
 from .tui_intent import invoice_intent_source, invoice_supplement
 from .invoice_batch import plan_invoice_change
 from .responses import (DIRECTORY_INLINE_LIMIT, directory_complete, directory_count_only, directory_display_pages, explicit_scope,
-                        parse_final, render_information, render_query_conclusion, render_clarification,
+                        parse_final, render_information, render_query_conclusion, render_clarification, render_summary_basis,
                         render_explanation_evidence, render_grounded_explanation, render_invoice_comparison, render_reference_error, render_stopped,
                         render_task_scope_negotiation, render_tool_failure, QUERY_GOALS, query_goal,
                         verified_query_goal, render_goal_coverage, render_bank_income_comparison, render_hypothetical_purpose_rules, scope_mismatch)
@@ -663,6 +663,12 @@ class Agent:
             r"(?:(?:\d{4}\s*(?:年(?:\s*的)?(?:\s*(?:\d{1,2}|[一二三四五六七八九十]{1,2})\s*月)?"
             r"|[-/]\s*\d{1,2})|这个月|本月|当月)\s*(?:的\s*)?)?"
         )
+        summary_request = (read_only and not (reference or deferred or corrected or invoice_write)
+                           and query_goal(query_text) == "finance" and re.fullmatch(
+                               read_subject + r"(?:财务汇总|综合金额|发票(?:价税合计|总额|金额)?\s*"
+                               r"(?:[、，,和与及]\s*)?银行(?:收支(?:汇总)?|收入\s*(?:和|与|及|、|，|,)\s*(?:银行)?支出))"
+                               r"(?P<basis>\s*[，,]?\s*(?:并且?|同时)?\s*(?:说明|注明)(?:统计)?依据)?\s*[。！？!?]?\s*",
+                               pending_from or query_text, flags=re.IGNORECASE))
         directory_request = single_read and re.fullmatch(
             read_subject + r"(?:(?:所有|全部|全量|完整)\s*的?\s*)?发票(?:的)?(?:完整目录|全部目录|目录|清单|有哪些)?"
             r"(?:\s*[，,]?\s*按(?:照)?(?:开票)?(金额|日期)(?:从([小低早大高晚])到[小低早大高晚]|(升序|降序))?"
@@ -823,7 +829,8 @@ class Agent:
         execution.can_continue = lambda steps:remaining_work_allowed(self.db_path,self.user_id,steps,self.update_session,management_intent,
             self.allowed_tools & {tool["function"]["name"] for tool in turn_tools},
             proposals=self.management_proposals if management is None else None)
-        def finish(text, store=True, category="operation_result", *, chat_notice=None, missing_fields=()):
+        def finish(text, store=True, category="operation_result", *, chat_notice=None, missing_fields=(),
+                   summary_verified=False, explanation_partial=False):
             page_issue = page_read = None
             if (simple_directory and full_directory and not execution.schedule
                     and execution.stop_reason in {None, "NO_PROGRESS", "COMPLETED", "EVIDENCE_RETURNED",
@@ -979,10 +986,10 @@ class Agent:
                                if "displayed_set_complete" in outcome["evidence"]), None)
             response = {"source": "runtime_output", "category": category, "operation_receipt": self.write_receipt,
                         "execution": execution.snapshot(), "query_evidence_count": len(facts), "write_expected": write_expected,
-                        "single_query_verified": bool(directory_verified or metric_notice or invoice_sql_verified
+                         "single_query_verified": bool(summary_verified or directory_verified or metric_notice or invoice_sql_verified
                                                       or (stop == "EVIDENCE_RETURNED" and invoice_detail_verified())
                                                       or (referenced and referenced["displayed_set_complete"])),
-                        "single_query_partial": bool((simple_directory and directory_results and not directory_verified)
+                         "single_query_partial": bool(explanation_partial or (simple_directory and directory_results and not directory_verified)
                                                      or (invoice_sql and invoice_sql[1]["data"].get(invoice_coverage)
                                                          and not invoice_sql_verified)
                                                      or (referenced and not referenced["displayed_set_complete"]))}
@@ -1193,14 +1200,8 @@ class Agent:
                           category="clarification", missing_fields=fields)
 
         missing_dates = (sql_context or {}).get("missing_fields")
-        if (single_read and not (has_dates or invoice_write) and len(companies) == 1
-                and missing_dates and set(missing_dates) <= {"year", "month"}
-                and query_goal(query_text) == "finance"
-                and re.fullmatch(
-                    read_subject + r"(?:财务汇总|综合金额|发票(?:价税合计|总额|金额)?\s*"
-                    r"(?:[、，,和与及]\s*)?银行(?:收支(?:汇总)?|收入\s*(?:和|与|及|、|，|,)\s*(?:银行)?支出))"
-                    r"(?:\s*[，,]?\s*(?:并且?|同时)?\s*(?:说明|注明)(?:统计)?依据)?\s*[。！？!?]?\s*",
-                    query_text, flags=re.IGNORECASE)):
+        if (single_read and summary_request and not has_dates and len(companies) == 1
+                and missing_dates and set(missing_dates) <= {"year", "month"}):
             try:
                 with closing(open_existing(self.db_path, readonly=True)) as db:
                     allowed = check_permission(db, self.user_id, companies[0], "read").allowed
@@ -1368,6 +1369,26 @@ class Agent:
                     self.messages.pop()  # Keep the untrusted final prose in Trace only.
                     notice = render_query_conclusion(read_results)
                     return finish(notice, store=False, category="database_query", chat_notice=notice)
+                wants_explanation = natural is not None and natural["kind"] == "explanation"
+                if (read_only and single_scope and natural is not None
+                        and (wants_explanation or (natural["kind"] == "information"
+                                                  and summary_request and summary_request["basis"]))):
+                    scoped_summaries = [(name, outcome) for name, outcome in single_scope_results()
+                                        if name in {"get_finance_summary", "get_annual_finance_summary"}]
+                    if len(scoped_summaries) == 1 and (summary_request or not facts):
+                        summary = scoped_summaries[0][1]
+                        basis = render_summary_basis(summary["evidence"].get("rule"))
+                        notice = render_query_conclusion(scoped_summaries) + "\n" + (
+                            basis or "这三项金额已核验，统计依据尚未核实。")
+                        complete = bool(summary_request and basis and not execution.schedule
+                                        and all(outcome["status"] in {"SUCCESS", "NO_DATA"} for _, outcome in read_results))
+                        if not summary_request or execution.schedule:
+                            notice += "\n其他要求尚未核实。"
+                        self.messages.pop()
+                        if not complete:
+                            execution.stop("EVIDENCE_RETURNED")
+                        return finish(notice, store=False, category="database_query", chat_notice=notice,
+                                      summary_verified=complete, explanation_partial=not complete)
                 if (sql_analysis and natural is not None and natural["kind"] == "information"
                         and read_results and all(
                             name in SQL_ANSWER_TOOLS and outcome["status"] in {"SUCCESS", "NO_DATA"}
@@ -1376,7 +1397,6 @@ class Agent:
                     notice = natural["text"]
                     return finish(notice + "\n\n" + render_information(read_results), store=False,
                                   category="database_query", chat_notice=notice)
-                wants_explanation = natural is not None and natural["kind"] == "explanation"
                 if wants_explanation and read_only:
                     explanation = render_grounded_explanation(natural["text"], facts, text)
                     if explanation:
@@ -1477,7 +1497,8 @@ class Agent:
                 fn = call["function"]
                 permitted = self.allowed_tools & {t["function"]["name"] for t in turn_tools}
                 if isinstance(fn.get("name"), str) and fn["name"] not in permitted:
-                    result = tool_result("DENIED", error="工具未授权给当前Agent")
+                    result = tool_result("DENIED", evidence={"source": "tool_dispatch"},
+                                         error="工具未授权给当前Agent")
                     stop = True
                 elif stop:
                     result = tool_result("DENIED", error="本轮执行已停止，不再授权执行后续调用")
