@@ -34,6 +34,51 @@ _QUERY = re.compile(r"\s*(?:SELECT|WITH)\b", re.I)
 _KEY_QUERY = re.compile(r"\s*SELECT\s+company_id\s*,\s*invoice_no\s+FROM\s+invoices(?=\s|;|$)", re.I)
 _PARTIAL_QUERY = re.compile(r"\b(?:LIMIT|OFFSET|GROUP|HAVING|WINDOW|UNION|INTERSECT|EXCEPT)\b", re.I)
 _AGGREGATES = {"avg", "count", "min", "max", "sum", "dense_rank", "rank", "row_number"}
+_INVOICE_SELECT = re.compile(r"\s*SELECT\s+([\w.,*\s]+?)\s+FROM\s+invoices(?=\s|;|$)"
+                             r"(?P<tail>.*)", re.I | re.S)
+_SQL_PAGING = re.compile(r"'(?:[^']|'')*'|--[^\n]*|/\*.*?\*/|\b(LIMIT|OFFSET)\b", re.I | re.S)
+
+
+def _invoice_projection(sql, columns):
+    """Map original invoice fields to result indexes for a direct projection."""
+    match = _INVOICE_SELECT.fullmatch(sql)
+    if (not match or not re.match(r"\s*(?:WHERE\b|ORDER\s+BY\b|LIMIT\b|;?\s*$)", match["tail"], re.I)
+            or re.search(r"\b(?:UNION|INTERSECT|EXCEPT)\b", match["tail"], re.I)):
+        return {}
+    fields = tuple(column.split()[0] for column in TABLES["invoices"].split(", "))
+    projection = match[1].strip()
+    expressions = fields if projection.lower() in {"*", "invoices.*"} else projection.split(",")
+    if len(expressions) != len(columns):
+        return {}
+    mapping = {}
+    for i, expression in enumerate(expressions):
+        field = re.fullmatch(r"(?:invoices\.)?(\w+)(?:\s+(?:AS\s+)?\w+)?", expression.strip(), re.I)
+        if not field or field[1].lower() not in fields or field[1].lower() in mapping:
+            return {}
+        mapping[field[1].lower()] = i
+    return mapping if {"invoice_no", "invoice_date", "amount_cents"} <= mapping.keys() else {}
+
+
+def _invoice_coverage(db, scope, data, projection):
+    """Compare displayed identities to the same authorized snapshot, including filtered reads."""
+    if "company_id" in projection:
+        indexes = (projection["company_id"], projection["invoice_no"])
+        sql = "SELECT company_id, invoice_no FROM invoices"
+    elif len(scope["company_ids"]) == 1:
+        indexes = (projection["invoice_no"],)
+        sql = "SELECT invoice_no FROM invoices"
+    else:
+        return None
+    with closing(db.execute(sql)) as cursor:
+        expected = set(cursor)
+    shown = {tuple(row[i] for i in indexes) for row in data["rows"]}
+    if not shown <= expected or len(shown) != len(data["rows"]):
+        return None
+    return {"total": len(expected), "shown": len(shown),
+            "complete": shown == expected and not data["truncated"],
+            "sql_paginated": any(match[1] for match in _SQL_PAGING.finditer(data["sql"])),
+            "display_truncated": data["truncated"]}
+
 
 
 class BusinessSQLError(ValueError):
@@ -211,6 +256,13 @@ class BusinessSQL:
             db.set_progress_handler(None, 0)
         data = {"sql": sql, "columns": columns, "rows": rows, "row_count": len(rows),
                 "truncated": truncated, "derived": derived}
+        projection = _invoice_projection(sql, columns)
+        if projection:
+            data["invoice_projection"] = projection
+            if selects == 1 and reads == {"invoices"} and not functions & _AGGREGATES:
+                coverage = _invoice_coverage(db, scope, data, projection)
+                if coverage is not None:
+                    data["invoice_coverage"] = coverage
         # The selectable form projects original keys directly, without aliases,
         # aggregation, subqueries or paging. General SQL still returns read results.
         keys = ()

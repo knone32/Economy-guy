@@ -1168,10 +1168,11 @@ class AgentWorkspace(ConversationUI, App):
             return ("发票详情", AgentWorkspace.invoice_text(data))
         if tool == "query_business_sql":
             lines = sql_display_rows(data)
-            title = f"业务查询 · 已显示 {len(lines)} 行"
+            invoice = bool(data.get("invoice_projection"))
+            title = f"发票明细 · 已显示 {len(lines)} 张" if invoice else f"业务查询 · 已显示 {len(lines)} 行"
             if data["truncated"]:
-                lines.append("查询结果已截断，显示行数不代表总数。")
-            return title, "\n".join(lines) or "没有符合条件的记录。"
+                lines.append("查询结果已截断，显示数量不代表总数。")
+            return title, ("\n\n" if invoice else "\n").join(lines) or "没有符合条件的记录。"
         if tool == "count_invoice_fields":
             return ("发票字段统计", render_invoice_field_count(data))
         if tool == "list_annual_blank_purpose":

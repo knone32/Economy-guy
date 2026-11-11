@@ -3,7 +3,7 @@ import json
 import re
 from decimal import Decimal, InvalidOperation
 
-from .queries import INVOICE_FIELD_LABELS
+from .queries import INVOICE_FIELD_LABELS, _money
 
 
 def parse_final(content):
@@ -599,6 +599,20 @@ _SQL_LABELS = {
 
 
 def sql_display_rows(data):
+    projection = data.get("invoice_projection")
+    if projection:
+        lines = []
+        for row in data["rows"]:
+            invoice = {field: row[index] for field, index in projection.items()}
+            header = [invoice["invoice_no"], invoice["invoice_date"],
+                      f"¥{Decimal(_money(invoice['amount_cents'])):,f}"]
+            if "company_id" in invoice:
+                header.insert(0, invoice["company_id"])
+            party = [invoice[field] or "（空）" for field in ("seller_name", "item_name") if field in invoice]
+            notes = [label + "：" + (invoice[field] or "未填写")
+                     for field, label in (("purpose", "用途"), ("remark", "备注")) if field in invoice]
+            lines.append("\n".join(filter(None, (" · ".join(header), " / ".join(party), " · ".join(notes)))))
+        return lines
     match = _SQL_SOURCE.fullmatch(data["sql"])
     columns = data["columns"]
     names = list(columns)
@@ -653,7 +667,24 @@ def redundant_directory_count(outcome, directory_totals):
     return count is not None and totals == {count}
 
 
-def render_query_conclusion(results):
+def render_invoice_sql_coverage(coverage):
+    total, shown = coverage["total"], coverage["shown"]
+    if coverage["complete"]:
+        return f"共 {total} 张发票，已展示全部 {shown} 张。" if total else "该范围没有发票。"
+    detail = f"该范围共 {total} 张发票，本次展示 {shown} 张"
+    remaining = total - shown
+    if remaining:
+        detail += f"，还有 {remaining} 张未展示。可按月查询发票目录查看。"
+    else:
+        detail += "，查询覆盖尚未核实。"
+    if coverage["sql_paginated"]:
+        detail += "查询语句限制了返回页。"
+    if coverage["display_truncated"]:
+        detail += "结果达到单次展示上限。"
+    return detail
+
+
+def render_query_conclusion(results, *, invoice_set=False):
     """Summarize verified reads without copying the detail pane or guessing coverage."""
     lines = []
     directories = {}
@@ -712,7 +743,11 @@ def render_query_conclusion(results):
         elif name == "query_business_sql":
             if redundant_directory_count(outcome, directory_totals):
                 continue
-            if outcome["status"] == "NO_DATA":
+            if invoice_set and data.get("invoice_coverage"):
+                detail = render_invoice_sql_coverage(data["invoice_coverage"])
+                if data["row_count"]:
+                    detail += "明细见业务记录。"
+            elif outcome["status"] == "NO_DATA":
                 detail = "本次筛选没有匹配的记录。"
             elif data["truncated"]:
                 detail = f"本次筛选显示了 {data['row_count']} 行，总数尚未核实。"

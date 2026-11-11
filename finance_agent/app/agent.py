@@ -634,6 +634,16 @@ class Agent:
         read_subject = (
             r"\s*(?:请\s*)?(?:(?:帮我)?(?:查询|查看|查一下|查|看看|看一下|只看|列出|找出|显示|给我看)\s*)?"
             r"(?:(?:[甲乙](?:企业|公司)|C\d+)\s*(?:的\s*)?)?"
+        )
+        # Use parsed periods for scope, and match only a plain collection request here.
+        # Qualifiers outside the date phrase leave the business goal unverified.
+        invoice_set = (read_only and not (invoice_write or reference or deferred or corrected)
+                       and len(explicit.get("company_id", ())) == 1 and bool(requested_periods)
+                       and re.fullmatch(
+                           read_subject + r"[\d一二三四五六七八九十年月份的、和与及以至到–—/\-\s]+"
+                           r"(?:所有|全部|全量|完整)\s*(?:的\s*)?发票(?:目录|清单)?\s*[。！？!?]?\s*",
+                           pending_from or query_text, flags=re.IGNORECASE))
+        read_subject += (
             r"(?:(?:\d{4}\s*(?:年(?:\s*的)?(?:\s*(?:\d{1,2}|[一二三四五六七八九十]{1,2})\s*月)?"
             r"|[-/]\s*\d{1,2})|这个月|本月|当月)\s*(?:的\s*)?)?"
         )
@@ -888,6 +898,16 @@ class Agent:
             scoped = single_scope_results() if single_scope and (simple_directory or metric_request) else []
             directory_results = [(name, outcome) for name, outcome in scoped if name == "list_invoice_directory"]
             directory_verified = simple_directory and complete_directory(directory_results)
+            invoice_sql_results = [(name, outcome) for name, outcome in facts
+                                   if invoice_set and name == "query_business_sql"
+                                   and tuple(outcome["evidence"]["scope"].get("company_ids", ())) == tuple(explicit["company_id"])
+                                   and tuple(map(tuple, outcome["evidence"]["scope"].get("periods", ()))) == tuple(requested_periods)]
+            invoice_sql = next(((name, outcome) for name, outcome in invoice_sql_results
+                                if outcome["data"].get("invoice_coverage", {}).get("complete")), None)
+            invoice_sql_verified = invoice_sql is not None
+            if invoice_sql is None:
+                invoice_sql = max(invoice_sql_results, key=lambda item:
+                                  item[1]["data"].get("invoice_coverage", {}).get("shown", -1), default=None)
             metric_notice = None
             if metric_request:
                 metric = metric_request[1]
@@ -916,8 +936,10 @@ class Agent:
                     metric_notice = f"{company}{span}的{label}为 {next(iter(values))} {unit}。"
             response = {"source": "runtime_output", "category": category, "operation_receipt": self.write_receipt,
                         "execution": execution.snapshot(), "query_evidence_count": len(facts), "write_expected": write_expected,
-                        "single_query_verified": bool(directory_verified or metric_notice),
-                        "single_query_partial": bool(simple_directory and directory_results and not directory_verified)}
+                        "single_query_verified": bool(directory_verified or metric_notice or invoice_sql_verified),
+                        "single_query_partial": bool((simple_directory and directory_results and not directory_verified)
+                                                     or (invoice_sql and invoice_sql[1]["data"].get("invoice_coverage")
+                                                         and not invoice_sql_verified))}
             if goal_coverage:
                 response["goal_coverage"] = goal_coverage
             if page_read:
@@ -940,6 +962,12 @@ class Agent:
                     chat_notice += "\n" + issue
                 category = response["category"] = "database_query"
                 text = "\n".join(filter(None, (render_information(directory_results), issue)))
+            elif invoice_sql and stop in read_finish:
+                chat_notice = render_query_conclusion([invoice_sql], invoice_set=True)
+                if not invoice_sql[1]["data"].get("invoice_coverage"):
+                    chat_notice += " 尚未核实是否覆盖该范围的全部发票。"
+                category = response["category"] = "database_query"
+                text = chat_notice
             elif metric_notice and not write_expected and stop in read_finish:
                 if not chat_notice or stop != "ANSWERED":
                     chat_notice = metric_notice
