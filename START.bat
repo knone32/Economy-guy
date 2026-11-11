@@ -2,6 +2,12 @@
 setlocal DisableDelayedExpansion
 
 set "PYTHONUTF8=1"
+set "LIVE_DB="
+if /i "%~1"=="--live" if /i "%~2"=="--db" if "%~3"=="" (
+    echo Missing workbook path. Usage: START.bat --live --db "path to workbook.sqlite3"
+    exit /b 2
+)
+if /i "%~1"=="--live" if /i "%~2"=="--db" set "LIVE_DB=%~f3"
 pushd "%~dp0finance_agent" || goto missing
 if /i "%~1"=="--live" goto live
 set "DEMO_RESET="
@@ -41,8 +47,15 @@ goto finish
 
 :run_live
 call :check_environment || exit /b 1
+echo Workbench source: "%CD%"
+if exist "..\.git" git -C ".." rev-parse HEAD 2>nul
+if defined LIVE_DB echo Workbook: "%LIVE_DB%"
 echo Use a terminal at least 137 columns wide for the two-pane layout.
-"%DEMO_PY%" %DEMO_PY_ARGS% -X utf8 main.py
+if defined LIVE_DB (
+    "%DEMO_PY%" %DEMO_PY_ARGS% -X utf8 main.py --db "%LIVE_DB%"
+) else (
+    "%DEMO_PY%" %DEMO_PY_ARGS% -X utf8 main.py
+)
 if errorlevel 1 goto run_failed
 exit /b 0
 

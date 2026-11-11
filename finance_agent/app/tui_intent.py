@@ -65,6 +65,21 @@ def invoice_intent_source(text):
             and re.search(r"[改填补设写换][^，,。；;\n]{0,2}[为成]\s*\S|改一下|^\s*修改|(?:用途|备注)\s*修改\s*[。！!]?$", text))
 
 
+def literal_single_invoice_edit(text):
+    """Recognize a direct single-invoice assignment for read-only reconciliation."""
+    text = text.strip().rstrip("。！!").strip()
+    match = _EDIT.match(text)
+    if (not match or not match["target"] or not match["verb"] or match["verb"] == "清空"
+            or not re.fullmatch(rf"{_COMPANY}\s*(?:的\s*)?{_INVOICE}\s*(?:发票)?\s*(?:的\s*)?",
+                                match["target"], re.I)
+            or re.search(r"[，,；;。？！!?\n]", text[match.end():])):
+        return None
+    scope = _edit_scope(match, text)
+    if all(len(scope.get(key, ())) == 1 for key in ("company_id", "invoice_no", "field", "new_value")):
+        return scope
+    return None
+
+
 def invoice_supplement(text, missing):
     """A new request is never interpreted as a short literal supplement."""
     value = text.strip().rstrip("。！!").strip()

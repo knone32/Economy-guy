@@ -62,6 +62,31 @@ class WriteReceiptTests(DatabaseTestCaseMixin, unittest.TestCase):
         self.assertTrue(receipt["readback_verified"])
         self.assertEqual(self.current(), "回执测试")
 
+    def test_natural_invoice_edit_reconciles_verified_current_value_without_write(self):
+        agent = self.agent()
+        draft = self.draft(agent)
+        self.assertEqual(agent.commit_update(draft.request_id, draft.fingerprint())["status"], "COMMITTED")
+        replies = [
+            {"role": "assistant", "tool_calls": [{"id": "read", "type": "function",
+             "function": {"name": "get_invoice", "arguments": '{"company_id":"C001","invoice_no":"F002"}'}}]},
+            {"role": "assistant", "content": '{"kind":"information","text":"已核对当前用途。"}'},
+        ]
+        for user, value, expected in (
+            ("U001", "回执测试", "CURRENT_VALUE_MATCHES"),
+            ("U001", "其他用途", "NOT_SUBMITTED"),
+            ("U002", "回执测试", "NOT_SUBMITTED"),
+        ):
+            with self.subTest(user=user, value=value):
+                reader = Agent(user, self.db_path, scripted_model(replies), mode="mock")
+                reader.ask(f"把c001的f002的用途改为{value}")
+                self.assertEqual(reader.write_receipt["status"], expected)
+                self.assertFalse(reader.update_session.drafts)
+                if expected == "CURRENT_VALUE_MATCHES":
+                    self.assertEqual(reader.last_response["fulfillment"]["status"], "VERIFIED_GOALS")
+                    self.assertIn("本轮没有Commit", reader.last_response["chat_notice"])
+        self.assertEqual(self.current(), "回执测试")
+        self.assertEqual(self.connection.execute("SELECT count(*) FROM invoice_audit").fetchone()[0], 1)
+
     def test_failed_commit_receipt_and_rollback(self):
         agent = self.agent()
         draft = self.draft(agent)

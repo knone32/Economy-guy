@@ -69,16 +69,17 @@ class WriteCoordinator:
         return {"status": status, "message": messages.get(status, messages["ERROR"]),
                 "readback_verified": readback_verified, "data": data}
 
-    def assess_current_match(self,results):
+    def assess_current_match(self, results, *, natural_scope=None):
         """只对可信编辑原句的明确字面目标及本轮真实读取做无需变更回执。"""
-        if self.receipt['status']!='NOT_SUBMITTED' or not self.session.allow_prepare:return
+        if self.receipt["status"] != "NOT_SUBMITTED" or not (self.session.allow_prepare or natural_scope):
+            return
         text=self.session.source_request
-        scope = self.session.expected_scope if self.session.explicit_edit_only else explicit_scope(
-            text, include_update_aliases=True)
+        scope = natural_scope or (self.session.expected_scope if self.session.explicit_edit_only else explicit_scope(
+            text, include_update_aliases=True))
         if not scope or scope.get("_conflict"):
             return
         if any(len(scope.get(key,[]))!=1 for key in ('company_id','invoice_no')):return
-        if self.session.explicit_edit_only:
+        if natural_scope or self.session.explicit_edit_only:
             if any(len(scope.get(key, [])) != 1 for key in ("field", "new_value")):
                 return
             field, value = scope["field"][0], scope["new_value"][0]
@@ -96,6 +97,14 @@ class WriteCoordinator:
         if not value.strip():
             return
         company,invoice=scope['company_id'][0],scope['invoice_no'][0]
+        if natural_scope and not any(
+            name == "get_invoice" and outcome["status"] == "SUCCESS"
+            and outcome["evidence"].get("source") == "current_sqlite"
+            and (row := outcome["data"]).get("company_id") == company
+            and row.get("invoice_no") == invoice and row.get(field) == value
+            for name, outcome in results
+        ):
+            return
         # 模型可能只引用历史值；可信编辑入口的明确目标仍须独立新连接核对。
         # 此次核对不是模型Tool Call，亦不产生Prepare/Commit/成功审计。
         try:

@@ -17,6 +17,14 @@ class AgentTests(DatabaseTestCaseMixin, unittest.TestCase):
             {"role": "assistant", "tool_calls": calls},
             {"role": "assistant", "content": json.dumps({"kind":"information", "text":"完成"})}]), mode="mock", **kwargs)
 
+    def test_single_invoice_total_asks_for_period_then_preserves_metric(self):
+        agent = self.agent([call()])
+        self.assertEqual(agent.ask("查询甲企业的发票价税合计"), "请补充年份、月份。")
+        self.assertEqual(agent.last_response["execution"]["model_requests"], 0)
+        agent.ask("2026年九月")
+        self.assertIn("发票价税合计为 9622.06 元", agent.last_response["chat_notice"])
+        self.assertEqual(agent.last_response["fulfillment"]["status"], "VERIFIED_GOALS")
+
     def test_multiple_tools_and_multiturn(self):
         agent = self.agent([call(), call("list_invoices", identifier="b")])
         self.assertIn("9622.06", agent.ask("查询甲企业2026年9月"))

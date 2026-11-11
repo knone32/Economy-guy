@@ -12,7 +12,7 @@ from .write_coordination import WriteCoordinator
 from .updates import commit_invoice_update, edit_scope_error
 from .provenance import SOURCES, ScopeProof
 from .business_sql import BusinessSQL, BusinessSQLError, TABLES as SQL_TABLES
-from .tui_intent import invoice_intent_source, invoice_supplement
+from .tui_intent import invoice_intent_source, invoice_supplement, literal_single_invoice_edit
 from .invoice_batch import plan_invoice_change
 from .responses import (DIRECTORY_INLINE_LIMIT, directory_complete, directory_count_only, directory_display_pages, explicit_scope,
                         parse_final, render_information, render_query_conclusion, render_clarification, render_summary_basis,
@@ -373,7 +373,10 @@ class Agent:
                                     "NO_APPLICABLE_RULE", "CONFLICT", "UNKNOWN_OUTCOME"}
         if receipt is None and batch is None and stop in {"WAITING_USER", "AMBIGUOUS", "WAITING_CONFIRMATION"}:
             state = "WAITING_USER"
-        elif reads_verified and not business_failure and (not write_expected or write_verified):
+        elif not business_failure and (
+            (reads_verified and (not write_expected or write_verified))
+            or (write_verified and response.get("single_edit_verified"))
+        ):
             state = "VERIFIED_GOALS"
         elif write_verified or response.get("task_creation_verified") or (batch and batch[0] == "PARTIAL_RESULT") or (
                 response["query_evidence_count"] and
@@ -687,9 +690,9 @@ class Agent:
             r"(?:\s*[，,]?\s*按(?:照)?(?:开票)?(金额|日期)(?:从([小低早大高晚])到[小低早大高晚]|(升序|降序))?"
             r"(?:排序|排列|列出)?)?\s*[。！？!?]?\s*", query_text, flags=re.IGNORECASE)
         simple_directory = bool(directory_request)
-        metric_request = single_read and re.fullmatch(
+        metric_request = read_only and not (reference or deferred or corrected or invoice_write) and re.fullmatch(
             read_subject + r"(发票(?:总数|数量|有多少张|价税合计)|银行(?:收入|支出)(?:总额|合计)?)"
-            r"(?:是多少|有多少)?\s*[。！？!?]?\s*", query_text, flags=re.IGNORECASE)
+            r"(?:是多少|有多少)?\s*[。！？!?]?\s*", pending_from or query_text, flags=re.IGNORECASE)
         exact_invoice = (not reference and not has_dates and
                          len(explicit.get("company_id", [])) == len(explicit.get("invoice_no", [])) == 1)
         invoice_detail = (single_read and not invoice_write
@@ -841,7 +844,7 @@ class Agent:
             self.allowed_tools & {tool["function"]["name"] for tool in turn_tools},
             proposals=self.management_proposals if management is None else None)
         def finish(text, store=True, category="operation_result", *, chat_notice=None, missing_fields=(),
-                   summary_verified=False, explanation_partial=False):
+                   summary_verified=False, explanation_partial=False, single_edit_verified=False):
             page_issue = page_read = None
             if (simple_directory and full_directory and not execution.schedule
                     and execution.stop_reason in {None, "NO_PROGRESS", "COMPLETED", "EVIDENCE_RETURNED",
@@ -999,6 +1002,7 @@ class Agent:
                                if "displayed_set_complete" in outcome["evidence"]), None)
             response = {"source": "runtime_output", "category": category, "operation_receipt": self.write_receipt,
                         "execution": execution.snapshot(), "query_evidence_count": len(facts), "write_expected": write_expected,
+                         "single_edit_verified": single_edit_verified,
                          "single_query_verified": bool(summary_verified or directory_verified or metric_notice or invoice_sql_verified
                                                        or (stop in {"ANSWERED", "EVIDENCE_RETURNED"}
                                                            and invoice_detail_verified())
@@ -1037,9 +1041,8 @@ class Agent:
                 category = response["category"] = "database_query"
                 text = chat_notice
             elif metric_notice and not write_expected and stop in read_finish:
-                if not chat_notice or stop != "ANSWERED":
-                    chat_notice = metric_notice
-                    text = metric_notice
+                chat_notice = metric_notice
+                text = metric_notice
             elif not self.teaching and (stop == "NO_PROGRESS" or (facts and stop in budget_stops)):
                 if stop == "NO_PROGRESS":
                     if any(outcome["status"] == "NO_PROGRESS" for _, outcome in read_results):
@@ -1082,7 +1085,7 @@ class Agent:
                 chat_notice = "\n".join(filter(None, (chat_notice, task_notice)))
                 text = "\n".join(filter(None, (text, task_notice)))
             if self.write_receipt["status"] == "CURRENT_VALUE_MATCHES" and not (goal_coverage and goal_coverage["write"]):
-                text += "\n" + self.write_receipt["message"]
+                text = "\n".join(filter(None, (text, self.write_receipt["message"])))
                 if chat_notice is None:
                     chat_notice = self.write_receipt["message"]
             if (chat_notice is None and not facts and not goal_coverage and not read_results
@@ -1221,7 +1224,7 @@ class Agent:
         missing_dates = (sql_context or {}).get("missing_fields")
         summary_needs_period = (single_read and not invoice_write and len(companies) == 1
                                 and missing_dates and set(missing_dates) <= {"year", "month"}
-                                and query_goal(query_text) == "finance")
+                                and (metric_request or query_goal(query_text) == "finance"))
 
         def ask_summary_period():
             try:
@@ -1236,7 +1239,7 @@ class Agent:
             return finish(render_clarification({"missing_fields": missing_dates}), store=False,
                           category="clarification", missing_fields=missing_dates)
 
-        if summary_needs_period and summary_request and not has_dates:
+        if summary_needs_period and (summary_request or metric_request) and not has_dates:
             return ask_summary_period()
 
         confirmed_year = bool(inferred or (pending_from and explicit.get("year")))
@@ -1384,6 +1387,13 @@ class Agent:
                 if (read_only and not bulk_no_confirmation and invoice_intent_source(text_request)
                         and natural is not None and natural["kind"] != "clarification"):
                     self.messages.pop()
+                    if not (unresolved_receipt or execution.schedule):
+                        edit = literal_single_invoice_edit(text_request)
+                        if edit:
+                            self.coordinator.assess_current_match(read_results, natural_scope=edit)
+                            if self.write_receipt["status"] == "CURRENT_VALUE_MATCHES":
+                                return finish("", store=False, chat_notice=self.write_receipt["message"],
+                                              single_edit_verified=True)
                     execution.stop("MODEL_FINISHED_WITH_PENDING_WORK")
                     notice = ("上一次提交结果仍未知，请先核查审计。" if unresolved_receipt
                               else "本轮尚未核验发票修改提案，没有提交发票修改。")
