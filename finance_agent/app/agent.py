@@ -679,7 +679,7 @@ class Agent:
                            and query_goal(query_text) == "finance" and re.fullmatch(
                                read_subject + r"(?:财务汇总|综合金额|发票(?:价税合计|总额|金额)?\s*"
                                r"(?:[、，,和与及]\s*)?银行(?:收支(?:汇总)?|收入\s*(?:和|与|及|、|，|,)\s*(?:银行)?支出))"
-                               r"(?P<basis>\s*[，,]?\s*(?:并且?|同时)?\s*(?:说明|注明)(?:统计)?依据)?\s*[。！？!?]?\s*",
+                               r"(?P<basis>\s*[，,]?\s*(?:并且?|同时)?\s*(?:说明|注明)(?:统计(?:的)?)?依据)?\s*[。！？!?]?\s*",
                                pending_from or query_text, flags=re.IGNORECASE))
         directory_request = single_read and re.fullmatch(
             read_subject + r"(?:(?:所有|全部|全量|完整)\s*的?\s*)?发票(?:的)?(?:完整目录|全部目录|目录|清单|有哪些)?"
@@ -1210,8 +1210,11 @@ class Agent:
                           category="clarification", missing_fields=fields)
 
         missing_dates = (sql_context or {}).get("missing_fields")
-        if (single_read and summary_request and not has_dates and len(companies) == 1
-                and missing_dates and set(missing_dates) <= {"year", "month"}):
+        summary_needs_period = (single_read and not invoice_write and len(companies) == 1
+                                and missing_dates and set(missing_dates) <= {"year", "month"}
+                                and query_goal(query_text) == "finance")
+
+        def ask_summary_period():
             try:
                 with closing(open_existing(self.db_path, readonly=True)) as db:
                     allowed = check_permission(db, self.user_id, companies[0], "read").allowed
@@ -1223,6 +1226,9 @@ class Agent:
                 return finish("当前账号没有所请求企业的读取权限。", store=False)
             return finish(render_clarification({"missing_fields": missing_dates}), store=False,
                           category="clarification", missing_fields=missing_dates)
+
+        if summary_needs_period and summary_request and not has_dates:
+            return ask_summary_period()
 
         confirmed_year = bool(inferred or (pending_from and explicit.get("year")))
         confirmed_fields = {"year"} if confirmed_year else set()
@@ -1510,6 +1516,7 @@ class Agent:
                               category="database_query" if read_results else "unverified")
             stop = False
             stop_result = None
+            ask_after_plan = False
             for call in calls:
                 execution.requested_tools += 1
                 self.trace("tool.requested", call)
@@ -1643,17 +1650,20 @@ class Agent:
                         if fn.get("name") == "prepare_invoice_update":
                             self.coordinator.record_preparation(result)
                         if result["status"] == "INVALID_ARGUMENTS":
-                            execution.stop("INVALID_ARGUMENTS")
+                            ask_after_plan = (summary_needs_period and fn["name"] == "set_schedule"
+                                              and not read_results and not execution.schedule)
+                            if not ask_after_plan:
+                                execution.stop("INVALID_ARGUMENTS")
                         else:
                             args = validate_arguments(fn.get("name"), fn.get("arguments"),
                                                       directory_sort=tool_proof.directory_sort)
                             if covered_turn:
                                 query_attempts.append((fn["name"], args.get("company_id"), result["status"]))
                             execution.observe(fn.get("name"), args, result)
-                        stop = bool(execution.stop_reason)
+                        stop = ask_after_plan or bool(execution.stop_reason)
                 if stop and stop_result is None:
                     stop_result = result
-                    if not execution.stop_reason:
+                    if not (execution.stop_reason or ask_after_plan):
                         execution.stop(result["status"])
                 message = {"role": "tool", "tool_call_id": call["id"], "content": json.dumps(result, ensure_ascii=False)}
                 if fn.get('name')!='set_schedule':
@@ -1661,6 +1671,8 @@ class Agent:
                 self.messages.append(message)
                 self.trace("tool_result", {"request": call, "result": result})
             if stop:
+                if ask_after_plan:
+                    return ask_summary_period()
                 if (read_only and reference_context is None and read_results and
                         all(name == "resolve_invoice_reference" for name, _ in read_results)):
                     # Keep the paired calls in Trace, outside subsequent model context.

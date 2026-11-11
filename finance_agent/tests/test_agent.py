@@ -204,6 +204,47 @@ class AgentTests(DatabaseTestCaseMixin, unittest.TestCase):
             "查询甲企业2026年9月的发票价税合计、银行收入和支出，并说明统计依据"))
         self.assertEqual(agent.last_response["execution"]["model_requests"], 3)
 
+    def test_summary_natural_period_answer_continues_original_request(self):
+        request = "查询甲企业的发票价税合计 银行收入和支出 并且说明统计的依据"
+        agent = Agent("U001", self.db_path, scripted_model([]), mode="mock")
+        self.assertEqual(agent.ask(request), "请补充年份、月份。")
+        self.assertEqual(agent.last_response["execution"]["stop_reason"], "WAITING_USER")
+        self.assertEqual(agent.last_response["execution"]["model_requests"], 0)
+        agent.model = self.agent([call(arguments='{"company_id":"C001","year":2026,"month":8}')]).model
+        answer = agent.ask("我需要查询2026年八月份的")
+        self.assertIn(request, agent.last_user_request)
+        self.assertIn("C001 2026-08", answer)
+        self.assertIn("R001 v1.0", answer)
+        self.assertIn("交易日期", answer)
+        self.assertEqual(agent.last_response["fulfillment"]["status"], "VERIFIED_GOALS")
+
+    def test_invalid_summary_schedule_can_still_ask_for_missing_period(self):
+        arguments = {"company_id": "C001", "year": "", "month": ""}
+        schedule = dict(goal="汇总财务收支", stop_condition="汇总完成", steps=[
+            dict(step_id="read", action="get_finance_summary", arguments=arguments, depends_on=[]),
+        ])
+        for actor, period, expected in (
+            ("U001", "", "WAITING_USER"),
+            ("U002", "", "DENIED"),
+            ("U001", "2026年9月", "INVALID_ARGUMENTS"),
+        ):
+            with self.subTest(actor=actor, period=period):
+                company = "C002" if actor == "U002" else "C001"
+                arguments["company_id"] = company
+                agent = Agent(actor, self.db_path, scripted_model([
+                    {"role": "assistant", "tool_calls": [call("set_schedule", json.dumps(schedule))]},
+                ]), mode="mock")
+                request = f"请汇总{company} {period}的财务收支"
+                answer = agent.ask(request)
+                self.assertEqual(agent.last_response["execution"]["stop_reason"], expected)
+                tool = next(m for m in agent.messages if m["role"] == "tool")
+                self.assertEqual(json.loads(tool["content"])["status"], "INVALID_ARGUMENTS")
+                if expected == "WAITING_USER":
+                    self.assertEqual(answer, "请补充年份、月份。")
+                    self.assertEqual(agent.pending_intent["request"], request)
+                else:
+                    self.assertIsNone(agent.pending_intent)
+
     def test_invoice_proposal_and_confirmed_task_survive_current_reads(self):
         from app.invoice_batch import run_invoice_batch
         from app.rules import import_rules, SEED_RULES

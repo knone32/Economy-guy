@@ -71,8 +71,13 @@ def invoice_supplement(text, missing):
     if "year" in missing and re.fullmatch(r"\d{4}", value) and int(value):
         return {"year": [int(value)]}
     scope = explicit_scope(value, include_update_aliases=True)
-    if {"year", "month"} & set(missing) and re.fullmatch(r"\d{4}\s*年(?:\s*\d{1,2}\s*月)?|\d{1,2}\s*月份?", value):
-        return scope
+    if {"year", "month"} & set(missing):
+        month = r"(?:1[0-2]|0?[1-9]|十一|十二|[一二三四五六七八九十])\s*月份?"
+        period = re.fullmatch(
+            rf"(?:(?:我\s*)?(?:需要|想)?\s*(?:查询|查|看)\s*)?"
+            rf"(\d{{4}}\s*年(?:\s*{month})?|{month})(?:\s*的)?", value)
+        if period:
+            return explicit_scope(period[1]) or None
     if {"company_id", "invoice_no", "invoice_reference"} & set(missing) and _SUPPLEMENT.fullmatch(value):
         return scope
     if "field" in missing and value in _FIELD_NAMES.values():
