@@ -6,6 +6,9 @@ from decimal import Decimal, InvalidOperation
 from .queries import INVOICE_FIELD_LABELS, _money
 
 
+_EXPLANATION_MARKER = re.compile(r"\[\[([A-Za-z][\w.-]*)\]\]")
+
+
 def parse_final(content):
     """只接收信息/追问信封，不接受模型提供操作成功状态。"""
     try:
@@ -17,6 +20,9 @@ def parse_final(content):
         return None
     fields = {"kind", "text", "missing_fields"} if value["kind"] == "clarification" else {"kind", "text"}
     if set(value) != fields or type(value.get("text")) is not str or not value["text"].strip():
+        return None
+    markers = set(_EXPLANATION_MARKER.findall(value["text"]))
+    if markers and (value["kind"] != "explanation" or markers - {"result", "boundary"}):
         return None
     if value["kind"] == "clarification":
         missing = value["missing_fields"]
@@ -735,7 +741,11 @@ def render_query_conclusion(results, *, invoice_coverage=None):
                 detail = (f"按 {data['rule_business_date']} 的 {basis} 筛出 {data['count']} 张必填用途缺失的发票。"
                           "这是按参考规则筛选的结果。")
             else:
-                detail = f"按 {basis} 检查，有 {data['count']} 张发票缺少必填用途。"
+                numbers = "、".join(row["invoice_no"] for row in data["missing_invoices"])
+                detail = f"有 {data['count']} 张发票缺少必填用途"
+                detail += f"：{numbers}。" if numbers else "。"
+                detail += (f"依据 {basis}《{rule['name']}》，自 {rule['effective_from']} 生效。"
+                           f"{display_rule_amounts(rule['content'])}")
         elif name in {"get_invoice", "resolve_invoice_reference"} and data:
             purpose = data["purpose"] or "未填写"
             remark = data["remark"] or "无"

@@ -140,6 +140,18 @@ def plan_invoice_change(agent, source_request, proposal, selection, *, authorize
     if len(invoice_nos) > MAX_BATCH_INVOICES:
         return None, "INVALID_ARGUMENTS", f"本次超过 {MAX_BATCH_INVOICES} 张的处理上限，请缩小范围。"
 
+    if (not authorized_periods and source == "get_invoice" and len(keys) == 1
+            and requested.get("company_id") == [company]
+            and requested.get("invoice_no") == [keys[0][1]]
+            and (scope.get("company_id"), scope.get("invoice_no")) == keys[0]):
+        # This scope comes from the current SQLite detail result registered by the Agent.
+        # The existing permission checks and transaction-time reread still apply.
+        read_period = (scope["year"], scope["month"])
+        if any(requested.get(key) and requested[key] != [value]
+               for key, value in zip(("year", "month"), read_period)):
+            return None, "SCOPE_MISMATCH", "候选发票账期与用户要求不一致。"
+        authorized_periods = (read_period,)
+
     target_period = (proposal["target_year"], proposal["target_month"]) if "target_year" in proposal else None
     rule_date = proposal.get("rule_business_date")
     if rule_selection:
