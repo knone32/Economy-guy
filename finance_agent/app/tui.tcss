@@ -65,6 +65,8 @@ SelectOverlay > .option-list--option-highlighted {
 #configure-ai { margin-left: 1; }
 #composer-label { height: 1; color: $accent; text-style: bold; }
 #chat-note { height: auto; min-height: 1; color: $quiet; }
+#demo-presets { height: 2; overflow-x: auto; }
+#demo-presets TextAction { height: 1; }
 #prompt { height: 3; border: round $accent-fill; }
 #prompt:focus { border: round $accent; }
 #supplement { display: none; }

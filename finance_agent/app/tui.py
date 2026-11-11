@@ -216,6 +216,7 @@ class AgentWorkspace(ConversationUI, App):
                             yield Static("发送消息", id="composer-label", markup=False)
                             yield Static("", id="chat-note", markup=False)
                             yield TextAction("补充本次修改", id="supplement")
+                            yield from self.chat_presets()
                             yield Input(placeholder="输入财税问题或修改要求，按 Enter 发送", id="prompt")
                         with Vertical(id="business-pane"):
                             yield Static("业务历史 · 当时快照", id="business-title", markup=False)
@@ -230,6 +231,9 @@ class AgentWorkspace(ConversationUI, App):
                     yield Static("执行记录 · 当前对话与本人成功审计", classes="section", markup=False)
                     yield VerticalScroll(id="record-list")
         yield Footer()
+
+    def chat_presets(self):
+        return ()
 
     @property
     def terminal_width(self):

@@ -3,14 +3,25 @@ import json
 from pathlib import Path
 from tempfile import mkdtemp
 
+from textual import on
+from textual.containers import Horizontal
+from textual.widgets import Button, Input
+
 from .cli_workspaces import import_workspace
 from .tui import AgentWorkspace
+from .tui_screens import TextAction
 
 SUMMARY = "汇总甲企业 2026 年 9 月的发票价税合计、银行收入和支出"
 EDIT = "把甲企业 F002 的用途改成资料打印"
 TASK = "为甲企业 2026 年 9 月剩余缺用途的发票创建待办"
 PROGRESS = "查看甲企业 2026 年 9 月待办和剩余缺用途发票"
 SCOPE = {"company_id": "C001", "year": 2026, "month": 9}
+PRESETS = {
+    "demo-summary": ("汇总收支", SUMMARY),
+    "demo-edit": ("修改 F002", EDIT),
+    "demo-task": ("创建待办", TASK),
+    "demo-progress": ("查看进度", PROGRESS),
+}
 
 
 def demo_model(messages, tools):
@@ -43,7 +54,7 @@ def demo_model(messages, tools):
     if request in {SUMMARY, EDIT, TASK, PROGRESS}:
         reply = {"kind": "information", "text": "固定演示步骤已结束，请查看实际执行结果。"}
     else:
-        reply = {"kind": "clarification", "text": "离线演示只支持工作台中列出的固定示例，请复制其中一条。",
+        reply = {"kind": "clarification", "text": "离线演示支持输入框上方的预置对话，请选择一项发送。",
                  "missing_fields": ["demo_example"]}
     return {"role": "assistant", "content": json.dumps(reply, ensure_ascii=False)}
 
@@ -60,10 +71,19 @@ class DemoWorkspace(AgentWorkspace):
     def model_state(self):
         return "mock", "MOCK · OFFLINE DEMO", "固定脚本 · 仅用官方虚构账簿 · 0 API 请求"
 
-    def signed_in(self, user):
-        super().signed_in(user)
-        if self.user:
-            self.chat_message("离线演示 · 固定模型提案", "\n".join((SUMMARY, EDIT, TASK, PROGRESS)))
+    def chat_presets(self):
+        yield Horizontal(
+            *(TextAction(label, id=key, tooltip=request)
+              for key, (label, request) in PRESETS.items()),
+            id="demo-presets",
+        )
+
+    @on(Button.Pressed, "#demo-presets Button")
+    def send_preset(self, event):
+        event.stop()
+        prompt = self.workspace_widget("#prompt", Input)
+        request = PRESETS[event.button.id][1]
+        prompt.post_message(Input.Submitted(prompt, request))
 
     def open_settings(self):
         self.note("离线演示使用独立账簿和固定脚本。请通过启动菜单选 1 使用真实模型。")
