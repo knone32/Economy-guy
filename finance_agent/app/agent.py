@@ -673,6 +673,31 @@ class Agent:
             r"(?:是多少|有多少)?\s*[。！？!?]?\s*", query_text, flags=re.IGNORECASE)
         exact_invoice = (not reference and not has_dates and
                          len(explicit.get("company_id", [])) == len(explicit.get("invoice_no", [])) == 1)
+        invoice_detail = (single_read and not invoice_write
+                          and len(explicit.get("company_id", ())) == len(explicit.get("invoice_no", ())) == 1
+                          and re.fullmatch(
+                              read_subject + r"F\d+\s*(?:(?:这张\s*)?发票\s*)?(?:的\s*)?"
+                              r"(?:(?:当前|现在)\s*(?:的\s*)?)?(用途|备注)"
+                              r"(?:\s*[、和及与]\s*(用途|备注))?(?:\s*是什么)?\s*[。！？!?]?\s*",
+                              query_text, flags=re.IGNORECASE))
+
+        def invoice_detail_verified():
+            if not invoice_detail:
+                return False
+            fields = {"用途": "purpose", "备注": "remark"}
+            requested_fields = {fields[label] for label in invoice_detail.groups() if label}
+            company, = explicit["company_id"]
+            number, = explicit["invoice_no"]
+            return any(
+                name == "get_invoice" and outcome["status"] == "SUCCESS"
+                and (evidence := outcome["evidence"]).get("source") == "current_sqlite"
+                and (scope := evidence.get("scope", {})).get("company_id") == company
+                and scope.get("invoice_no") == number and not scope_mismatch(explicit, scope)
+                and (data := outcome["data"]).get("company_id") == company and data.get("invoice_no") == number
+                and requested_fields <= data.keys()
+                for name, outcome in read_results
+            )
+
         previous_directory = None
         directory_scope = None
         if read_only and not (explicit or has_dates or reference):
@@ -955,6 +980,7 @@ class Agent:
             response = {"source": "runtime_output", "category": category, "operation_receipt": self.write_receipt,
                         "execution": execution.snapshot(), "query_evidence_count": len(facts), "write_expected": write_expected,
                         "single_query_verified": bool(directory_verified or metric_notice or invoice_sql_verified
+                                                      or (stop == "EVIDENCE_RETURNED" and invoice_detail_verified())
                                                       or (referenced and referenced["displayed_set_complete"])),
                         "single_query_partial": bool((simple_directory and directory_results and not directory_verified)
                                                      or (invoice_sql and invoice_sql[1]["data"].get(invoice_coverage)
@@ -1382,7 +1408,8 @@ class Agent:
                     self.trace("error", {"category": "invalid_final_envelope"})
                     execution.stop("EVIDENCE_RETURNED")
                     notice = render_query_conclusion(read_results)
-                    if not (simple_directory and self.context.previous_directory(read_results)):
+                    if not (invoice_detail_verified()
+                            or simple_directory and self.context.previous_directory(read_results)):
                         notice += "\n还无法核实是否回答了全部问题。"
                     return finish(render_information(read_results) + "\n" + notice, store=False, category="database_query", chat_notice=notice)
                 # One bounded repair, using the same loop, budget and authorization guards.

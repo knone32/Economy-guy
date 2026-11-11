@@ -132,6 +132,26 @@ class AgentTests(DatabaseTestCaseMixin, unittest.TestCase):
         self.assertEqual(undated.last_response["execution"]["model_requests"], 0)
         self.assertEqual(undated.last_response["tool_results"], ())
 
+    def test_invalid_invoice_final_uses_exact_detail_coverage(self):
+        for prompt, complete in (
+            ("查看甲企业f002当前用途", True),
+            ("查看甲企业F002当前用途，并列出该企业的银行流水", False),
+        ):
+            with self.subTest(prompt=prompt):
+                agent = Agent("U001", self.db_path, scripted_model([
+                    {"role": "assistant", "tool_calls": [call("get_invoice",
+                        '{"company_id":"C001","invoice_no":"F002"}')]},
+                    {"role": "assistant", "content": "模型未按约定返回 JSON"},
+                ]), mode="mock")
+                agent.ask(prompt)
+                response = agent.last_response
+                self.assertEqual(response["execution"]["stop_reason"], "EVIDENCE_RETURNED")
+                self.assertEqual(response["single_query_verified"], complete)
+                self.assertEqual(response["fulfillment"]["status"] == "VERIFIED_GOALS", complete)
+                self.assertIn("F002", response["chat_notice"])
+                self.assertIn("未填写", response["chat_notice"])
+                self.assertEqual("还无法核实是否回答了全部问题" in response["chat_notice"], not complete)
+
     def test_bad_excel_row_never_publishes(self):
         from openpyxl import load_workbook
         workbook = load_workbook(EXCEL)
