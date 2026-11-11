@@ -41,7 +41,7 @@ Stage 3A 管理持久任务和明确保存的企业偏好。Stage 3B Context Bui
 
 双栏工作台把对话和业务历史分开。执行记录按操作编号归组，展开后查看工具、规则及可关联的成功审计和回读。紧凑模式通过「查看业务历史」打开业务结果。独立模拟管理员管理规则，业务查询和用途检查共享同一规则判定。SQLite 的事务审计用于确认提交，脱敏 Trace 用于核查当时调用了什么、为什么停止。评审可独立更换虚构样例库、查看规则来源或重启核对，界面显示与业务状态可以分别验证。
 
-这是比赛模拟身份下的原型，使用官方虚构业务数据。真实税务申报和银行支付不在交付范围内。模型通过 OpenAI 兼容接口接入，Profile 支持中文名称。通用标准协议会将纯文本系统消息合并到首条，以兼容硅基流动等使用限制系统消息位置的模型模板。基础连通与工具检测只核查接口，完整业务需使用有额度的模型账号独立复验。旧版证据见 [v1.0.0 真人记录](https://github.com/knone32/Economy-guy/blob/preliminary-2026-v1.0.0/docs/delivery/LIVE-ACCEPTANCE.md)，工程说明见 [v2.0.0 架构](https://github.com/knone32/Economy-guy/blob/preliminary-2026-v2.0.0/docs/ARCHITECTURE.md)。
+这是比赛模拟身份下的原型，使用官方虚构业务数据。真实税务申报和银行支付不在交付范围内。模型通过 OpenAI 兼容接口接入，Profile 支持中文名称。百炼官方 Qwen3.8 在 auto 下开启 Thinking，关闭历史思考保留。第三方 OpenAI 兼容端点使用标准请求。基础连通与工具检测只核查接口，完整业务需使用有额度的模型账号独立复验。旧版证据见 [v1.0.0 真人记录](https://github.com/knone32/Economy-guy/blob/preliminary-2026-v1.0.0/docs/delivery/LIVE-ACCEPTANCE.md)，工程说明见 [v2.0.0 历史架构](https://github.com/knone32/Economy-guy/blob/preliminary-2026-v2.0.0/docs/ARCHITECTURE.md)。
 
 ## 当前局限与后续方向
 

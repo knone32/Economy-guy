@@ -1,6 +1,6 @@
-# Economy-guy · 初赛 v2.0.0 运行参考
+# Economy-guy · 初赛 v2.0.2 运行参考
 
-首次安装、启动和评审入口见[项目首页](../README.md)。下列命令从 `finance_agent/` 运行，使用已安装 `requirements.txt` 的 Python 3.11+。
+首次安装及双击启动见[首次启动说明](../README-FIRST.md)。下列命令从 `finance_agent/` 运行，使用已安装 `requirements.txt` 的 Python 3.11+。
 
 ## 命令行初始化及升级
 
@@ -34,9 +34,9 @@ python main.py --db data/review-cli.sqlite3
 | 查询和审计 | `python main.py summary --help`、`python main.py invoices --help`、`python main.py inspect-update --help` |
 | 模型配置 | `python main.py profiles list --user U001`。`profiles check --user U001 --profile <名称>` 校验 Profile 和所引用的环境变量，发送 0 次 API 请求。Windows 已保存密钥由工作台读取。 |
 | A/B/C 演示 | 工作台操作见[演示脚本](../docs/delivery/DEMO-SCRIPT.md)。 |
-| 连续 CLI 对话 | `python main.py --db data/review-cli.sqlite3 chat --mode mock --user U001`。CLI Mock 用固定查询提案，TUI 的「固定脚本测试」提供有限查询示例。 |
+| 连续 CLI 对话 | `python main.py --db data/review-cli.sqlite3 chat --mode mock --user U001`。CLI Mock 用固定查询提案，评审可用根目录 `RUN-MOCK.bat` 打开五类预置请求的离线工作台。 |
 
-Stage 3A 的持久待办和企业偏好保存在业务库。P0.5 工作台可从独立本机会话库恢复聊天及必要只读线索，并重新校验账簿和当前权限。Context Builder 在预算内选择上下文，Reference Resolver 只对实际展示过的对象重查当前数据库。模型循环单轮硬限为 9 次模型请求、12 次实际 Handler 调用、2 次续期、1 次显式重规划。见[现行架构](https://github.com/knone32/Economy-guy/blob/preliminary-2026-v2.0.0/docs/ARCHITECTURE.md)。
+Stage 3A 的持久待办和企业偏好保存在业务库。P0.5 工作台可从独立本机会话库恢复聊天及必要只读线索，并重新校验账簿和当前权限。Context Builder 在预算内选择上下文，Reference Resolver 只对实际展示过的对象重查当前数据库。模型循环单轮硬限为 9 次模型请求、12 次实际 Handler 调用、2 次续期、1 次显式重规划。见[v2.0.0 历史架构](https://github.com/knone32/Economy-guy/blob/preliminary-2026-v2.0.0/docs/ARCHITECTURE.md)。
 
 普通对话和演示分别保存脱敏 Trace。Trace 能用于解释执行过程，提交状态以当前 SQLite 的成功审计与回读为准。遇到未知结果，应先核查历史请求编号。
 
