@@ -364,9 +364,10 @@ class Agent:
         write_verified = write_expected and (
             operation["status"] == "CURRENT_VALUE_MATCHES"
             or (operation["status"] in {"COMMITTED", "NO_CHANGE"} and operation.get("readback_verified")))
-        reads_verified = response.get("single_query_verified") or (
-            coverage and not coverage["unknown"] and not coverage["deferred"]
-            and all(state == "VERIFIED" for _, _, state in coverage["reads"]))
+        reads_verified = not response.get("single_query_partial") and (
+            response.get("single_query_verified") or (
+                coverage and not coverage["unknown"] and not coverage["deferred"]
+                and all(state == "VERIFIED" for _, _, state in coverage["reads"])))
         business_failure = stop in {"DENIED", "SCOPE_MISMATCH", "ERROR", "INVALID_ARGUMENTS", "RULE_CONFLICT",
                                     "NO_APPLICABLE_RULE", "CONFLICT", "UNKNOWN_OUTCOME"}
         if receipt is None and batch is None and stop in {"WAITING_USER", "AMBIGUOUS", "WAITING_CONFIRMATION"}:
@@ -516,8 +517,12 @@ class Agent:
         goal = query_goal(query_text) if mixed or deferred else None
         corrected = False
         date_sources = {}
-        if (read_only and len(explicit.get("company_id", ())) == 1 and "invoice_no" not in explicit
-                and re.match(r"^\s*(?:刚才|上一轮)?(?:说错了|查错了|更正(?:一下)?)\s*[，,：:]?", text)):
+        if (read_only and not pending_from and "invoice_no" not in explicit
+                and query_goal(query_text) is None
+                and len(explicit.get("company_id", ())) <= 1
+                and (len(explicit.get("company_id", ())) == 1 or len(explicit.get("month", ())) == 1)
+                and not invoice_intent_source(text)
+                and re.match(r"^\s*(?:刚才|上一轮)?(?:说错了|查错了|打错了|更正(?:一下)?)\s*[，,：:]?", text)):
             prior = {(name, scope["company_id"], scope["year"], scope["month"])
                      for name, outcome in (self.last_response or {}).get("tool_results", ())
                      if name in {"get_finance_summary", "list_invoice_directory"}
@@ -525,11 +530,18 @@ class Agent:
                      and outcome["evidence"].get("source") == "current_sqlite"
                      and {"company_id", "year", "month"} <= (scope := outcome["evidence"].get("scope", {})).keys()}
             if len(prior) == 1:
-                name, _, year, month = prior.pop()
+                name, company, year, month = prior.pop()
                 goal = "finance" if name == "get_finance_summary" else "directory"
+                if "company_id" not in explicit:
+                    explicit["company_id"] = [company]
+                    date_sources["company_id"] = "current_sqlite"
                 if not {"year", "month", "periods"} & explicit.keys():
                     explicit.update(year=[year], month=[month], periods=[(year, month)])
                     date_sources.update(dict.fromkeys(("year", "month", "periods"), "current_sqlite"))
+                elif (year and "year" not in explicit and len(explicit.get("month", ())) == 1
+                      and explicit["company_id"] == [company]):
+                    explicit.update(year=[year], periods=[(year, explicit["month"][0])])
+                    date_sources.update(dict.fromkeys(("year", "periods"), "session_confirmed"))
                 corrected = True
         literal_periods = set(explicit.get("periods", ()))
         missing_year_months = set(explicit.get("month", ())) - {month for _, month in literal_periods}
@@ -739,8 +751,6 @@ class Agent:
         if self.context.annual_focus and annual_year is None and not (allow_prepare or management or reference):
             self.context.annual_focus = None
         covered_turn = mixed or deferred or corrected
-        if simple_directory:
-            turn_tools = [tool for tool in turn_tools if tool["function"]["name"] == "list_invoice_directory"]
         sql_analysis = read_only and not (bulk_no_confirmation or covered_turn or reference or exact_invoice
                                           or simple_directory or all_invoices)
         sql_workspace = None
@@ -1284,7 +1294,7 @@ class Agent:
             if retrieval_corrected and not read_results:
                 context.append({"role": "system", "content":
                     "本轮尚无当前业务查询证据。不要复述历史金额、规则或记录。"
-                    "请根据原始用户请求和可信范围调用所需查询工具；范围或对象不明确则返回 clarification。"
+                    "根据原始用户请求和可信范围调用本轮可见的查询工具；范围或对象不明确则在最终 JSON 中追问。"
                     "不创建待办、不保存偏好、不修改发票。只纠正本轮的查询回答。"})
             if len(prior_task_scopes) == 1 and re.search(r"待办|任务", text_request):
                 company, year, month = next(iter(prior_task_scopes))
@@ -1308,6 +1318,9 @@ class Agent:
                     + ("这是查询范围更正，请按目标重新查询，不复用旧值。" if corrected else "")})
             diagnostic_request = (self.transport and self.model is _BUILTIN_LIVE_MODEL
                                   and self.transport.diagnose_next_request)
+            # The same set is advertised to the model, scheduler and dispatcher.
+            turn_tools = [tool for tool in turn_tools if tool["function"]["name"] in self.allowed_tools]
+            permitted = {tool["function"]["name"] for tool in turn_tools}
             if not diagnostic_request:
                 self.trace("model_input", redact({"messages": context, "tools": turn_tools}))
             try:
@@ -1370,22 +1383,26 @@ class Agent:
                     notice = render_query_conclusion(read_results)
                     return finish(notice, store=False, category="database_query", chat_notice=notice)
                 wants_explanation = natural is not None and natural["kind"] == "explanation"
-                if (read_only and single_scope and natural is not None
-                        and (wants_explanation or (natural["kind"] == "information"
-                                                  and summary_request and summary_request["basis"]))):
+                summary_goal = bool(summary_request or (corrected and goal == "finance"))
+                if read_only and single_scope and (summary_goal or (wants_explanation and not facts)):
                     scoped_summaries = [(name, outcome) for name, outcome in single_scope_results()
                                         if name in {"get_finance_summary", "get_annual_finance_summary"}]
-                    if len(scoped_summaries) == 1 and (summary_request or not facts):
+                    if len(scoped_summaries) == 1:
                         summary = scoped_summaries[0][1]
                         basis = render_summary_basis(summary["evidence"].get("rule"))
-                        notice = render_query_conclusion(scoped_summaries) + "\n" + (
-                            basis or "这三项金额已核验，统计依据尚未核实。")
-                        complete = bool(summary_request and basis and not execution.schedule
-                                        and all(outcome["status"] in {"SUCCESS", "NO_DATA"} for _, outcome in read_results))
-                        if not summary_request or execution.schedule:
+                        needs_basis = wants_explanation or corrected or bool(summary_request and summary_request["basis"])
+                        notice = render_query_conclusion(scoped_summaries)
+                        if needs_basis:
+                            notice += "\n" + (basis or "这三项金额已核验，统计依据尚未核实。")
+                        remaining = not summary_goal or bool(execution.schedule and any(
+                            step["status"] != "DONE" for step in execution.schedule["steps"]))
+                        complete = not remaining and (not needs_basis or bool(basis))
+                        if remaining:
                             notice += "\n其他要求尚未核实。"
                         self.messages.pop()
-                        if not complete:
+                        if natural is None:
+                            self.trace("error", {"category": "invalid_final_envelope"})
+                        if natural is None or not complete:
                             execution.stop("EVIDENCE_RETURNED")
                         return finish(notice, store=False, category="database_query", chat_notice=notice,
                                       summary_verified=complete, explanation_partial=not complete)
@@ -1404,6 +1421,25 @@ class Agent:
                         answer = render_information(read_results) + "\n" + notice if read_results else notice
                         return finish(answer, store=False,
                                       category="database_query" if read_results else "operation_result", chat_notice=notice)
+                # A final answer before the required current read gets one bounded
+                # opportunity to retrieve evidence, with no write tools in that attempt.
+                needs_retrieval = (read_only and not read_results
+                    and bool(single_scope or not sql_analysis)
+                    and bool(expected_scope or read_workspace or previous_directory)
+                    and (summary_goal or previous_directory or re.search(r"查|汇总|财务|发票|金额|流水|收支|用途|规则|R00[1-4]", text, re.I))
+                    and (natural is None or natural["kind"] == "information" or (wants_explanation and not facts)))
+                if needs_retrieval and not retrieval_corrected and execution.model_requests < min(execution.block_limit, self.max_requests):
+                    self.messages.pop()
+                    retrieval_corrected = True
+                    turn_tools = [tool for tool in turn_tools if tool["function"]["name"] not in
+                                  {"manage_task", "manage_preference", "manage_display_preference",
+                                   "prepare_invoice_update", "propose_invoice_changes", "set_schedule"}]
+                    self.trace("retrieval.corrected", {"reason": "no_current_evidence", "attempt": 1})
+                    continue
+                if needs_retrieval and retrieval_corrected:
+                    self.messages.pop()
+                    execution.stop("UNVERIFIED_RESULT")
+                    return finish("本轮还没有取得当前账簿结果。请明确要查询的企业、账期和内容后重试。", category="clarification")
                 if read_only and (wants_explanation or (natural is None and facts and not read_results)):
                     self.messages.pop()
                     evidence = render_explanation_evidence(facts)
@@ -1432,23 +1468,6 @@ class Agent:
                             or simple_directory and self.context.previous_directory(read_results)):
                         notice += "\n还无法核实是否回答了全部问题。"
                     return finish(render_information(read_results) + "\n" + notice, store=False, category="database_query", chat_notice=notice)
-                # One bounded repair, using the same loop, budget and authorization guards.
-                needs_retrieval = (not sql_analysis and not read_results and not allow_prepare and not management and not self.teaching
-                    and bool(expected_scope or read_workspace or previous_directory)
-                    and (previous_directory or re.search(r"查|汇总|财务|发票|金额|流水|收支|用途|规则|R00[1-4]", text, re.I))
-                    and (natural is None or natural["kind"] == "information"))
-                if needs_retrieval and not retrieval_corrected and execution.model_requests < min(execution.block_limit, self.max_requests):
-                    self.messages.pop()
-                    retrieval_corrected = True
-                    # Repair is read-only even when the ordinary turn offers management candidates.
-                    turn_tools = [tool for tool in turn_tools if tool["function"]["name"] not in
-                                  {"manage_task", "manage_preference", "manage_display_preference", "prepare_invoice_update", "set_schedule"}]
-                    self.trace("retrieval.corrected", {"reason": "no_current_evidence", "attempt": 1})
-                    continue
-                if needs_retrieval and retrieval_corrected:
-                    self.messages.pop()
-                    execution.stop("UNVERIFIED_RESULT")
-                    return finish("本轮还没有取得当前账簿结果。请明确要查询的企业、账期和内容后重试。", category="clarification")
                 if natural is None:
                     self.coordinator.pending = None
                     # 原始响应已进Trace，不把不符合协议的成功声称留作后续上下文。
@@ -1495,7 +1514,6 @@ class Agent:
                 execution.requested_tools += 1
                 self.trace("tool.requested", call)
                 fn = call["function"]
-                permitted = self.allowed_tools & {t["function"]["name"] for t in turn_tools}
                 if isinstance(fn.get("name"), str) and fn["name"] not in permitted:
                     result = tool_result("DENIED", evidence={"source": "tool_dispatch"},
                                          error="工具未授权给当前Agent")

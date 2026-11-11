@@ -179,6 +179,91 @@ class AgentTests(DatabaseTestCaseMixin, unittest.TestCase):
         self.assertIn("统计依据尚未核实", answer)
         self.assertNotIn("R001", answer)
 
+    def test_summary_continues_after_period_and_requeries_a_corrected_month(self):
+        august = call(arguments='{"company_id":"C001","year":2026,"month":8}')
+        explanation = {"role": "assistant", "content": '{"kind":"explanation","text":"依据统计口径。"}'}
+        agent = Agent("U001", self.db_path, scripted_model([
+            {"role": "assistant", "tool_calls": [august]}, explanation,
+            {"role": "assistant", "tool_calls": [call()]},
+            {"role": "assistant", "content": "未按约定返回 JSON"},
+        ]), mode="mock")
+        self.assertIn("月份", agent.ask("查询甲企业的发票价税合计、银行收入和支出，并说明统计依据"))
+        self.assertIn("2026-08", agent.ask("2026年8月"))
+        self.assertEqual(agent.last_response["fulfillment"]["status"], "VERIFIED_GOALS")
+        self.assert_summary_result(agent, agent.ask("打错了，改查九月份"))
+        self.assertEqual(agent.last_response["fulfillment"]["status"], "VERIFIED_GOALS")
+        self.assertIn("2026-09", agent.last_response["chat_notice"])
+        self.assertIn("交易日期", agent.last_response["chat_notice"])
+
+    def test_summary_explanation_before_read_gets_one_retrieval_opportunity(self):
+        explanation = {"role": "assistant", "content": '{"kind":"explanation","text":"依据统计口径。"}'}
+        agent = Agent("U001", self.db_path, scripted_model([
+            explanation, {"role": "assistant", "tool_calls": [call()]}, explanation,
+        ]), mode="mock")
+        self.assert_summary_result(agent, agent.ask(
+            "查询甲企业2026年9月的发票价税合计、银行收入和支出，并说明统计依据"))
+        self.assertEqual(agent.last_response["execution"]["model_requests"], 3)
+
+    def test_invoice_proposal_and_confirmed_task_survive_current_reads(self):
+        from app.invoice_batch import run_invoice_batch
+        from app.rules import import_rules, SEED_RULES
+        from app.stage2_schema import migrate as stage2
+        from app.stage3_schema import migrate as stage3
+
+        stage2(self.db_path)
+        stage3(self.db_path)
+        import_rules(self.db_path, SEED_RULES, {"rule.manage"})
+        invoice = call("get_invoice", '{"company_id":"C001","invoice_no":"F002"}')
+        final = {"role": "assistant", "content": '{"kind":"information","text":"请核对结果。"}'}
+        check = call("check_missing_purpose")
+        agent = Agent("U001", self.db_path, scripted_model([
+            {"role": "assistant", "tool_calls": [check]}, final,
+        ]), mode="mock")
+        self.assertIn("R002 v2.0", agent.ask("检查甲企业2026年9月哪些发票缺少必填用途，并说明依据"))
+        self.assertEqual(agent.last_response["tool_results"][0][1]["data"]["count"], 5)
+
+        replies = iter([None, True])
+
+        def propose(messages, tools):
+            if next(replies) is None:
+                return {"role": "assistant", "tool_calls": [invoice]}
+            detail = json.loads(next(m["content"] for m in reversed(messages) if m["role"] == "tool"))
+            candidate = dict(selection_id=detail["data"]["selection_id"], field="purpose",
+                             new_value="资料打印", mode="item", excluded_invoice_ids=[])
+            return {"role": "assistant", "tool_calls": [call("propose_invoice_changes", json.dumps(candidate), "p")]}
+
+        agent.model = propose
+        request = "把甲企业F002的用途补成资料打印"
+        agent.ask(request)
+        self.assertEqual(agent.last_response["execution"]["stop_reason"], "WAITING_CONFIRMATION")
+        self.assertEqual(self.connection.execute("select count(*) from invoice_audit").fetchone()[0], 0)
+        proposal = agent.last_response["invoice_change"]
+        status, _ = run_invoice_batch(agent, request, proposal, approve_item=lambda _: "confirm",
+                                      approve_batch=lambda *_: self.fail("expected an item confirmation"),
+                                      checkpoint=lambda _: None)
+        self.assertEqual(status, "COMPLETED")
+        self.assertTrue(agent.write_receipt["readback_verified"])
+        self.assertEqual(self.connection.execute("select count(*) from invoice_audit").fetchone()[0], 1)
+
+        agent.model = scripted_model([{"role": "assistant", "tool_calls": [invoice]},
+                                      {"role": "assistant", "content": "未按约定返回 JSON"}])
+        self.assertIn("资料打印", agent.ask("查看甲企业F002当前用途"))
+        self.assertEqual(agent.last_response["fulfillment"]["status"], "VERIFIED_GOALS")
+
+        task = dict(company_id="C001", year=2026, month=9, action="create", task_id="", note="")
+        agent.model = scripted_model([{"role": "assistant", "tool_calls": [call("manage_task", json.dumps(task))]}, final])
+        agent.management_confirmation = lambda proposal: proposal["domain"] == "task"
+        agent.ask("把剩余缺用途发票留作待办", task_note_from_request=True)
+        outcome = agent.last_response["tool_results"][0][1]
+        self.assertEqual(outcome["status"], "SUCCESS", outcome["error"])
+        task_id = outcome["data"]["task"]["task_id"]
+
+        resumed = self.agent([call("list_tasks", '{"company_id":"C001"}', "tasks"), check])
+        resumed.ask("查看甲企业2026年9月的待办及当前用途缺项")
+        task_result, checked = (result for _, result in resumed.last_response["tool_results"])
+        self.assertEqual(task_result["data"][0]["task_id"], task_id)
+        self.assertEqual(checked["data"]["count"], 4)
+
     def test_tool_dispatch_denial_does_not_report_account_acl(self):
         agent = self.agent([call("clarification", '{"missing_fields":["year","month"]}')])
         agent.ask("查询甲企业2026年9月的发票价税合计、银行收入和支出")
