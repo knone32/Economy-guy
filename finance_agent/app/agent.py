@@ -1384,16 +1384,20 @@ class Agent:
                         execution.stop("MODEL_FINISHED_WITH_PENDING_WORK")
                         notice = "本轮账期已经核验，其余操作尚未完成。请按原条件重试。"
                         return finish(notice, store=False, chat_notice=notice)
+                if (invoice_write and not execution.schedule
+                        and (natural is None or natural["kind"] != "clarification")):
+                    edit = literal_single_invoice_edit(text_request)
+                    if edit and self.workbook_available():
+                        self.coordinator.assess_current_match(read_results, natural_scope=edit)
+                        if self.write_receipt["status"] == "CURRENT_VALUE_MATCHES":
+                            self.messages.pop()
+                            if natural is None:
+                                self.trace("error", {"category": "invalid_final_envelope"})
+                            return finish("", store=False, chat_notice=self.write_receipt["message"],
+                                          single_edit_verified=True)
                 if (read_only and not bulk_no_confirmation and invoice_intent_source(text_request)
                         and natural is not None and natural["kind"] != "clarification"):
                     self.messages.pop()
-                    if not (unresolved_receipt or execution.schedule):
-                        edit = literal_single_invoice_edit(text_request)
-                        if edit:
-                            self.coordinator.assess_current_match(read_results, natural_scope=edit)
-                            if self.write_receipt["status"] == "CURRENT_VALUE_MATCHES":
-                                return finish("", store=False, chat_notice=self.write_receipt["message"],
-                                              single_edit_verified=True)
                     execution.stop("MODEL_FINISHED_WITH_PENDING_WORK")
                     notice = ("上一次提交结果仍未知，请先核查审计。" if unresolved_receipt
                               else "本轮尚未核验发票修改提案，没有提交发票修改。")
