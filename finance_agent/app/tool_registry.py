@@ -277,7 +277,7 @@ def _set_schedule(args,user_id,db_path,execution,permitted,session,expected,inte
     if not 1<=len(steps)<=min(12,execution.policy.max_tools):
         raise ValueError("计划步骤数无效")
     if any(isinstance(s,dict) and isinstance(s.get('action'),str) and s['action'] not in permitted for s in steps):
-        return tool_result('DENIED',error='计划包含未授权工具')
+        return tool_result("DENIED", evidence={"source": "tool_dispatch"}, error="计划包含本轮不可用的工具")
     ids = set()
     validated = []
     with closing(sqlite3.connect(Path(db_path).resolve().as_uri()+"?mode=ro",uri=True)) as connection:
@@ -400,14 +400,14 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
         # 默认正式能力；内部存在函数不等于当前调用方有执行权。
         permitted = {tool["function"]["name"] for tool in TOOLS} if allowed_tools is None else allowed_tools
         if name not in permitted:
-            return tool_result("DENIED", error="工具未授权给当前运行上下文")
+            return tool_result("DENIED", evidence={"source": "tool_dispatch"}, error="工具未授权给当前运行上下文")
         directory_sort = provenance.directory_sort if isinstance(provenance, ScopeProof) and provenance.actor == user_id else None
         args = validate_arguments(name, raw_arguments, directory_sort=directory_sort)
         function = REGISTRY[name][0]
         if name == "query_business_sql":
             if (sql_workspace is None or sql_workspace.actor != user_id
                     or Path(sql_workspace.path).resolve() != Path(db_path).resolve()):
-                return tool_result("DENIED", error="本轮没有可用的可信 SQL 工作区")
+                return tool_result("DENIED", evidence={"source": "tool_context"}, error="本轮没有可用的可信 SQL 工作区")
             if execution:
                 rejection = execution.guard(name, args)
                 if rejection:

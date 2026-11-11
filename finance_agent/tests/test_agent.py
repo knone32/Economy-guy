@@ -257,10 +257,16 @@ class AgentTests(DatabaseTestCaseMixin, unittest.TestCase):
         invoice = call("get_invoice", '{"company_id":"C001","invoice_no":"F002"}')
         final = {"role": "assistant", "content": '{"kind":"information","text":"请核对结果。"}'}
         check = call("check_missing_purpose")
+        internal_final = {"role": "assistant", "content": json.dumps({
+            "kind": "explanation", "text": "[[boundary]] [[result]] mode=all 门槛0分"
+        }, ensure_ascii=False)}
         agent = Agent("U001", self.db_path, scripted_model([
-            {"role": "assistant", "tool_calls": [check]}, final,
+            {"role": "assistant", "tool_calls": [check]}, internal_final,
         ]), mode="mock")
-        self.assertIn("R002 v2.0", agent.ask("检查甲企业2026年9月哪些发票缺少必填用途，并说明依据"))
+        answer = agent.ask("检查甲企业2026年9月哪些发票缺少必填用途，并说明依据")
+        self.assertIn("R002 v2.0", answer)
+        self.assertNotIn("[[boundary]]", answer)
+        self.assertNotIn("mode=all", answer)
         self.assertEqual(agent.last_response["tool_results"][0][1]["data"]["count"], 5)
 
         replies = iter([None, True])
@@ -298,6 +304,9 @@ class AgentTests(DatabaseTestCaseMixin, unittest.TestCase):
         outcome = agent.last_response["tool_results"][0][1]
         self.assertEqual(outcome["status"], "SUCCESS", outcome["error"])
         task_id = outcome["data"]["task"]["task_id"]
+        self.assertIn(f"待办已创建，编号 {task_id}", agent.last_response["chat_notice"])
+        self.assertTrue(agent.last_response["task_creation_verified"])
+        self.assertNotEqual(agent.last_response["fulfillment"]["status"], "UNVERIFIED_RESULT")
 
         resumed = self.agent([call("list_tasks", '{"company_id":"C001"}', "tasks"), check])
         resumed.ask("查看甲企业2026年9月的待办及当前用途缺项")
@@ -313,6 +322,18 @@ class AgentTests(DatabaseTestCaseMixin, unittest.TestCase):
         self.assertEqual(response["tool_results"][0][1]["status"], "DENIED")
         self.assertIn("本轮不可用的操作", response["chat_notice"])
         self.assertNotIn("账号没有权限", response["chat_notice"])
+
+        plan = dict(goal="查询", steps=[dict(step_id="read", action="prepare_invoice_update",
+                    arguments={}, depends_on=[])], stop_condition="已查询")
+        agent = self.agent([call("set_schedule", json.dumps(plan))])
+        agent.ask("查询甲企业2026年9月的发票价税合计、银行收入和支出")
+        self.assertEqual(agent.last_response["execution"]["stop_reason"], "DENIED")
+        self.assertIn("本轮不可用的操作", agent.last_response["chat_notice"])
+
+        from app.responses import render_tool_failure
+        outcome = handle_tool("query_business_sql", '{"sql":"SELECT 1"}', "U001", self.db_path)
+        self.assertEqual(outcome["status"], "DENIED")
+        self.assertIn("只读分析工作区", render_tool_failure("DENIED", "query_business_sql", outcome))
 
     def test_invalid_invoice_final_uses_exact_detail_coverage(self):
         for prompt, complete in (
@@ -333,6 +354,20 @@ class AgentTests(DatabaseTestCaseMixin, unittest.TestCase):
                 self.assertIn("F002", response["chat_notice"])
                 self.assertIn("未填写", response["chat_notice"])
                 self.assertEqual("还无法核实是否回答了全部问题" in response["chat_notice"], not complete)
+
+        for content in (
+            '{"kind":"information","text":"查询结束"}',
+            '{"kind":"clarification","text":"请补充年份","missing_fields":["year"]}',
+        ):
+            with self.subTest(content=content):
+                agent = Agent("U001", self.db_path, scripted_model([
+                    {"role": "assistant", "tool_calls": [call("get_invoice",
+                        '{"company_id":"C001","invoice_no":"F002"}')]},
+                    {"role": "assistant", "content": content},
+                ]), mode="mock")
+                agent.ask("查看甲企业F002当前用途")
+                self.assertEqual(agent.last_response["fulfillment"]["status"], "VERIFIED_GOALS")
+                self.assertIn("未填写", agent.last_response["chat_notice"])
 
     def test_bad_excel_row_never_publishes(self):
         from openpyxl import load_workbook

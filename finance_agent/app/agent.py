@@ -28,6 +28,7 @@ from .model_transport import ModelTransport
 from .permissions import check_permission
 from .queries import available_periods, QueryError
 from .rules import check_displayed_purpose, RuleError
+from .responses import confirmed_task_creation
 from .stage2_schema import open_existing
 import sqlite3
 
@@ -374,7 +375,7 @@ class Agent:
             state = "WAITING_USER"
         elif reads_verified and not business_failure and (not write_expected or write_verified):
             state = "VERIFIED_GOALS"
-        elif write_verified or (batch and batch[0] == "PARTIAL_RESULT") or (
+        elif write_verified or response.get("task_creation_verified") or (batch and batch[0] == "PARTIAL_RESULT") or (
                 response["query_evidence_count"] and
                 (coverage or write_expected or business_failure or response.get("single_query_partial"))):
             state = "PARTIAL_RESULT"
@@ -951,6 +952,8 @@ class Agent:
             facts = [(name, outcome) for name, outcome in read_results
                      if name in SQL_ANSWER_TOOLS | {"list_tasks"} and outcome["status"] in {"SUCCESS", "NO_DATA"}
                      and outcome.get("evidence", {}).get("source") == "current_sqlite"]
+            task_creations = [(name, outcome) for name, outcome in read_results
+                              if name == "manage_task" and confirmed_task_creation(outcome)]
             stop = execution.stop_reason
             write_expected = bool(allow_prepare or invoice_write or mixed or invoice_change or bulk_no_confirmation)
             scoped = single_scope_results() if single_scope and (simple_directory or metric_request) else []
@@ -997,8 +1000,10 @@ class Agent:
             response = {"source": "runtime_output", "category": category, "operation_receipt": self.write_receipt,
                         "execution": execution.snapshot(), "query_evidence_count": len(facts), "write_expected": write_expected,
                          "single_query_verified": bool(summary_verified or directory_verified or metric_notice or invoice_sql_verified
-                                                      or (stop == "EVIDENCE_RETURNED" and invoice_detail_verified())
+                                                       or (stop in {"ANSWERED", "EVIDENCE_RETURNED"}
+                                                           and invoice_detail_verified())
                                                       or (referenced and referenced["displayed_set_complete"])),
+                         "task_creation_verified": bool(task_creations),
                          "single_query_partial": bool(explanation_partial or (simple_directory and directory_results and not directory_verified)
                                                      or (invoice_sql and invoice_sql[1]["data"].get(invoice_coverage)
                                                          and not invoice_sql_verified)
@@ -1072,6 +1077,10 @@ class Agent:
                 summary = "\n".join(summaries)
                 chat_notice = "\n".join(filter(None, (chat_notice, summary)))
                 text = "\n".join(filter(None, (text, summary)))
+            if task_creations:
+                task_notice = render_query_conclusion(task_creations)
+                chat_notice = "\n".join(filter(None, (chat_notice, task_notice)))
+                text = "\n".join(filter(None, (text, task_notice)))
             if self.write_receipt["status"] == "CURRENT_VALUE_MATCHES" and not (goal_coverage and goal_coverage["write"]):
                 text += "\n" + self.write_receipt["message"]
                 if chat_notice is None:
@@ -1389,6 +1398,10 @@ class Agent:
                     notice = render_query_conclusion(read_results)
                     return finish(notice, store=False, category="database_query", chat_notice=notice)
                 wants_explanation = natural is not None and natural["kind"] == "explanation"
+                if natural is not None and not execution.schedule and invoice_detail_verified():
+                    self.messages.pop()
+                    notice = render_query_conclusion(read_results)
+                    return finish(notice, store=False, category="database_query", chat_notice=notice)
                 summary_goal = bool(summary_request or (corrected and goal == "finance"))
                 if read_only and single_scope and (summary_goal or (wants_explanation and not facts)):
                     scoped_summaries = [(name, outcome) for name, outcome in single_scope_results()

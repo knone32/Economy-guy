@@ -706,6 +706,15 @@ def render_summary_basis(rule):
     return None
 
 
+def confirmed_task_creation(outcome):
+    evidence = outcome["evidence"]
+    return (outcome["status"] == "SUCCESS"
+            and evidence.get("source") == "current_sqlite"
+            and evidence.get("operation", {}).get("action") == "create"
+            and evidence.get("management_confirmation", {}).get("source") == "trusted_cli"
+            and bool((outcome["data"] or {}).get("task", {}).get("task_id")))
+
+
 def render_query_conclusion(results, *, invoice_coverage=None):
     """Summarize verified reads without copying the detail pane or guessing coverage."""
     lines = []
@@ -796,6 +805,8 @@ def render_query_conclusion(results, *, invoice_coverage=None):
             detail = f"查到 {len(data)} {item}，明细见业务记录。"
         elif name == "list_annual_bank_income":
             detail = f"查到 {data['total']} 条银行收入流水，明细见业务记录。"
+        elif name == "manage_task" and confirmed_task_creation(outcome):
+            detail = f"待办已创建，编号 {data['task']['task_id']}。"
         else:
             detail = ("没有匹配的记录。" if outcome["status"] == "NO_DATA"
                       else "查询结果见业务记录。")
@@ -981,6 +992,8 @@ def render_tool_failure(status, tool=None, outcome=None):
     """User-facing guidance; diagnostic codes and provider details stay in Trace."""
     if status == "DENIED" and (outcome or {}).get("evidence", {}).get("source") == "tool_dispatch":
         return "模型请求了本轮不可用的操作，该操作未执行。"
+    if status == "DENIED" and (outcome or {}).get("evidence", {}).get("source") == "tool_context":
+        return "本轮没有可用的只读分析工作区，该操作未执行。"
     if tool == "query_business_sql" and status in {"SQL_SCOPE_LIMIT", "SQL_QUERY_LIMIT", "SQL_REJECTED", "SCOPE_MISMATCH"}:
         return outcome["error"] + "。"
     if status == "CONFLICT" and tool == "manage_task" and ((outcome or {}).get("data") or {}).get("existing_task_id"):
