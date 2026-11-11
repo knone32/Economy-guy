@@ -1166,6 +1166,27 @@ class Agent:
             return finish(render_clarification({"missing_fields": fields}), store=False,
                           category="clarification", missing_fields=fields)
 
+        missing_dates = (sql_context or {}).get("missing_fields")
+        if (single_read and not (has_dates or invoice_write) and len(companies) == 1
+                and missing_dates and set(missing_dates) <= {"year", "month"}
+                and query_goal(query_text) == "finance"
+                and re.fullmatch(
+                    read_subject + r"(?:财务汇总|综合金额|发票(?:价税合计|总额|金额)?\s*"
+                    r"(?:[、，,和与及]\s*)?银行(?:收支(?:汇总)?|收入\s*(?:和|与|及|、|，|,)\s*(?:银行)?支出))"
+                    r"(?:\s*[，,]?\s*(?:并且?|同时)?\s*(?:说明|注明)(?:统计)?依据)?\s*[。！？!?]?\s*",
+                    query_text, flags=re.IGNORECASE)):
+            try:
+                with closing(open_existing(self.db_path, readonly=True)) as db:
+                    allowed = check_permission(db, self.user_id, companies[0], "read").allowed
+            except (sqlite3.Error, OSError):
+                execution.stop("ERROR")
+                return finish("无法核验当前账簿，请检查工作账簿。", store=False)
+            if not allowed:
+                execution.stop("DENIED")
+                return finish("当前账号没有所请求企业的读取权限。", store=False)
+            return finish(render_clarification({"missing_fields": missing_dates}), store=False,
+                          category="clarification", missing_fields=missing_dates)
+
         confirmed_year = bool(inferred or (pending_from and explicit.get("year")))
         confirmed_fields = {"year"} if confirmed_year else set()
         if multi_month_read and len(requested_periods) > 1:

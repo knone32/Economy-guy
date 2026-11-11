@@ -81,6 +81,57 @@ class AgentTests(DatabaseTestCaseMixin, unittest.TestCase):
         self.assertFalse(any(m["role"] == "tool" for m in agent.messages))
         self.assertIn("9622.06", agent.ask("2026年9月"))
 
+    def test_plain_finance_summary_asks_for_period_before_model_dispatch(self):
+        from app.stage3_schema import migrate
+
+        migrate(self.db_path)
+        request = "查询甲企业的发票价税合计 银行收入和支出 并且说明统计依据"
+        agent = Agent("U001", self.db_path, scripted_model([
+            {"role": "assistant", "tool_calls": [call("manage_preference",
+                '{"company_id":"C001","action":"get","key":"查询月份","value":""}', "preference")]},
+            {"role": "assistant", "tool_calls": [call("clarification",
+                '{"missing_fields":["year","month"]}', "invalid-tool")]},
+        ]), mode="mock")
+        answer = agent.ask(request)
+        response = agent.last_response
+        self.assertEqual(response["execution"]["stop_reason"], "WAITING_USER",
+                         [(name, result["status"]) for name, result in response["tool_results"]])
+        self.assertEqual(answer, "请补充年份、月份。")
+        self.assertEqual(response["execution"]["model_requests"], 0)
+        self.assertEqual(response["tool_results"], ())
+        self.assertEqual(agent.pending_intent["request"], request)
+        self.assertEqual(agent.pending_intent["scope"]["company_id"], ["C001"])
+
+        agent.model = self.agent([call()]).model
+        answer = agent.ask("2026年9月")
+        self.assertIn(request, agent.last_user_request)
+        self.assert_summary_result(agent, answer)
+
+    def assert_summary_result(self, agent, answer):
+        (name, result), = agent.last_response["tool_results"]
+        self.assertEqual((name, result["status"]), ("get_finance_summary", "SUCCESS"))
+        self.assertEqual(result["evidence"]["scope"], {"company_id": "C001", "year": 2026, "month": 9})
+        self.assertEqual((result["evidence"]["rule"]["id"], result["evidence"]["rule"]["version"]),
+                         ("R001", "1.0"))
+        for text in ("9622.06", "13000.50", "7180.74", "R001"):
+            self.assertIn(text, answer)
+
+    def test_plain_finance_summary_respects_selected_period_and_company_acl(self):
+        request = "查询甲企业的发票价税合计 银行收入和支出 并且说明统计依据"
+        agent = self.agent([call()])
+        self.assert_summary_result(agent, agent.ask(request, read_workspace=("C001", 2026, 9)))
+        denied = Agent("U002", self.db_path, scripted_model([
+            {"role": "assistant", "tool_calls": [call(arguments='{"company_id":"C002","year":2026,"month":9}')]}
+        ]), mode="mock")
+        denied.ask("查询乙企业2026年9月的发票价税合计、银行收入和支出")
+        self.assertEqual(denied.last_response["execution"]["stop_reason"], "DENIED")
+        self.assertEqual(denied.last_response["tool_results"][0][1]["status"], "DENIED")
+        undated = Agent("U002", self.db_path, scripted_model([]), mode="mock")
+        undated.ask(request.replace("甲企业", "乙企业"))
+        self.assertEqual(undated.last_response["execution"]["stop_reason"], "DENIED")
+        self.assertEqual(undated.last_response["execution"]["model_requests"], 0)
+        self.assertEqual(undated.last_response["tool_results"], ())
+
     def test_bad_excel_row_never_publishes(self):
         from openpyxl import load_workbook
         workbook = load_workbook(EXCEL)
