@@ -120,10 +120,36 @@ def explicit_scope(text, include_update_aliases=False):
     date_pattern = re.compile(
         rf"(?<!\d)(\d{{4}})\s*(?:年(?:\s*的)?\s*({month_literal})\s*月|[-/]\s*({month_number})(?!\d))"
     )
-    periods = set()
+    token = rf"(?:{month_literal})"
+    separator = r"(?:[、和与及]|以及)"
+    month_range = r"(?:至|到|[–—])"
+    compound_date = re.compile(
+        rf"(?<![\d一二三四五六七八九十])(?:(?P<year>\d{{4}})\s*年\s*(?:的\s*)?)?"
+        rf"(?P<months>(?:{token}(?:\s*月)?\s*{separator}\s*)+{token}|"
+        rf"{token}(?:\s*月)?\s*{month_range}\s*{token}|[一二三四五六七八九]{{2,12}})\s*月"
+    )
+
+    def month_value(value):
+        return int(value) if value.isdigit() else names[value]
+
+    periods, grouped_months = set(), set()
+    for match in compound_date.finditer(text):
+        group = match["months"]
+        if re.fullmatch(r"[一二三四五六七八九]{2,12}", group):
+            values = [month_value(value) for value in group]
+        else:
+            values = [month_value(value) for value in re.findall(token, group)]
+            if re.search(month_range, group):
+                first, last = values
+                values = range(first, last + 1)
+        if match["year"] and values:
+            periods.update((int(match["year"]), month) for month in values)
+        else:
+            grouped_months.update(values)
+    text = compound_date.sub(" ", text)
     for year, chinese, numeric in date_pattern.findall(text):
         month = chinese or numeric
-        periods.add((int(year), int(month) if month.isdigit() else names[month]))
+        periods.add((int(year), month_value(month)))
     result = {}
     if companies:
         result["company_id"] = sorted({value.upper() for value in companies})
@@ -132,8 +158,8 @@ def explicit_scope(text, include_update_aliases=False):
     # 完整字面量保留配对，独立槽位只用于唯一补齐或追问。
     remaining = date_pattern.sub(" ", text)
     years = {int(y) for y in re.findall(r"(?<!\d)(\d{4})\s*年", remaining)}
-    months = {int(m) if m.isdigit() else names[m]
-              for m in re.findall(rf"(?<![\d一二三四五六七八九十])({month_literal})\s*月", remaining)}
+    months = grouped_months | {month_value(m) for m in re.findall(
+        rf"(?<![\d一二三四五六七八九十])({month_literal})\s*月", remaining)}
     if not periods and len(years) == len(months) == 1:
         periods.add((next(iter(years)), next(iter(months))))
     if periods:

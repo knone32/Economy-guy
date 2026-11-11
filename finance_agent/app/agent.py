@@ -521,8 +521,10 @@ class Agent:
                 corrected = True
         literal_periods = set(explicit.get("periods", ()))
         missing_year_months = set(explicit.get("month", ())) - {month for _, month in literal_periods}
-        if supplemental_year is not None and len(missing_year_months) == 1:
-            literal_periods.add((supplemental_year, missing_year_months.pop()))
+        multi_month_read = read_only and not invoice_intent_source(text_request)
+        if supplemental_year is not None and (multi_month_read or len(missing_year_months) == 1):
+            literal_periods.update((supplemental_year, month) for month in missing_year_months)
+            missing_year_months.clear()
         scope_companies = explicit.get("company_id", ())
         selected_scope = self.context.annual_focus or read_workspace
         if not scope_companies and selected_scope:
@@ -538,6 +540,9 @@ class Agent:
         if infer_year:
             try:
                 inferred = self._unique_years(scope_companies, missing_year_months)
+                if len(missing_year_months) > 1 and (
+                        inferred.keys() != missing_year_months or len(set(inferred.values())) != 1):
+                    inferred = {}
             except PermissionError:
                 year_error = "DENIED"
             except (sqlite3.Error, ValueError, OSError):
@@ -593,7 +598,7 @@ class Agent:
         expected_scope = {}
         if not reference or reference["ok"]:
             independent_read = (read_only and hint is None and len(explicit.get("company_id", ())) == 1
-                                and len(explicit.get("periods", ())) == 1)
+                                and bool(explicit.get("periods")))
             expected_scope = self.context.begin(query_text, len(self.messages) - 1, reset=management == "task",
                                                 independent_read=independent_read,
                                                 explicit=explicit, date_sources=date_sources,
@@ -1039,6 +1044,8 @@ class Agent:
 
         confirmed_year = bool(inferred or (pending_from and explicit.get("year")))
         confirmed_fields = {"year"} if confirmed_year else set()
+        if multi_month_read and len(requested_periods) > 1:
+            confirmed_fields.update(("year", "month"))
         scope_reminder_sent = False
         for index in range(self.max_requests):
             try:
@@ -1072,9 +1079,9 @@ class Agent:
                     f"当前用户明确要求 {full_directory[0]} 的全账期发票。普通目录使用 list_invoice_directory，"
                     "year=0、month=0；从第 1 页开始。不要以工作区月份或 SQL 统计代替目录。"
                     + ("只请求第 1 页，小目录的后续页由程序读取。" if simple_directory else "")})
-            if confirmed_year:
+            if confirmed_fields:
                 context.append({"role": "system", "content":
-                    "以下完整账期已核验，请按原条件继续，不要再次追问已确定的年份。"
+                    "以下完整账期已核验，请按原条件继续，不要重复追问已明确的账期字段。"
                     + json.dumps({"periods": requested_periods, "current_sqlite": sorted(inferred_periods)},
                                  ensure_ascii=False)})
             if selections and reference and reference["ok"]:
@@ -1085,7 +1092,8 @@ class Agent:
                     "复杂只读组合、跨企业合并排序或多字段排序用 query_business_sql；单企业普通目录和分页用 list_invoice_directory，"
                     "规则定义的完整用途缺项用 check_missing_purpose。只读证据够用即回答，不重复相同查询。"
                     "日期和企业以以下可信范围为限，缺少范围时追问。执行时按当前账号重新鉴权。"
-                    "SQL 的 amount_cents 和以 _cents 结尾的金额列均为整数分。derived 中数字键是零起点列索引，"
+                    "SQL 的 amount_cents 和以 _cents 结尾的金额列均为整数分。问金额最高或最低的记录时，比较逐笔原始金额，"
+                    "保留同额并列记录；只有用户要求按月比较时才先按月汇总。derived 中数字键是零起点列索引，"
                     "对应已格式化的元金额。需要百分比时用整数 numerator、denominator 列；分母为零无法求比例。"
                     "用 is_blank 判断 NULL、空串和纯空白。范围内的全部数据参与计算；"
                     "truncated=true 只代表展示部分行，不能当作全量；需要合计或计数时直接做聚合。"
