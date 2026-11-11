@@ -76,7 +76,7 @@ class TerminalWidthNotice(Dialog):
     def check_width(self, *, rechecked=False):
         if self.app.screen is not self:
             return
-        self.width = self.app.size.width
+        self.width = self.app.terminal_width
         if self.width >= self.recommended:
             self.dismiss(None)
         else:
@@ -218,7 +218,8 @@ class Login(Dialog):
             yield Static("", id="login-status", classes="field-error", markup=False)
             with Horizontal(classes="dialog-actions"):
                 yield TextAction("进入对话", id="sign-in", variant="primary", disabled=True)
-                yield TextAction("选择或导入工作库", id="login-settings")
+                if not self.app.mock_demo:
+                    yield TextAction("选择或导入工作库", id="login-settings")
                 yield TextAction("退出程序", id="quit", variant="error")
 
     def refresh_accounts(self):

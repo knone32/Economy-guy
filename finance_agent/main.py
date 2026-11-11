@@ -30,6 +30,10 @@ def launch_tui(args):
         print("全屏工作台需要交互终端。请在 Windows Terminal / PowerShell 运行 python main.py，"
               "或使用 python main.py home 和原有参数子命令。", file=sys.stderr)
         raise SystemExit(2)
+    if args.mock_demo:
+        from app.mock_demo import open_demo
+        open_demo(ROOT, reset=args.reset_mock_demo).run()
+        return
     from app.tui import AgentWorkspace
     from app.tui_local import session_path, settings_path
     from app.win_vault import CredentialError, WindowsVault
@@ -53,6 +57,8 @@ def main() -> None:
     if not check_runtime(dependencies=()):
         raise SystemExit(2)
     parser = argparse.ArgumentParser(description="财税 Agent Harness（无子命令时打开全屏工作台）")
+    parser.add_argument("--mock-demo", action="store_true", help="离线双栏演示，使用独立虚构账簿")
+    parser.add_argument("--reset-mock-demo", action="store_true", help="从样例新建离线演示，保留旧演示")
     parser.add_argument("--db", type=Path, help="SQLite 数据库路径")
     from app.model_config import DEFAULT_TEMPLATE,DEFAULT_LOCAL,PROFILE_PROTOCOLS
     parser.add_argument('--profiles-file',type=Path,default=DEFAULT_TEMPLATE,help='无密钥TOML模板')
@@ -114,6 +120,8 @@ def main() -> None:
     chat.add_argument("--max-extensions",type=int,default=2,help="至多两次证据驱动续期")
     chat.add_argument("--max-replans",type=int,default=1,help="至多一次显式重规划")
     args = parser.parse_args()
+    if (args.reset_mock_demo and not args.mock_demo) or (args.mock_demo and (args.db or args.command not in {None, "tui"})):
+        parser.error("--mock-demo 仅用于工作台，使用独立账簿，不接受 --db")
     args.explicit_db = args.db is not None
     args.db = args.db or DEFAULT_DB
     dependencies = ()

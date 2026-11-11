@@ -1,4 +1,4 @@
-# Economy-guy 初赛 v2.0.1 设计说明
+# Economy-guy 初赛 v2.0.2 设计说明
 
 ## 问题与方案
 

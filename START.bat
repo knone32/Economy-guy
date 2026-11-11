@@ -1,20 +1,22 @@
 @echo off
 setlocal DisableDelayedExpansion
-chcp 65001 >nul
+
 set "PYTHONUTF8=1"
 pushd "%~dp0finance_agent" || goto missing
 if /i "%~1"=="--live" goto live
+set "DEMO_RESET="
+if /i "%~2"=="--reset" set "DEMO_RESET=--reset-mock-demo"
 if /i "%~1"=="--mock" goto mock
 
 :menu
 echo(
-echo Economy-guy 财税工作台  v2.0.1
-echo [1] 启动真实财税 Agent 工作台
-echo [2] 运行离线 Mock 业务流程演示
-echo [3] 安装或检查 Python 环境
-echo [0] 退出
-choice /c 1230 /n /m "请选择 1、2、3 或 0："
-if errorlevel 255 goto failed
+echo Economy-guy Workbench  v2.0.2
+echo [1] Start live workbench
+echo [2] Start offline Textual demo
+echo [3] Install or check Python dependencies
+echo [0] Exit
+choice /c 1230 /n /m "Select 1, 2, 3 or 0: "
+if errorlevel 255 goto menu_failed
 if errorlevel 4 goto success
 if errorlevel 3 goto install
 if errorlevel 2 goto menu_mock
@@ -39,15 +41,15 @@ goto finish
 
 :run_live
 call :check_environment || exit /b 1
-echo 建议将终端最大化至至少 137 列。模型和账簿请在工作台内选择。
+echo Use a terminal at least 137 columns wide for the two-pane layout.
 "%DEMO_PY%" %DEMO_PY_ARGS% -X utf8 main.py
 if errorlevel 1 goto run_failed
 exit /b 0
 
 :run_mock
 call :check_environment || exit /b 1
-echo 离线脚本模拟，不代表真实模型理解。API 请求为零。
-"%DEMO_PY%" %DEMO_PY_ARGS% -X utf8 scripts\demo_stepper.py --mode mock --scenario all
+echo OFFLINE DEMO - fixed examples, no API requests.
+"%DEMO_PY%" %DEMO_PY_ARGS% -X utf8 main.py --mock-demo %DEMO_RESET%
 if errorlevel 1 goto run_failed
 exit /b 0
 
@@ -63,11 +65,11 @@ if errorlevel 1 goto install_failed
 if errorlevel 1 goto install_failed
 call :check_environment
 if errorlevel 1 goto menu
-echo Python 环境就绪。
+echo Python environment ready.
 goto menu
 
 :install_failed
-echo 安装失败。请检查上方错误、Python 3.11+、网络和解压目录写入权限，再选 3 重试。
+echo Installation failed. Check the error above, network access and write access.
 pause
 goto menu
 
@@ -78,7 +80,7 @@ if exist "%DEMO_PY%" goto validate_python
 call :find_system_python
 if errorlevel 1 goto environment_failed
 :validate_python
-"%DEMO_PY%" %DEMO_PY_ARGS% -c "import sys; assert sys.version_info >= (3, 11); import openpyxl, openai, textual; assert textual.__version__ == '1.0.0'"
+"%DEMO_PY%" %DEMO_PY_ARGS% -c "import sys; assert sys.version_info >= (3, 11); from importlib.metadata import version; import openpyxl, openai, textual; assert version('textual') == '1.0.0'"
 if errorlevel 1 goto environment_failed
 exit /b 0
 
@@ -93,23 +95,26 @@ set "DEMO_PY_ARGS="
 exit /b %ERRORLEVEL%
 
 :environment_failed
-echo Python 或依赖尚未就绪。请安装 Python 3.11 或更新版本，再双击 START.bat 选择 3。
+echo Python or dependencies unavailable. Install Python 3.11+ and select 3.
 pause
 exit /b 1
 
 :run_failed
-echo 运行中断或失败。请查看上方错误和已生成的本地报告。
+set "DEMO_EXIT=%ERRORLEVEL%"
+echo The workbench exited with code %DEMO_EXIT%. See the output above.
 pause
-exit /b 1
+exit /b %DEMO_EXIT%
 
 :missing
-echo 找不到 finance_agent。请完整解压比赛包后再启动。
+echo finance_agent is missing. Extract the entire ZIP before running START.bat.
 pause
 exit /b 1
 
-:failed
+:menu_failed
+echo The menu could not read input. Run START.bat in an interactive Windows console.
+pause
 popd
-exit /b 1
+exit /b 255
 
 :success
 popd

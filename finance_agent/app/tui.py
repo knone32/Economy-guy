@@ -142,6 +142,8 @@ class AgentWorkspace(ConversationUI, App):
                 ("f4", "cancel_edit", "取消未提交操作"), ("ctrl+n", "new_chat", "新建对话"),
                 ("ctrl+q", "quit_safe", "退出")]
 
+    mock_demo = False
+
     def __init__(self, db, template, local, *, model=None, trace_path=None, recent_path=None, restore_recent=False, vault=None, session_path=None):
         super().__init__()
         self.db = Path(db).resolve()
@@ -181,6 +183,7 @@ class AgentWorkspace(ConversationUI, App):
         self.chat_invoice_routes = ()
         self.invoice_page = 1
         self.width_checked = False
+        self._terminal_width = None
         self.compact_query_ready = False
         self.session_epoch = 0
         self.records = []
@@ -228,7 +231,12 @@ class AgentWorkspace(ConversationUI, App):
                     yield VerticalScroll(id="record-list")
         yield Footer()
 
+    @property
+    def terminal_width(self):
+        return self._terminal_width if self._terminal_width is not None else self.size.width
+
     def on_resize(self, event):
+        self._terminal_width = event.size.width
         if self.screen_stack:
             chat = next(iter(self.screen_stack[0].query("#chat")), None)
             if chat is not None:
@@ -260,11 +268,11 @@ class AgentWorkspace(ConversationUI, App):
     def maybe_show_width_notice(self):
         if not self.user or self.busy or self.screen is not self.screen_stack[0]:
             return
-        if self.size.width < DUAL_COLUMN_WIDTH:
-            self.push_screen(TerminalWidthNotice(self.size.width, DUAL_COLUMN_WIDTH))
+        if self.terminal_width < DUAL_COLUMN_WIDTH:
+            self.push_screen(TerminalWidthNotice(self.terminal_width, DUAL_COLUMN_WIDTH))
 
     def on_mount(self):
-        self.update_chat_width(self.workspace_widget("#chat"), self.size.width)
+        self.update_chat_width(self.workspace_widget("#chat"), self.terminal_width)
         self.workspace_widget("#chat-invoices").display = False
         self.db, needs_selection = startup_workbook(self.db, self.recent_path, restore=self.restore_recent)
         self.push_screen(Login(start_in_picker=needs_selection), self.signed_in)
@@ -386,7 +394,7 @@ class AgentWorkspace(ConversationUI, App):
         self.last_api_ok = None
         if clear_log:
             self.compact_query_ready = False
-            self.update_width_note(self.workspace_widget("#chat"), self.size.width)
+            self.update_width_note(self.workspace_widget("#chat"), self.terminal_width)
             self.records.clear()
             self.workspace_widget("#record-list").display = False
             self.invoice_route = None
@@ -838,7 +846,7 @@ class AgentWorkspace(ConversationUI, App):
             chat.set_class(viewing, "business-only")
             if viewing:
                 self.compact_query_ready = False
-            self.update_width_note(chat, self.size.width)
+            self.update_width_note(chat, self.terminal_width)
             event.button.label = "返回聊天" if viewing else "查看业务历史"
             self.workspace_widget("#business-log" if viewing else "#prompt").focus()
         elif key == "account":
@@ -929,7 +937,7 @@ class AgentWorkspace(ConversationUI, App):
         event.input.value = ""
         self.chat_message("你", message)
         self.compact_query_ready = False
-        self.update_width_note(self.workspace_widget("#chat"), self.size.width)
+        self.update_width_note(self.workspace_widget("#chat"), self.terminal_width)
         self.chat_invoice_routes = ()
         self.workspace_widget("#chat-invoices").display = False
         self.busy = True
@@ -1315,7 +1323,7 @@ class AgentWorkspace(ConversationUI, App):
                 and any(tool in SQL_ANSWER_TOOLS | {"list_tasks"} and outcome["status"] in {"SUCCESS", "NO_DATA"}
                         for tool, outcome in displayed)):
             self.compact_query_ready = True
-            self.update_width_note(chat, self.size.width)
+            self.update_width_note(chat, self.terminal_width)
         if displayed and self.agent.record_query_display(displayed, full_directory=True) is None:
             self.chat_message("Agent", "本轮结果已展示，但未能保存引用。请使用明确的企业和发票编号。")
 
@@ -1498,7 +1506,7 @@ class AgentWorkspace(ConversationUI, App):
             chat = self.workspace_widget("#chat")
             chat.remove_class("business-only")
             self.workspace_widget("#toggle-business", Button).label = "查看业务历史"
-            self.update_width_note(chat, self.size.width)
+            self.update_width_note(chat, self.terminal_width)
             self.workspace_widget("#prompt", Input).focus()
         else:
             self.call_later(self.refresh_pane, page)
