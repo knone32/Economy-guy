@@ -56,10 +56,10 @@ def _invoice_projection(sql, columns):
         if not field or field[1].lower() not in fields or field[1].lower() in mapping:
             return {}
         mapping[field[1].lower()] = i
-    return mapping if {"invoice_no", "invoice_date", "amount_cents"} <= mapping.keys() else {}
+    return mapping if "invoice_no" in mapping else {}
 
 
-def _invoice_coverage(db, scope, data, projection):
+def _invoice_coverage(db, scope, data, projection, *, blank_purpose=False):
     """Compare displayed identities to the same authorized snapshot, including filtered reads."""
     if "company_id" in projection:
         indexes = (projection["company_id"], projection["invoice_no"])
@@ -69,14 +69,17 @@ def _invoice_coverage(db, scope, data, projection):
         sql = "SELECT invoice_no FROM invoices"
     else:
         return None
+    if blank_purpose:
+        sql += " WHERE is_blank(purpose)"
     with closing(db.execute(sql)) as cursor:
         expected = set(cursor)
     shown = {tuple(row[i] for i in indexes) for row in data["rows"]}
     if not shown <= expected or len(shown) != len(data["rows"]):
         return None
+    paginated = any(match[1] for match in _SQL_PAGING.finditer(data["sql"]))
     return {"total": len(expected), "shown": len(shown),
-            "complete": shown == expected and not data["truncated"],
-            "sql_paginated": any(match[1] for match in _SQL_PAGING.finditer(data["sql"])),
+            "complete": shown == expected and not data["truncated"] and not (blank_purpose and paginated),
+            "sql_paginated": paginated,
             "display_truncated": data["truncated"]}
 
 
@@ -257,12 +260,19 @@ class BusinessSQL:
         data = {"sql": sql, "columns": columns, "rows": rows, "row_count": len(rows),
                 "truncated": truncated, "derived": derived}
         projection = _invoice_projection(sql, columns)
-        if projection:
+        if {"invoice_no", "invoice_date", "amount_cents"} <= projection.keys():
             data["invoice_projection"] = projection
-            if selects == 1 and reads == {"invoices"} and not functions & _AGGREGATES:
+        if projection and reads == {"invoices"}:
+            data["invoice_display_identity"] = {key: projection[key] for key in ("company_id", "invoice_no")
+                                                if key in projection}
+            if selects == 1 and not functions & _AGGREGATES:
                 coverage = _invoice_coverage(db, scope, data, projection)
                 if coverage is not None:
-                    data["invoice_coverage"] = coverage
+                    if "invoice_projection" in data:
+                        data["invoice_coverage"] = coverage
+                    blank = _invoice_coverage(db, scope, data, projection, blank_purpose=True)
+                    if blank is not None:
+                        data["blank_purpose_coverage"] = blank
         # The selectable form projects original keys directly, without aliases,
         # aggregation, subqueries or paging. General SQL still returns read results.
         keys = ()

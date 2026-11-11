@@ -5,7 +5,7 @@ import json
 from decimal import Decimal
 from uuid import uuid4
 from .permissions import check_permission
-from .queries import list_invoices
+from .queries import get_invoice, list_invoices
 from .stage2_schema import open_existing
 
 
@@ -211,3 +211,20 @@ def check_missing_purpose(connection, user_id, company_id, year, month, rule_bus
     return {"missing_invoices": missing, "count": len(missing), "rule": asdict(decision),
             "rule_business_date": reference_date, "target_year": year, "target_month": month,
             "reference_rule_screening": rule_business_date is not None}
+
+
+def check_displayed_purpose(connection, user_id, company_id, periods, keys, rule_business_date):
+    """Recheck the displayed invoice identities in the current authorized transaction."""
+    decision = resolve_rule(connection, user_id, company_id, "purpose", rule_business_date)
+    missing = []
+    for company, number in keys:
+        if company != company_id:
+            raise RuleError("SCOPE_MISMATCH")
+        invoice = get_invoice(connection, user_id, company, number)
+        if invoice is None or tuple(map(int, invoice["invoice_date"][:7].split("-"))) not in periods:
+            raise RuleError("STALE_REFERENCE")
+        if missing_required_purpose(decision.params, invoice):
+            missing.append(invoice)
+    return {"missing_invoices": missing, "count": len(missing), "rule": asdict(decision),
+            "rule_business_date": rule_business_date, "reference_rule_screening": True,
+            "checked_count": len(keys)}

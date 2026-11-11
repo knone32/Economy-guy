@@ -667,14 +667,16 @@ def redundant_directory_count(outcome, directory_totals):
     return count is not None and totals == {count}
 
 
-def render_invoice_sql_coverage(coverage):
+def render_invoice_sql_coverage(coverage, *, filtered=False):
     total, shown = coverage["total"], coverage["shown"]
+    label = "用途为空的发票" if filtered else "发票"
     if coverage["complete"]:
-        return f"共 {total} 张发票，已展示全部 {shown} 张。" if total else "该范围没有发票。"
-    detail = f"该范围共 {total} 张发票，本次展示 {shown} 张"
+        return f"共 {total} 张{label}，已展示全部 {shown} 张。" if total else f"该范围没有{label}。"
+    detail = f"该范围共 {total} 张{label}，本次展示 {shown} 张"
     remaining = total - shown
     if remaining:
-        detail += f"，还有 {remaining} 张未展示。可按月查询发票目录查看。"
+        detail += f"，还有 {remaining} 张未展示。"
+        detail += "可分月查询同一筛选条件。" if filtered else "可按月查询发票目录查看。"
     else:
         detail += "，查询覆盖尚未核实。"
     if coverage["sql_paginated"]:
@@ -684,7 +686,7 @@ def render_invoice_sql_coverage(coverage):
     return detail
 
 
-def render_query_conclusion(results, *, invoice_set=False):
+def render_query_conclusion(results, *, invoice_coverage=None):
     """Summarize verified reads without copying the detail pane or guessing coverage."""
     lines = []
     directories = {}
@@ -743,8 +745,9 @@ def render_query_conclusion(results, *, invoice_set=False):
         elif name == "query_business_sql":
             if redundant_directory_count(outcome, directory_totals):
                 continue
-            if invoice_set and data.get("invoice_coverage"):
-                detail = render_invoice_sql_coverage(data["invoice_coverage"])
+            if invoice_coverage and data.get(invoice_coverage):
+                detail = render_invoice_sql_coverage(data[invoice_coverage],
+                                                     filtered=invoice_coverage == "blank_purpose_coverage")
                 if data["row_count"]:
                     detail += "明细见业务记录。"
             elif outcome["status"] == "NO_DATA":

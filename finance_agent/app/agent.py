@@ -3,6 +3,7 @@ import json
 import re
 from pathlib import Path
 from contextlib import ExitStack, closing
+from datetime import date
 from uuid import uuid4
 from .tool_registry import (TOOLS, TEACHING_TOOLS, REGISTRY, handle_tool, tool_result,
                             remaining_work_allowed, validate_arguments, register_invoice_selection)
@@ -25,7 +26,8 @@ from .thinking_protocol import ThinkingProtocol, ProtocolError
 from .model_config import resolve_connection,ProfileError
 from .model_transport import ModelTransport
 from .permissions import check_permission
-from .queries import available_periods
+from .queries import available_periods, QueryError
+from .rules import check_displayed_purpose, RuleError
 from .stage2_schema import open_existing
 import sqlite3
 
@@ -181,6 +183,7 @@ class Agent:
     def cancel_update(self):
         self._check_identity()
         self.pending_intent = None
+        self.context.displayed_sql_invoices = None
         if self.management_turn:
             self.management_turn.active=False
         if self.management_proposals:
@@ -416,6 +419,8 @@ class Agent:
         return True
 
     def record_query_display(self, results, *, full_directory=False):
+        if self.defer_display_anchors:
+            self.context.remember_displayed_sql_invoices(results)
         try:
             anchors = self.context.record_displayed(results, self.trace_id, full_directory=full_directory)
         except sqlite3.Error:
@@ -432,6 +437,8 @@ class Agent:
         if self.workbook_guard:
             self.workbook_guard()
         current_request = text
+        displayed_invoices = self.context.displayed_sql_invoices
+        self.context.displayed_sql_invoices = None
         pending, self.pending_intent = self.pending_intent, None
         pending_from = None
         supplemental_year = None
@@ -500,7 +507,13 @@ class Agent:
                 forward = reference_hint(parts[1])
                 if forward and type(forward["ordinal"]) is int:
                     query_text, deferred = parts[0], True
-        explicit = explicit_scope(query_text, include_update_aliases=True)
+        rule_reference = read_only and re.fullmatch(
+            r"\s*(?:(?:请|帮我)\s*)?(?:(?:确定|确认|检查|核查|筛选|找出|查看)\s*)?"
+            r"(?:这些|这批|这组|上述|前述)发票(?:中|里)?\s*(?:按照|按|依据|根据|参考)\s*"
+            r"(?P<period>[\d一二三四五六七八九十年月日份号/\-\s]+?)\s*(?:的\s*)?(?:用途)?规则"
+            r"(?:中|下)?\s*(?:违规|不合规|不符合(?:规则|要求)?|缺少必填用途)(?:的)?"
+            r"(?:所有|全部)?(?:发票)?\s*[。！？!?]?\s*", pending_from or query_text)
+        explicit = {} if rule_reference else explicit_scope(query_text, include_update_aliases=True)
         goal = query_goal(query_text) if mixed or deferred else None
         corrected = False
         date_sources = {}
@@ -641,8 +654,12 @@ class Agent:
                        and len(explicit.get("company_id", ())) == 1 and bool(requested_periods)
                        and re.fullmatch(
                            read_subject + r"[\d一二三四五六七八九十年月份的、和与及以至到–—/\-\s]+"
-                           r"(?:所有|全部|全量|完整)\s*(?:的\s*)?发票(?:目录|清单)?\s*[。！？!?]?\s*",
+                           r"(?:所有|全部|全量|完整)\s*(?:的\s*)?"
+                           r"(?P<blank>(?:未填写用途|用途(?:为空|未填写))(?:的\s*)?)?"
+                           r"发票(?:目录|清单)?\s*[。！？!?]?\s*",
                            pending_from or query_text, flags=re.IGNORECASE))
+        invoice_coverage = ("blank_purpose_coverage" if invoice_set and invoice_set["blank"]
+                            else "invoice_coverage")
         read_subject += (
             r"(?:(?:\d{4}\s*(?:年(?:\s*的)?(?:\s*(?:\d{1,2}|[一二三四五六七八九十]{1,2})\s*月)?"
             r"|[-/]\s*\d{1,2})|这个月|本月|当月)\s*(?:的\s*)?)?"
@@ -903,11 +920,11 @@ class Agent:
                                    and tuple(outcome["evidence"]["scope"].get("company_ids", ())) == tuple(explicit["company_id"])
                                    and tuple(map(tuple, outcome["evidence"]["scope"].get("periods", ()))) == tuple(requested_periods)]
             invoice_sql = next(((name, outcome) for name, outcome in invoice_sql_results
-                                if outcome["data"].get("invoice_coverage", {}).get("complete")), None)
+                                if outcome["data"].get(invoice_coverage, {}).get("complete")), None)
             invoice_sql_verified = invoice_sql is not None
             if invoice_sql is None:
                 invoice_sql = max(invoice_sql_results, key=lambda item:
-                                  item[1]["data"].get("invoice_coverage", {}).get("shown", -1), default=None)
+                                  item[1]["data"].get(invoice_coverage, {}).get("shown", -1), default=None)
             metric_notice = None
             if metric_request:
                 metric = metric_request[1]
@@ -934,12 +951,16 @@ class Agent:
                     span = f" {year} 年" + (f" {month} 月" if month else "") if year else " 全部账期"
                     unit = "张" if key == "invoice_count" else "元"
                     metric_notice = f"{company}{span}的{label}为 {next(iter(values))} {unit}。"
+            referenced = next((outcome["evidence"] for _, outcome in facts
+                               if "displayed_set_complete" in outcome["evidence"]), None)
             response = {"source": "runtime_output", "category": category, "operation_receipt": self.write_receipt,
                         "execution": execution.snapshot(), "query_evidence_count": len(facts), "write_expected": write_expected,
-                        "single_query_verified": bool(directory_verified or metric_notice or invoice_sql_verified),
+                        "single_query_verified": bool(directory_verified or metric_notice or invoice_sql_verified
+                                                      or (referenced and referenced["displayed_set_complete"])),
                         "single_query_partial": bool((simple_directory and directory_results and not directory_verified)
-                                                     or (invoice_sql and invoice_sql[1]["data"].get("invoice_coverage")
-                                                         and not invoice_sql_verified))}
+                                                     or (invoice_sql and invoice_sql[1]["data"].get(invoice_coverage)
+                                                         and not invoice_sql_verified)
+                                                     or (referenced and not referenced["displayed_set_complete"]))}
             if goal_coverage:
                 response["goal_coverage"] = goal_coverage
             if page_read:
@@ -963,8 +984,8 @@ class Agent:
                 category = response["category"] = "database_query"
                 text = "\n".join(filter(None, (render_information(directory_results), issue)))
             elif invoice_sql and stop in read_finish:
-                chat_notice = render_query_conclusion([invoice_sql], invoice_set=True)
-                if not invoice_sql[1]["data"].get("invoice_coverage"):
+                chat_notice = render_query_conclusion([invoice_sql], invoice_coverage=invoice_coverage)
+                if not invoice_sql[1]["data"].get(invoice_coverage):
                     chat_notice += " 尚未核实是否覆盖该范围的全部发票。"
                 category = response["category"] = "database_query"
                 text = chat_notice
@@ -1040,6 +1061,82 @@ class Agent:
                                          "fulfillment": fulfillment["status"], "query_evidence_count": len(facts)})
             self.last_response["trace_degraded"] = self.trace_degraded
             return text
+        if rule_reference:
+            selection = pending.get("displayed_invoices") if pending_from else displayed_invoices
+            if not selection:
+                notice = "请先查询并展示一组明确的发票，再引用这批发票核对规则。"
+                return finish(notice, store=False, category="clarification", chat_notice=notice)
+            scope = explicit_scope(rule_reference["period"])
+            months = scope.get("month", ())
+            if len(months) != 1:
+                notice = "请提供唯一的规则参考月份。"
+                return finish(notice, store=False, category="clarification", chat_notice=notice)
+            years = scope.get("year") or ([supplemental_year] if supplemental_year else
+                                         sorted({year for year, _ in selection["periods"]}))
+            if len(years) != 1:
+                notice = "请补充参考规则的年份。"
+                answer = finish(notice, store=False, category="clarification", chat_notice=notice,
+                                missing_fields=("year",))
+                self.pending_intent["displayed_invoices"] = selection
+                return answer
+            period = rule_reference["period"].strip()
+            try:
+                if re.fullmatch(r"\d{4}-\d{2}-\d{2}", period):
+                    reference_date = date.fromisoformat(period).isoformat()
+                elif re.search(r"[日号]|\d{4}[-/]\d{1,2}[-/]\d", period):
+                    raise ValueError()
+                else:
+                    reference_date = date(years[0], months[0], 1).isoformat()
+            except ValueError:
+                notice = "请提供有效的规则参考年月，或使用 YYYY-MM-DD 指定日期。"
+                return finish(notice, store=False, category="clarification", chat_notice=notice)
+            company, periods, keys = (selection[key] for key in ("company_id", "periods", "keys"))
+            name = "check_missing_purpose"
+            args = {"company_id": company, "periods": periods, "invoice_keys": keys,
+                    "rule_business_date": reference_date}
+            status = execution.dispatch(name, json.dumps(args)) if self.workbook_available() else "ERROR"
+            data = None
+            if not status:
+                try:
+                    with closing(open_existing(self.db_path, readonly=True)) as db:
+                        db.execute("BEGIN")
+                        data = check_displayed_purpose(db, self.user_id, company, periods, keys, reference_date)
+                except PermissionError:
+                    status = "DENIED"
+                except RuleError as error:
+                    status = str(error)
+                except (QueryError, sqlite3.Error, ValueError):
+                    status = "ERROR"
+            evidence = {"source": "current_sqlite", "scope": {"company_id": company, "periods": periods},
+                        "rule": data["rule"], "reference_rule_screening": True,
+                        "displayed_set_complete": selection["complete"]} if data else {}
+            result = tool_result(status or "SUCCESS", data, evidence)
+            execution.observe(name, args, result)
+            self.trace("reference.rule_check", {"arguments": args, "result": result})
+            read_results.append((name, result))
+            operation = {"id": f"harness-reference-{self.trace_id}", "tool": name, "arguments": args,
+                         "status": result["status"],
+                         "scope": {**evidence.get("scope", {}), "rule_business_date": reference_date},
+                         "rule": (data["rule"]["rule_id"], data["rule"]["version"]) if data else None,
+                         "source": evidence.get("source"), "error": result["error"]}
+            if not data:
+                notice = ("原发票已不存在或账期已变化，请重新查询这组发票。" if status == "STALE_REFERENCE"
+                          else render_tool_failure(status, name, result))
+                answer = finish(notice, store=False, chat_notice=notice)
+                self.last_response["reference_rule_read"] = operation
+                return answer
+            span = "、".join(f"{year:04d}-{month:02d}" for year, month in periods)
+            rule = data["rule"]
+            notice = (f"{company}（{span}）上轮展示的 {data['checked_count']} 张发票已重新读取。"
+                      f"按 {reference_date} 的 {rule['rule_id']} v{rule['version']} 参考筛选，"
+                      f"当前有 {data['count']} 张缺少必填用途，明细见业务记录。"
+                      "这是按指定规则重新筛选，正式用途检查仍限于 2026 年 9 月。")
+            if not selection["complete"]:
+                notice += "上轮未核实完整集合，本轮仅覆盖已展示的发票。"
+            answer = finish(notice, store=False, category="database_query", chat_notice=notice)
+            self.last_response["reference_rule_read"] = operation
+            return answer
+
         if (not self.teaching and not management and not mixed and not explicit.get("invoice_no")
                 and re.search(r"银行(?:流水|收入|支出|收支|统计|总额)", text)
                 and re.search(r"修改|更改|调整|改成|改为|改一下|改掉|更新", text)):

@@ -65,6 +65,7 @@ class ContextBuilder:
         self.recent_invoice_query = None
         self.annual_focus = None
         self.display_ids = None
+        self.displayed_sql_invoices = None
         self.restored_turns = []
         self.personal_detail = "普通"
 
@@ -212,6 +213,27 @@ class ContextBuilder:
         if len(directories) == 1:
             return dict(zip(("company_id", "year", "month", "sort_by", "sort_order"), next(iter(directories))))
         return None
+
+    def remember_displayed_sql_invoices(self, results):
+        collections = []
+        for name, outcome in results:
+            if (name != "query_business_sql" or outcome["status"] != "SUCCESS"
+                    or outcome["evidence"].get("source") != "current_sqlite"):
+                continue
+            data, scope = outcome["data"], outcome["evidence"]["scope"]
+            identity = data.get("invoice_display_identity")
+            company, periods = scope.get("company_id"), scope.get("periods")
+            if not identity or not company or not periods:
+                continue
+            if "company_id" in identity and any(row[identity["company_id"]] != company for row in data["rows"]):
+                continue
+            keys = tuple(dict.fromkeys((company, row[identity["invoice_no"]]) for row in data["rows"]))
+            if keys:
+                complete = any(data.get(key, {}).get("complete") for key in
+                               ("invoice_coverage", "blank_purpose_coverage"))
+                collections.append({"company_id": company, "periods": tuple(map(tuple, periods)),
+                                    "keys": keys, "complete": complete})
+        self.displayed_sql_invoices = collections[0] if len(collections) == 1 else None
 
     def record_displayed(self,results,display_id,*,full_directory=False):
         """调用方已经按实际结果渲染后，提取展示的有序联合键，不采信模型描述。"""

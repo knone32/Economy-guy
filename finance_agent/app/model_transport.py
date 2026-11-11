@@ -5,7 +5,7 @@ import re
 import time
 from urllib.parse import urlsplit
 
-from .model_config import QWEN_PREFLIGHT, is_official_qwen
+from .model_config import QWEN_PREFLIGHT, QWEN_SNAPSHOT, is_official_qwen
 from .thinking_protocol import ThinkingProtocol, is_official_deepseek_endpoint
 from .trace import redact, warn_trace_degraded
 
@@ -23,7 +23,7 @@ _ERROR_CODES = {
 }
 _PARAMETER = re.compile(
     r"(?:model|messages|tools|tool_choice|response_format|max_tokens|max_completion_tokens|temperature|top_p|"
-    r"enable_thinking|thinking|reasoning_effort|preserve_thinking|stream)"
+    r"enable_thinking|thinking|reasoning_effort|thinking_budget|preserve_thinking|stream)"
     r"(?:\[[0-9]{1,4}\]|\.[0-9]{1,4}|\.(?:role|name|content|tool_call_id|tool_calls|function|arguments|"
     r"parameters|type|properties|required|additionalProperties|strict|items|enum|description|minItems|maxItems|"
     r"steps|depends_on|selection_id|excluded_invoice_ids|rule_business_date|rule_cohort|target_year|target_month)){0,16}"
@@ -160,7 +160,9 @@ class ModelTransport:
                                        bind_environment=False)
         self.protocol.check_binding()
         self.official_qwen = is_official_qwen(p)
-        self.protocol_mode = ("deepseek-thinking" if self.protocol.enabled else
+        self.qwen_auto = self.official_qwen and p.protocol == "auto"
+        self.protocol_mode = ("qwen-thinking" if self.qwen_auto else
+                              "deepseek-thinking" if self.protocol.enabled else
                               QWEN_PREFLIGHT if self.official_qwen and p.protocol == QWEN_PREFLIGHT else "standard")
         self.attempts=self.successes=self.failures=0
         self.last_response = None
@@ -186,8 +188,7 @@ class ModelTransport:
             self.diagnose_next_request = False
         messages=self.protocol.wire(messages,bool(tools))
         profile = self.connection.profile
-        if (profile.provider == "openai-compatible" and self.protocol_mode == "standard"
-                and not (self.official_qwen or self.official_deepseek)):
+        if profile.provider == "openai-compatible" and not self.official_deepseek:
             system = [message for message in messages if message["role"] == "system"]
             if (system and (len(system) > 1 or messages[0] is not system[0])
                     and all(set(message) == {"role", "content"} and isinstance(message["content"], str)
@@ -197,11 +198,11 @@ class ModelTransport:
                 messages = [leading, *(message for message in messages if message["role"] != "system")]
         json_mode = stage != "connection" and (
             (profile.provider == "deepseek" and profile.base_url.rstrip("/") == "https://api.deepseek.com")
-            or (self.official_qwen and profile.protocol == "standard"))
+            or (self.official_qwen and profile.model == QWEN_SNAPSHOT and profile.protocol == "standard"))
         key = self.connection.api_key
         model = profile.model if _MODEL_ID.fullmatch(profile.model) and (not key or key not in profile.model) else None
         request = {"stage": stage, "has_tools": bool(tools), "model": model, "protocol_mode": self.protocol_mode}
-        timeout=60 if self.connection.profile.provider=='deepseek' else 30
+        timeout = 120 if self.official_qwen else 60 if profile.provider == 'deepseek' else 30
         self.attempts+=1
         self.last_response = None
         self.emit('api.request',{'attempt':self.attempts,'message_chars':len(json.dumps(messages,ensure_ascii=False)),
@@ -254,10 +255,14 @@ class ModelTransport:
                     kwargs['extra_body']={'thinking':{'type':'disabled'}}
                 completions = client.chat.completions
                 if self.official_qwen:
-                    thinking = self.protocol_mode == QWEN_PREFLIGHT
-                    kwargs["extra_body"] = {"enable_thinking": thinking}
-                    if thinking:
-                        kwargs["extra_body"].update(reasoning_effort="low", preserve_thinking=False)
+                    preflight = self.protocol_mode == QWEN_PREFLIGHT
+                    kwargs["extra_body"] = {"enable_thinking": self.qwen_auto or preflight}
+                    if self.qwen_auto:
+                        kwargs["reasoning_effort"] = "medium"
+                        kwargs["extra_body"]["preserve_thinking"] = False
+                    elif preflight:
+                        kwargs["reasoning_effort"] = "low"
+                        kwargs["extra_body"]["preserve_thinking"] = False
                 if tools:
                     kwargs.update(tools=tools, tool_choice="auto")
                 raw_response = self.official_qwen or stage != "agent"

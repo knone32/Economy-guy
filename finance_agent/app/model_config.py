@@ -15,6 +15,7 @@ CONFIG=Path(__file__).resolve().parents[1]/'config'
 DEFAULT_TEMPLATE=CONFIG/'model_profiles.toml'
 DEFAULT_LOCAL=CONFIG/'model_profiles.local.json'
 QWEN_SNAPSHOT = "qwen3.8-max-0902"
+QWEN_MODELS = frozenset({"qwen3.8-max", QWEN_SNAPSHOT, "qwen3.8-flash"})
 QWEN_PREFLIGHT = "qwen-thinking-preflight"
 PROFILE_PROTOCOLS = ("auto", "standard", "deepseek-thinking", QWEN_PREFLIGHT)
 
@@ -78,14 +79,16 @@ def _name_conflict(profiles, candidate):
 
 
 def is_official_qwen(profile):
-    """Only the requested snapshot and documented Bailian Chat Completions base URLs."""
-    if profile.provider != "openai-compatible" or profile.model != QWEN_SNAPSHOT:
+    """Recognize exact Qwen 3.8 IDs on documented Bailian Chat Completions endpoints."""
+    if (profile.provider != "openai-compatible" or profile.model not in QWEN_MODELS
+            or profile.protocol not in {"auto", "standard", QWEN_PREFLIGHT}):
         return False
     endpoint = urlsplit(safe_url(profile.base_url))
     if endpoint.path != "/compatible-mode/v1":
         return False
     host = endpoint.hostname
-    return host in {"dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com"} or bool(re.fullmatch(
+    return host in {"dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com",
+                    "cn-hongkong.dashscope.aliyuncs.com"} or bool(re.fullmatch(
         r"[a-z0-9][a-z0-9-]*\.(?:cn-beijing|ap-southeast-1|us-east-1|eu-central-1|"
         r"ap-northeast-1|cn-hongkong)\.maas\.aliyuncs\.com", host))
 
@@ -122,7 +125,7 @@ def validate_profile(data, *, new=False):
     if type(ref) is not str or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", ref):
         raise ProfileError("服务账户逻辑引用须使用 ASCII 字母、数字、点、下划线或短横线。")
     p = Profile(**{**values, "service_account_ref": ref})
-    if p.protocol == QWEN_PREFLIGHT and not is_official_qwen(p):
+    if p.protocol == QWEN_PREFLIGHT and (p.model != QWEN_SNAPSHOT or not is_official_qwen(p)):
         raise ProfileError("Qwen 思考预检仅支持指定快照和百炼官方端点")
     # 兼容代理在 auto 下走标准协议。只有显式选择 Thinking 才校验该专用能力。
     from .thinking_protocol import ThinkingProtocol

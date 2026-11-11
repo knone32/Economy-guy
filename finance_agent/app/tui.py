@@ -1097,8 +1097,9 @@ class AgentWorkspace(ConversationUI, App):
                 if single_item["status"] == "COMMITTED" and not receipt["readback_verified"]:
                     single_item["status"] = "UNKNOWN_OUTCOME"
             calls = turn_tools(agent.messages[offset:])
-            if page_read := agent.last_response.get("directory_page_read"):
-                calls.append(redact(page_read))
+            for key in ("directory_page_read", "reference_rule_read"):
+                if harness_read := agent.last_response.get(key):
+                    calls.append(redact(harness_read))
             verified = []
             call_by_id = {call["id"]: call for call in calls}
             for item in agent.messages[offset:]:
