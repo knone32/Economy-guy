@@ -90,6 +90,35 @@ class WriteReceiptTests(DatabaseTestCaseMixin, unittest.TestCase):
         self.assertEqual(self.current(), "回执测试")
         self.assertEqual(self.connection.execute("SELECT count(*) FROM invoice_audit").fetchone()[0], 1)
 
+    def test_exact_edit_recovers_when_model_skips_current_turn_read(self):
+        agent = self.agent()
+        draft = self.draft(agent)
+        self.assertEqual(agent.commit_update(draft.request_id, draft.fingerprint())["status"], "COMMITTED")
+        agent.model = scripted_model([{"role": "assistant", "content": '{"kind":"information","text":"已处理"}'}])
+        agent.ask("把c001的f002的用途改为回执测试")
+        self.assertEqual(agent.write_receipt["status"], "CURRENT_VALUE_MATCHES")
+        self.assertIn("无需再次修改", agent.last_response["chat_notice"])
+
+        proposal = dict(selection_id="old-turn-selection", field="purpose", new_value="资料打印",
+                        mode="item", excluded_invoice_ids=[])
+        reply = {"role": "assistant", "tool_calls": [{"id": "proposal", "type": "function",
+                 "function": {"name": "propose_invoice_changes", "arguments": json.dumps(proposal)}}]}
+        for actor in ("U001", "U002"):
+            with self.subTest(actor=actor):
+                editor = Agent(actor, self.db_path, scripted_model([reply]), mode="mock")
+                editor.ask("把c001的f002的用途改为资料打印")
+                if actor == "U001":
+                    change = editor.last_response["invoice_change"]
+                    self.assertEqual((change["company_id"], change["invoice_nos"], change["new_value"]),
+                                     ("C001", ("F002",), "资料打印"))
+                    self.assertEqual(editor.last_response["execution"]["stop_reason"], "WAITING_CONFIRMATION")
+                else:
+                    self.assertNotIn("invoice_change", editor.last_response)
+                    self.assertEqual(editor.last_response["execution"]["stop_reason"], "DENIED")
+                self.assertFalse(editor.update_session.drafts)
+        self.assertEqual(self.current(), "回执测试")
+        self.assertEqual(self.connection.execute("SELECT count(*) FROM invoice_audit").fetchone()[0], 1)
+
     def test_failed_commit_receipt_and_rollback(self):
         agent = self.agent()
         draft = self.draft(agent)

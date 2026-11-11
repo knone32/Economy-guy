@@ -1242,6 +1242,29 @@ class Agent:
         if summary_needs_period and (summary_request or metric_request) and not has_dates:
             return ask_summary_period()
 
+        exact_edit = literal_single_invoice_edit(text_request) if invoice_write and not reference else None
+
+        def read_exact_edit_target():
+            """Read the literal target for this turn without relying on model or history."""
+            if (not exact_edit or read_results or execution.schedule or self.user_id != actor
+                    or "get_invoice" not in self.allowed_tools or not self.workbook_available()):
+                return None
+            key = {name: exact_edit[name][0] for name in ("company_id", "invoice_no")}
+            scope = {name: [value] for name, value in key.items()}
+            raw = json.dumps(key)
+            if execution.dispatch("get_invoice", raw):
+                return None
+            outcome = handle_tool("get_invoice", raw, actor, self.db_path,
+                                  allowed_tools=self.allowed_tools, expected_scope=scope,
+                                  provenance=ScopeProof(actor, scope, dict.fromkeys(scope, "user_current")),
+                                  execution=execution)
+            read_results.append(("get_invoice", outcome))
+            execution.observe("get_invoice", key, outcome)
+            self.trace("invoice.target_read", {"arguments": key, "result": outcome})
+            if outcome["status"] == "SUCCESS" and outcome["evidence"].get("source") == "current_sqlite":
+                return ((key["company_id"], key["invoice_no"]),), outcome["evidence"]["scope"], "get_invoice"
+            return None
+
         confirmed_year = bool(inferred or (pending_from and explicit.get("year")))
         confirmed_fields = {"year"} if confirmed_year else set()
         if multi_month_read and len(requested_periods) > 1:
@@ -1384,11 +1407,16 @@ class Agent:
                         execution.stop("MODEL_FINISHED_WITH_PENDING_WORK")
                         notice = "本轮账期已经核验，其余操作尚未完成。请按原条件重试。"
                         return finish(notice, store=False, chat_notice=notice)
-                if (invoice_write and not execution.schedule
+                if (exact_edit and not execution.schedule
                         and (natural is None or natural["kind"] != "clarification")):
-                    edit = literal_single_invoice_edit(text_request)
-                    if edit and self.workbook_available():
-                        self.coordinator.assess_current_match(read_results, natural_scope=edit)
+                    if self.user_id == actor and self.workbook_available():
+                        if not read_results:
+                            read_exact_edit_target()
+                            if execution.stop_reason:
+                                outcome = read_results[-1][1] if read_results else None
+                                self.messages.pop()
+                                return finish(render_tool_failure(execution.stop_reason, "get_invoice", outcome))
+                        self.coordinator.assess_current_match(read_results, natural_scope=exact_edit)
                         if self.write_receipt["status"] == "CURRENT_VALUE_MATCHES":
                             self.messages.pop()
                             if natural is None:
@@ -1634,15 +1662,25 @@ class Agent:
                                 result = execution.guard("propose_invoice_changes", proposal)
                                 if result is None:
                                     selection = selections.get(proposal["selection_id"])
-                                    missing = [key for key in ("year", "month") if not explicit.get(key)]
-                                    if selection and selection[2] in {"query_business_sql", "check_missing_purpose"} and missing:
-                                        result = tool_result("AMBIGUOUS", evidence={"missing_fields": missing},
-                                                             error="集合修改必须明确完整年月")
-                                    else:
-                                        invoice_change, status, error = plan_invoice_change(
-                                            self, text, proposal, selection, authorized_periods=requested_periods,
-                                            literal_periods=literal_periods, read_results=read_results)
-                                        result = tool_result(status, error=error)
+                                    if (selection is None and exact_edit
+                                            and set(proposal) == {"selection_id", "field", "new_value", "mode",
+                                                                  "excluded_invoice_ids"}
+                                            and proposal["mode"] == "item" and not proposal["excluded_invoice_ids"]
+                                            and all(exact_edit[key] == [proposal[key]] for key in ("field", "new_value"))):
+                                        selection = read_exact_edit_target()
+                                        if execution.stop_reason:
+                                            result = (read_results[-1][1] if read_results
+                                                      else tool_result(execution.stop_reason))
+                                    if result is None:
+                                        missing = [key for key in ("year", "month") if not explicit.get(key)]
+                                        if selection and selection[2] in {"query_business_sql", "check_missing_purpose"} and missing:
+                                            result = tool_result("AMBIGUOUS", evidence={"missing_fields": missing},
+                                                                 error="集合修改必须明确完整年月")
+                                        else:
+                                            invoice_change, status, error = plan_invoice_change(
+                                                self, text, proposal, selection, authorized_periods=requested_periods,
+                                                literal_periods=literal_periods, read_results=read_results)
+                                            result = tool_result(status, error=error)
                         else:
                             result = handle_tool(fn.get("name"), fn.get("arguments"), self.user_id, self.db_path, self.update_session,
                                              allowed_tools=permitted, expected_scope=tool_scope, management_intent=management_intent,
