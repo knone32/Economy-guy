@@ -1312,9 +1312,11 @@ class Agent:
                     or (candidate and (candidate["mode"] != "item" or candidate["excluded_invoice_ids"]
                                        or candidate.get("rule_business_date") or candidate.get("rule_cohort")))):
                 return None
-            if source != "resolve_recent_invoice" or len(recent_keys) != 1:
+            recent_reference = bool(hint and hint["ordinal"] is None and not hint["anchor_id"])
+            if recent_keys != set(keys) or (source != "resolve_recent_invoice" and not recent_reference):
                 candidate = None
-            missing = unresolved_invoice_field(text_request, scope, candidate=candidate)
+            missing = unresolved_invoice_field(text_request, scope, candidate=candidate,
+                                               recent_reference=recent_reference)
             if missing is None:
                 return None
             value, suggested = missing

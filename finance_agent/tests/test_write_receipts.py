@@ -201,10 +201,11 @@ class WriteReceiptTests(DatabaseTestCaseMixin, unittest.TestCase):
                     self.assertIn("发票来源", response["chat_notice"])
         self.assertEqual(self.connection.execute("SELECT count(*) FROM invoice_audit").fetchone()[0], 0)
 
-    def field_clarification_agent(self, *, reference=False, value="资料打印", omit_marker=False):
+    def field_clarification_agent(self, *, reference=False, value="资料打印", omit_marker=False, prompt=None):
         agent = self.agent()
         invoice = {"company_id": "C001", "invoice_no": "F002"}
-        prompt = "把用图改成资料打印。" if reference else "把 C001 的 F002 改成资料打印。"
+        use_resolver = reference and prompt is None
+        prompt = prompt or ("把用图改成资料打印。" if reference else "把 C001 的 F002 改成资料打印。")
         if omit_marker:
             prompt = prompt.removeprefix("把").lstrip()
 
@@ -213,7 +214,7 @@ class WriteReceiptTests(DatabaseTestCaseMixin, unittest.TestCase):
             last_user = messages[user_index]
             lookup = next((message for message in messages[user_index + 1:] if message["role"] == "tool"), None)
             if lookup is None:
-                if reference and last_user["content"] == prompt:
+                if use_resolver and last_user["content"] == prompt:
                     name, args = "resolve_recent_invoice", {"source": "queried"}
                 else:
                     name, args = "get_invoice", invoice
@@ -232,6 +233,7 @@ class WriteReceiptTests(DatabaseTestCaseMixin, unittest.TestCase):
             from app.tool_registry import handle_tool
             read = handle_tool("get_invoice", json.dumps(invoice), "U001", self.db_path)
             agent.context.remember_invoice_query([("get_invoice", read)])
+            agent.last_response = {"tool_results": [("get_invoice", read)]}
         agent.model = model
         agent.ask(prompt)
         return agent
@@ -279,6 +281,25 @@ class WriteReceiptTests(DatabaseTestCaseMixin, unittest.TestCase):
         self.assertEqual(agent.last_response["execution"]["stop_reason"], "WAITING_CONFIRMATION")
         self.assertEqual(agent.last_response["invoice_change"]["invoice_nos"], ("F002",))
         self.assertIsNone(self.current())
+        self.assertEqual(self.connection.execute("SELECT count(*) FROM invoice_audit").fetchone()[0], 0)
+
+    def test_recent_invoice_field_typo_from_detail_lookup(self):
+        self.connection.execute("UPDATE invoices SET purpose='资料打印' WHERE company_id='C001' AND invoice_no='F002'")
+        self.connection.commit()
+        agent = self.field_clarification_agent(reference=True, value="你好", prompt="再把这张发票的用图改为你好")
+        self.assertIn("用途改成「你好」吗", agent.last_response["chat_notice"])
+        self.assertEqual(self.current(), "资料打印")
+        agent.ask("是")
+        self.assertEqual(agent.last_response["execution"]["stop_reason"], "WAITING_CONFIRMATION")
+        change = agent.last_response["invoice_change"]
+        self.assertEqual((change["invoice_nos"], change["field"], change["new_value"]),
+                         (("F002",), "purpose", "你好"))
+        self.assertEqual(self.current(), "资料打印")
+        for prompt in ("不要再把这张发票的用图改为你好", "再把这张发票的金额改为你好"):
+            with self.subTest(prompt=prompt):
+                rejected = self.field_clarification_agent(reference=True, value="你好", prompt=prompt)
+                self.assertIsNone(rejected.pending_intent)
+                self.assertNotIn("invoice_change", rejected.last_response)
         self.assertEqual(self.connection.execute("SELECT count(*) FROM invoice_audit").fetchone()[0], 0)
 
     def test_invoice_field_continuation_retires_on_new_scope_and_rechecks_permissions(self):

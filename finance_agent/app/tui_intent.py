@@ -59,6 +59,7 @@ _EXCLUDED = re.compile(
 )
 _FIELD_NAMES = {"purpose": "用途", "remark": "备注"}
 _HYPOTHETICAL = re.compile(r"^\s*(?:如果|假如|假设|例如|怎样|如何|能否|能不能)")
+_NEGATED_EDIT = re.compile(r"不|别|禁止|无需")
 
 
 _EDIT_ACTION = r"[改填补设写换]"
@@ -87,7 +88,7 @@ def literal_single_invoice_edit(text, *, reference=None):
     return None
 
 
-def unresolved_invoice_field(text, scope, *, candidate=None):
+def unresolved_invoice_field(text, scope, *, candidate=None, recent_reference=False):
     """Extract only a literal value from a single assignment eligible for a field question."""
     text = text.strip().rstrip("。！!").strip()
     if any(label in text for label in _FIELD_NAMES.values()):
@@ -105,9 +106,20 @@ def unresolved_invoice_field(text, scope, *, candidate=None):
         explicit = explicit_scope(target, include_update_aliases=True)
         if all(explicit.get(key) == [scope[key]] for key in ("company_id", "invoice_no")):
             return values[0], None
-    if (match["marker"] and candidate and re.fullmatch(r"[\u3400-\u9fff]{1,3}", target)
-            and values[0] == candidate["new_value"]):
-        return values[0], _FIELD_NAMES[candidate["field"]]
+    if not candidate or values[0] != candidate["new_value"]:
+        return None
+    label = _FIELD_NAMES[candidate["field"]]
+    if match["marker"] and re.fullmatch(r"[\u3400-\u9fff]{1,3}", target):
+        return values[0], label
+    # The model supplies the candidate. Only a near match on the field itself
+    # can extend a verified invoice reference into a semantic question.
+    owner, separator, field = target.rpartition("的")
+    field = field.strip()
+    if (recent_reference and separator and (match["marker"] or re.search(r"[把将]", owner))
+            and not (_HYPOTHETICAL.match(owner) or _NEGATED_EDIT.search(owner))
+            and re.fullmatch(r"[\u3400-\u9fff]{2}", field)
+            and sum(actual != expected for actual, expected in zip(field, label)) == 1):
+        return values[0], label
     return None
 
 
