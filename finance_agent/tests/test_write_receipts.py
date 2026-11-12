@@ -125,7 +125,7 @@ class WriteReceiptTests(DatabaseTestCaseMixin, unittest.TestCase):
                 "function": {"name": "get_invoice", "arguments": '{"company_id":"C001","invoice_no":"F002"}'}}]}
         final = {"role": "assistant", "content": '{"kind":"information","text":"当前用途为空"}'}
         def proposal(selection, month=9):
-            args = dict(selection_id=selection, field="purpose", new_value="资料的打印",
+            args = dict(selection_id=selection, field="purpose", new_value="资料打印",
                         mode="item", excluded_invoice_ids=[], target_year=2026, target_month=month)
             return {"role": "assistant", "tool_calls": [{"id": "proposal", "type": "function",
                     "function": {"name": "propose_invoice_changes", "arguments": json.dumps(args)}}]}
@@ -139,12 +139,12 @@ class WriteReceiptTests(DatabaseTestCaseMixin, unittest.TestCase):
             selection = json.loads(latest_tool["content"])["data"]["selection_id"]
             return proposal(selection)
         agent.model = edit_model
-        agent.ask("把它的用途改成资料的打印")
+        agent.ask("把他的用途改成资料打印")
         self.assertEqual(agent.last_response["invoice_change"]["invoice_nos"], ("F002",))
         self.assertEqual(agent.last_response["execution"]["stop_reason"], "WAITING_CONFIRMATION")
         for month, status in ((9, "WAITING_CONFIRMATION"), (8, "SCOPE_MISMATCH")):
             direct = Agent("U001", self.db_path, scripted_model([proposal("old-selection", month)]), mode="mock")
-            direct.ask("把 C001 的 F002 用途改为资料的打印")
+            direct.ask("把 C001 的 F002 用途改为资料打印")
             self.assertEqual(direct.last_response["execution"]["stop_reason"], status)
         self.assertEqual(self.connection.execute("SELECT count(*) FROM invoice_audit").fetchone()[0], 0)
         change = agent.last_response["invoice_change"]
@@ -153,7 +153,7 @@ class WriteReceiptTests(DatabaseTestCaseMixin, unittest.TestCase):
         self.assertEqual(status, "COMPLETED")
         self.assertTrue(agent.write_receipt["readback_verified"])
         agent.model = scripted_model([final])
-        agent.ask("把 C001 的 F002 用途改为资料的打印")
+        agent.ask("把 C001 的 F002 用途改为资料打印")
         self.assertEqual(agent.write_receipt["status"], "CURRENT_VALUE_MATCHES")
         self.assertEqual(self.connection.execute("SELECT count(*) FROM invoice_audit").fetchone()[0], 1)
 
