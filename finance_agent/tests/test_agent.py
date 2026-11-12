@@ -25,6 +25,18 @@ class AgentTests(DatabaseTestCaseMixin, unittest.TestCase):
         self.assertIn("发票价税合计为 9622.06 元", agent.last_response["chat_notice"])
         self.assertEqual(agent.last_response["fulfillment"]["status"], "VERIFIED_GOALS")
 
+    def test_missing_purpose_completion_requires_proven_scope_and_no_extra_goal(self):
+        from app.rules import SEED_RULES, import_rules
+        from app.stage2_schema import migrate
+        migrate(self.db_path)
+        import_rules(self.db_path, SEED_RULES, {"rule.manage"})
+        for suffix, state in (("，并说明依据。", "VERIFIED_GOALS"),
+                              ("，再比较两家银行收入。", "UNVERIFIED_RESULT")):
+            agent = self.agent([call("check_missing_purpose")])
+            agent.ask("检查 C001 2026 年 9 月缺少必填用途的发票"+suffix)
+            self.assertIn("R002 v2.0", agent.last_response["chat_notice"])
+            self.assertEqual(agent.last_response["fulfillment"]["status"], state)
+
     def test_multiple_tools_and_multiturn(self):
         agent = self.agent([call(), call("list_invoices", identifier="b")])
         self.assertIn("9622.06", agent.ask("查询甲企业2026年9月"))

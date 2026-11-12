@@ -693,6 +693,11 @@ class Agent:
         metric_request = read_only and not (reference or deferred or corrected or invoice_write) and re.fullmatch(
             read_subject + r"(发票(?:总数|数量|有多少张|价税合计)|银行(?:收入|支出)(?:总额|合计)?)"
             r"(?:是多少|有多少)?\s*[。！？!?]?\s*", pending_from or query_text, flags=re.IGNORECASE)
+        purpose_check_request = (single_read and not invoice_write
+            and len(explicit.get("company_id", ())) == len(explicit.get("periods", ())) == 1
+            and re.fullmatch(r"\s*(?:检查\s*)?" + read_subject
+                             + r"缺少(?:必填)?用途的发票\s*(?:[，,]?\s*(?:并且?|同时)?\s*说明依据)?\s*[。！？!?]?\s*",
+                             query_text, flags=re.IGNORECASE))
         exact_invoice = (not reference and not has_dates and
                          len(explicit.get("company_id", [])) == len(explicit.get("invoice_no", [])) == 1)
         invoice_detail = (single_read and not invoice_write
@@ -845,7 +850,7 @@ class Agent:
             proposals=self.management_proposals if management is None else None)
         def finish(text, store=True, category="operation_result", *, chat_notice=None, missing_fields=(),
                    summary_verified=False, explanation_partial=False, single_edit_verified=False,
-                   task_progress_verified=False):
+                   verified_read=False):
             page_issue = page_read = None
             if (simple_directory and full_directory and not execution.schedule
                     and execution.stop_reason in {None, "NO_PROGRESS", "COMPLETED", "EVIDENCE_RETURNED",
@@ -1004,7 +1009,7 @@ class Agent:
             response = {"source": "runtime_output", "category": category, "operation_receipt": self.write_receipt,
                         "execution": execution.snapshot(), "query_evidence_count": len(facts), "write_expected": write_expected,
                          "single_edit_verified": single_edit_verified,
-                         "single_query_verified": bool(task_progress_verified or summary_verified
+                         "single_query_verified": bool(verified_read or summary_verified
                                                        or directory_verified or metric_notice or invoice_sql_verified
                                                        or (stop in {"ANSWERED", "EVIDENCE_RETURNED"}
                                                            and invoice_detail_verified())
@@ -1244,26 +1249,31 @@ class Agent:
         if summary_needs_period and (summary_request or metric_request) and not has_dates:
             return ask_summary_period()
 
-        task_ids = self.context.scope.get("task_id", ())
-        task_companies = self.context.scope.get("company_id", ())
-        if (read_only and task_note_from_request and len(task_ids) == len(task_companies) == 1
-                and self.context.sources.get("task_id") == "current_sqlite"
+        if (read_only and task_note_from_request
                 and re.fullmatch(r"\s*继续(?:处理)?\s*刚才的待办\s*[。！!]?\s*", text_request)
                 and self.workbook_available()):
             from .responses import render_task_closure
-            from .tasks import task_details
+            from .tasks import task_details, unique_active_task_route
+            task_ids = self.context.scope.get("task_id", ())
+            task_companies = self.context.scope.get("company_id", ())
             try:
-                details = task_details(self.db_path, actor, task_companies[0], task_ids[0], include_filled=True)
+                route = ((task_companies[0], task_ids[0])
+                         if len(task_ids) == len(task_companies) == 1
+                         and self.context.sources.get("task_id") == "current_sqlite"
+                         else unique_active_task_route(self.db_path, actor))
+                if route is None:
+                    return finish("请打开待办列表，选择要继续的待办。", category="clarification")
+                details = task_details(self.db_path, actor, *route, include_filled=True)
             except (OSError, sqlite3.Error, ValueError):
                 details = None
             if details and details["ok"] and details["data"]["can_execute"]:
                 current = details["data"]
                 rule = current["check"]["rule"]
-                self.trace("task.focus_rechecked", {"task_id": task_ids[0], "company_id": task_companies[0],
+                self.trace("task.focus_rechecked", {"task_id": route[1], "company_id": route[0],
                            "rule_id": rule["rule_id"], "version": rule["version"], "count": current["check"]["count"],
                            "source": "current_sqlite"})
-                notice = f"待办 {task_ids[0]} · {rule['rule_id']} v{rule['version']}。\n" + render_task_closure(current)
-                return finish(notice, category="database_query", chat_notice=notice, task_progress_verified=True)
+                notice = f"待办 {route[1]} · {rule['rule_id']} v{rule['version']}。\n" + render_task_closure(current)
+                return finish(notice, category="database_query", chat_notice=notice, verified_read=True)
 
         exact_edit = literal_single_invoice_edit(text_request) if invoice_write and not reference else None
         queried = recent_invoices.get("queried")
@@ -1473,7 +1483,18 @@ class Agent:
                                 for name, outcome in read_results)):
                     self.messages.pop()  # Keep the untrusted final prose in Trace only.
                     notice = render_query_conclusion(read_results)
-                    return finish(notice, store=False, category="database_query", chat_notice=notice)
+                    checks = [outcome for name, outcome in read_results if name == "check_missing_purpose"]
+                    verified = False
+                    if purpose_check_request and len(checks) == 1 and not execution.schedule:
+                        check = checks[0]
+                        evidence = check["evidence"]
+                        data = check["data"]
+                        verified = (not evidence.get("reference_rule_screening")
+                                    and not scope_mismatch(explicit, evidence["scope"])
+                                    and evidence.get("rule") == data.get("rule") and bool(data.get("rule"))
+                                    and data["count"] == len(data["missing_invoices"]))
+                    return finish(notice, store=False, category="database_query", chat_notice=notice,
+                                  verified_read=verified)
                 wants_explanation = natural is not None and natural["kind"] == "explanation"
                 if natural is not None and not execution.schedule and invoice_detail_verified():
                     self.messages.pop()

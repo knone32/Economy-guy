@@ -1,6 +1,7 @@
 """当前SQLite中的单用户×企业待办任务；没有任务树或调度引擎。"""
 import json
 import sqlite3
+from contextlib import closing
 from decimal import Decimal
 from uuid import uuid4
 from .permissions import check_permission
@@ -47,6 +48,19 @@ def list_tasks(path, user_id, company_id):
         return result("SUCCESS" if rows else "NO_DATA",[_task(row) for row in rows],{"source":"current_sqlite","scope":{"company_id":company_id}})
     finally:
         connection.close()
+
+
+def unique_active_task_route(path, user_id):
+    """Return a task link only if the current user can read exactly one active task."""
+    with closing(open_existing(path, readonly=True)) as connection:
+        connection.execute("BEGIN")
+        rows = connection.execute(
+            "SELECT company_id, task_id FROM tasks WHERE user_id=? AND status='ACTIVE'",
+            (user_id,),
+        ).fetchall()
+        routes = [(row["company_id"], row["task_id"]) for row in rows
+                  if check_permission(connection, user_id, row["company_id"], "read").allowed]
+        return routes[0] if len(routes) == 1 else None
 
 
 def task_progress(path, user_id, company_id, year, month):
