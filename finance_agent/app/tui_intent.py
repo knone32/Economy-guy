@@ -6,9 +6,11 @@ from .responses import explicit_scope
 
 _COMPANY = r"(?:甲企业|乙企业|C\d+)"
 _INVOICE = r"F\d+"
+_ASSIGNMENT = r"修改为|设置为|改成|改为|设为"
+_JOINT_TARGET = rf"{_COMPANY}\s*(?:的\s*)?{_INVOICE}\s*(?:发票)?\s*(?:的\s*)?"
 _EDIT = re.compile(
     r"^(?:(?:请帮我|帮我|麻烦|请)\s*)?(?:(?:把|将)\s*(?P<target>[^。\n；;]*?)"
-    r"(?:的\s*)?(?P<field>用途|备注)\s*(?P<verb>修改为|设置为|改成|改为|设为|清空)|"
+    rf"(?:的\s*)?(?P<field>用途|备注)\s*(?P<verb>{_ASSIGNMENT}|清空)|"
     r"(?P<direct_verb>修改|更正|更新|补填|填写|清空)\s*(?P<direct>[^。\n；;]*?)(?P<direct_field>用途|备注))"
 )
 _SUPPLEMENT = re.compile(
@@ -78,11 +80,33 @@ def literal_single_invoice_edit(text, *, reference=None):
     scope = _edit_scope(match, text)
     if reference is not None and re.fullmatch(r"[它他]\s*(?:的\s*)?", match["target"]):
         scope.update({key: [reference[key]] for key in ("company_id", "invoice_no")})
-    elif not re.fullmatch(rf"{_COMPANY}\s*(?:的\s*)?{_INVOICE}\s*(?:发票)?\s*(?:的\s*)?",
-                          match["target"], re.I):
+    elif not re.fullmatch(_JOINT_TARGET, match["target"], re.I):
         return None
     if all(len(scope.get(key, ())) == 1 for key in ("company_id", "invoice_no", "field", "new_value")):
         return scope
+    return None
+
+
+def unresolved_invoice_field(text, scope, *, candidate=None):
+    """Extract only a literal value from a single assignment eligible for a field question."""
+    text = text.strip().rstrip("。！!").strip()
+    if any(label in text for label in _FIELD_NAMES.values()):
+        return None
+    match = re.fullmatch(
+        rf"(?:把|将)\s*(?P<target>[^，,。；;？！!?\r\n]+?)\s*(?:{_ASSIGNMENT})\s*"
+        r"(?P<value>[^，,。；;？！!?\r\n]+)", text)
+    if not match:
+        return None
+    target = match["target"]
+    values = literal_value(match["value"])
+    if not values:
+        return None
+    if re.fullmatch(_JOINT_TARGET, target, re.I):
+        explicit = explicit_scope(target, include_update_aliases=True)
+        if all(explicit.get(key) == [scope[key]] for key in ("company_id", "invoice_no")):
+            return values[0], None
+    if candidate and re.fullmatch(r"[\u3400-\u9fff]{1,3}", target) and values[0] == candidate["new_value"]:
+        return values[0], _FIELD_NAMES[candidate["field"]]
     return None
 
 

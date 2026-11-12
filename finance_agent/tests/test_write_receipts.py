@@ -201,6 +201,111 @@ class WriteReceiptTests(DatabaseTestCaseMixin, unittest.TestCase):
                     self.assertIn("发票来源", response["chat_notice"])
         self.assertEqual(self.connection.execute("SELECT count(*) FROM invoice_audit").fetchone()[0], 0)
 
+    def field_clarification_agent(self, *, reference=False, value="资料打印"):
+        agent = self.agent()
+        invoice = {"company_id": "C001", "invoice_no": "F002"}
+
+        def model(messages, tools):
+            user_index = next(index for index in range(len(messages) - 1, -1, -1) if messages[index]["role"] == "user")
+            last_user = messages[user_index]
+            lookup = next((message for message in messages[user_index + 1:] if message["role"] == "tool"), None)
+            if lookup is None:
+                if reference and last_user["content"].startswith("把"):
+                    name, args = "resolve_recent_invoice", {"source": "queried"}
+                else:
+                    name, args = "get_invoice", invoice
+            elif not reference and last_user["content"].startswith("把"):
+                return {"role": "assistant", "content": '{"kind":"information","text":"当前用途相同。"}'}
+            else:
+                selection = json.loads(lookup["content"])["data"]["selection_id"]
+                name, args = "propose_invoice_changes", {
+                    "selection_id": selection, "field": "purpose", "new_value": value, "mode": "item",
+                    "excluded_invoice_ids": [], "target_year": 2026, "target_month": 9,
+                }
+            return {"role": "assistant", "tool_calls": [{"id": name, "type": "function",
+                    "function": {"name": name, "arguments": json.dumps(args)}}]}
+
+        if reference:
+            from app.tool_registry import handle_tool
+            read = handle_tool("get_invoice", json.dumps(invoice), "U001", self.db_path)
+            agent.context.remember_invoice_query([("get_invoice", read)])
+        agent.model = model
+        prompt = "把用图改成资料打印。" if reference else "把 C001 的 F002 改成资料打印。"
+        agent.ask(prompt)
+        return agent
+
+    def test_missing_invoice_field_continues_to_separate_confirm_and_readback(self):
+        from app.invoice_batch import run_invoice_batch
+
+        agent = self.field_clarification_agent()
+        self.assertEqual(agent.last_response["chat_notice"], "你想修改这张发票的用途还是备注？")
+        self.assertEqual(agent.pending_intent["invoice_field"]["source"], "current_sqlite")
+        self.assertFalse(agent.update_session.drafts)
+        agent.ask("用途。")
+        change = agent.last_response["invoice_change"]
+        self.assertEqual((change["invoice_nos"], change["field"], change["new_value"]),
+                         (("F002",), "purpose", "资料打印"))
+        self.assertIsNone(agent.pending_intent)
+        self.assertIsNone(self.current())
+        self.assertEqual(self.connection.execute("SELECT count(*) FROM invoice_audit").fetchone()[0], 0)
+
+        previews = []
+        def approve(body):
+            previews.append(body)
+            self.assertIsNone(self.current())
+            return "confirm"
+
+        status, _ = run_invoice_batch(agent, change["source_request"], change,
+                                      approve_item=approve, approve_batch=None, checkpoint=lambda _: None)
+        self.assertEqual(status, "COMPLETED")
+        self.assertEqual(len(previews), 1)
+        self.assertEqual(agent.write_receipt["status"], "COMMITTED")
+        self.assertTrue(agent.write_receipt["readback_verified"])
+        self.assertEqual(self.current(), "资料打印")
+        run_invoice_batch(agent, change["source_request"], change,
+                          approve_item=lambda _: self.fail("repeated confirmation"),
+                          approve_batch=None, checkpoint=lambda _: None)
+        self.assertEqual(self.connection.execute("SELECT count(*) FROM invoice_audit").fetchone()[0], 1)
+
+    def test_suspected_invoice_field_waits_for_semantic_confirmation(self):
+        agent = self.field_clarification_agent(reference=True)
+        self.assertIn("用途改成「资料打印」吗", agent.last_response["chat_notice"])
+        self.assertEqual(agent.pending_intent["invoice_field"]["suggested"], "用途")
+        self.assertIsNone(self.current())
+        agent.ask("是")
+        self.assertEqual(agent.last_response["execution"]["stop_reason"], "WAITING_CONFIRMATION")
+        self.assertEqual(agent.last_response["invoice_change"]["invoice_nos"], ("F002",))
+        self.assertIsNone(self.current())
+        self.assertEqual(self.connection.execute("SELECT count(*) FROM invoice_audit").fetchone()[0], 0)
+
+    def test_invoice_field_continuation_retires_on_new_scope_and_rechecks_permissions(self):
+        for action in ("account", "cancel", "different_invoice", "permission", "changed_value"):
+            with self.subTest(action=action):
+                agent = self.field_clarification_agent(value="打印" if action == "changed_value" else "资料打印")
+                self.assertIsNotNone(agent.pending_intent)
+                if action in {"account", "cancel", "different_invoice"}:
+                    if action == "account":
+                        agent.user_id = "U002"
+                    elif action == "cancel":
+                        agent.cancel_update()
+                    agent.model = scripted_model([{"role": "assistant", "content": '{"kind":"general","text":"等待。"}'}])
+                if action == "permission":
+                    self.connection.execute("UPDATE permissions SET can_modify=0 WHERE user_id='U001' AND company_id='C001'")
+                    self.connection.commit()
+                try:
+                    agent.ask("查询 C001 的 F003" if action == "different_invoice" else "用途")
+                    self.assertNotIn("invoice_change", agent.last_response)
+                    self.assertIsNone(agent.pending_intent)
+                    self.assertFalse(agent.update_session.drafts)
+                    if action in {"permission", "changed_value"}:
+                        self.assertEqual(agent.last_response["execution"]["stop_reason"],
+                                         "DENIED" if action == "permission" else "SCOPE_MISMATCH")
+                finally:
+                    if action == "permission":
+                        self.connection.execute("UPDATE permissions SET can_modify=1 WHERE user_id='U001' AND company_id='C001'")
+                        self.connection.commit()
+        self.assertEqual(self.connection.execute("SELECT count(*) FROM invoice_audit").fetchone()[0], 0)
+
     def test_failed_commit_receipt_and_rollback(self):
         agent = self.agent()
         draft = self.draft(agent)
