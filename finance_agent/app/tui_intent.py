@@ -93,7 +93,7 @@ def unresolved_invoice_field(text, scope, *, candidate=None):
     if any(label in text for label in _FIELD_NAMES.values()):
         return None
     match = re.fullmatch(
-        rf"(?:把|将)\s*(?P<target>[^，,。；;？！!?\r\n]+?)\s*(?:{_ASSIGNMENT})\s*"
+        rf"(?:(?P<marker>把|将)\s*)?(?P<target>[^，,。；;？！!?\r\n]+?)\s*(?:{_ASSIGNMENT})\s*"
         r"(?P<value>[^，,。；;？！!?\r\n]+)", text)
     if not match:
         return None
@@ -105,7 +105,8 @@ def unresolved_invoice_field(text, scope, *, candidate=None):
         explicit = explicit_scope(target, include_update_aliases=True)
         if all(explicit.get(key) == [scope[key]] for key in ("company_id", "invoice_no")):
             return values[0], None
-    if candidate and re.fullmatch(r"[\u3400-\u9fff]{1,3}", target) and values[0] == candidate["new_value"]:
+    if (match["marker"] and candidate and re.fullmatch(r"[\u3400-\u9fff]{1,3}", target)
+            and values[0] == candidate["new_value"]):
         return values[0], _FIELD_NAMES[candidate["field"]]
     return None
 

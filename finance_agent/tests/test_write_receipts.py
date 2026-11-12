@@ -201,20 +201,23 @@ class WriteReceiptTests(DatabaseTestCaseMixin, unittest.TestCase):
                     self.assertIn("发票来源", response["chat_notice"])
         self.assertEqual(self.connection.execute("SELECT count(*) FROM invoice_audit").fetchone()[0], 0)
 
-    def field_clarification_agent(self, *, reference=False, value="资料打印"):
+    def field_clarification_agent(self, *, reference=False, value="资料打印", omit_marker=False):
         agent = self.agent()
         invoice = {"company_id": "C001", "invoice_no": "F002"}
+        prompt = "把用图改成资料打印。" if reference else "把 C001 的 F002 改成资料打印。"
+        if omit_marker:
+            prompt = prompt.removeprefix("把").lstrip()
 
         def model(messages, tools):
             user_index = next(index for index in range(len(messages) - 1, -1, -1) if messages[index]["role"] == "user")
             last_user = messages[user_index]
             lookup = next((message for message in messages[user_index + 1:] if message["role"] == "tool"), None)
             if lookup is None:
-                if reference and last_user["content"].startswith("把"):
+                if reference and last_user["content"] == prompt:
                     name, args = "resolve_recent_invoice", {"source": "queried"}
                 else:
                     name, args = "get_invoice", invoice
-            elif not reference and last_user["content"].startswith("把"):
+            elif not reference and not omit_marker and last_user["content"] == prompt:
                 return {"role": "assistant", "content": '{"kind":"information","text":"当前用途相同。"}'}
             else:
                 selection = json.loads(lookup["content"])["data"]["selection_id"]
@@ -230,15 +233,15 @@ class WriteReceiptTests(DatabaseTestCaseMixin, unittest.TestCase):
             read = handle_tool("get_invoice", json.dumps(invoice), "U001", self.db_path)
             agent.context.remember_invoice_query([("get_invoice", read)])
         agent.model = model
-        prompt = "把用图改成资料打印。" if reference else "把 C001 的 F002 改成资料打印。"
         agent.ask(prompt)
         return agent
 
     def test_missing_invoice_field_continues_to_separate_confirm_and_readback(self):
         from app.invoice_batch import run_invoice_batch
 
-        agent = self.field_clarification_agent()
+        agent = self.field_clarification_agent(omit_marker=True)
         self.assertEqual(agent.last_response["chat_notice"], "你想修改这张发票的用途还是备注？")
+        self.assertEqual(agent.pending_intent["invoice_field"]["new_value"], "资料打印")
         self.assertEqual(agent.pending_intent["invoice_field"]["source"], "current_sqlite")
         self.assertFalse(agent.update_session.drafts)
         agent.ask("用途。")
