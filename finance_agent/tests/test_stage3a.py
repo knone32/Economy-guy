@@ -180,6 +180,16 @@ class Stage3ATests(DatabaseTestCaseMixin,unittest.TestCase):
         self.assertEqual(resumed["evidence"]["check"]["rule"]["version"],"2.0")
         self.assertEqual(self.cli("preferences","get","--user","U001","--company","C001","--key","format")["data"]["value"],"简洁")
 
+    def test_resume_focused_task_reports_current_rule_and_progress(self):
+        task_id = self.task()
+        agent = Agent("U001", self.db_path, scripted_model([]), mode="mock")
+        self.assertTrue(agent.focus_task("C001", task_id)["ok"])
+        answer = agent.ask("继续处理刚才的待办。", task_note_from_request=True)
+        self.assertIn(task_id, answer)
+        self.assertIn("R002 v2.0", answer)
+        self.assertIn("当前剩余 5 张", answer)
+        self.assertEqual(agent.last_response["fulfillment"]["status"], "VERIFIED_GOALS")
+
     def test_restart_has_no_old_draft_or_confirmation(self):
         self.task()
         session = UpdateSession("U001")

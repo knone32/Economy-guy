@@ -61,20 +61,23 @@ _HYPOTHETICAL = re.compile(r"^\s*(?:如果|假如|假设|例如|怎样|如何|�
 
 def invoice_intent_source(text):
     """Only explicit edit language may leave a read-only continuation clue."""
-    return (not _HYPOTHETICAL.match(text) and re.search(r"发票|(?<![A-Za-z0-9])F\d+|这张|那张", text, re.I)
+    return (not _HYPOTHETICAL.match(text) and re.search(r"发票|(?<![A-Za-z0-9])F\d+|这张|那张|(?:把|将)\s*它", text, re.I)
             and re.search(r"[改填补设写换][^，,。；;\n]{0,2}[为成]\s*\S|改一下|^\s*修改|(?:用途|备注)\s*修改\s*[。！!]?$", text))
 
 
-def literal_single_invoice_edit(text):
+def literal_single_invoice_edit(text, *, reference=None):
     """Recognize a direct single-invoice assignment for read-only reconciliation."""
     text = text.strip().rstrip("。！!").strip()
     match = _EDIT.match(text)
     if (not match or not match["target"] or not match["verb"] or match["verb"] == "清空"
-            or not re.fullmatch(rf"{_COMPANY}\s*(?:的\s*)?{_INVOICE}\s*(?:发票)?\s*(?:的\s*)?",
-                                match["target"], re.I)
             or re.search(r"[，,；;。？！!?\n]", text[match.end():])):
         return None
     scope = _edit_scope(match, text)
+    if reference is not None and re.fullmatch(r"它\s*(?:的\s*)?", match["target"]):
+        scope.update({key: [reference[key]] for key in ("company_id", "invoice_no")})
+    elif not re.fullmatch(rf"{_COMPANY}\s*(?:的\s*)?{_INVOICE}\s*(?:发票)?\s*(?:的\s*)?",
+                          match["target"], re.I):
+        return None
     if all(len(scope.get(key, ())) == 1 for key in ("company_id", "invoice_no", "field", "new_value")):
         return scope
     return None

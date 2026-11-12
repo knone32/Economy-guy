@@ -119,6 +119,44 @@ class WriteReceiptTests(DatabaseTestCaseMixin, unittest.TestCase):
         self.assertEqual(self.current(), "回执测试")
         self.assertEqual(self.connection.execute("SELECT count(*) FROM invoice_audit").fetchone()[0], 1)
 
+    def test_single_edit_recovers_verified_pronoun_and_checks_proposed_period(self):
+        from app.invoice_batch import run_invoice_batch
+        read = {"role": "assistant", "tool_calls": [{"id": "read", "type": "function",
+                "function": {"name": "get_invoice", "arguments": '{"company_id":"C001","invoice_no":"F002"}'}}]}
+        final = {"role": "assistant", "content": '{"kind":"information","text":"当前用途为空"}'}
+        def proposal(selection, month=9):
+            args = dict(selection_id=selection, field="purpose", new_value="资料的打印",
+                        mode="item", excluded_invoice_ids=[], target_year=2026, target_month=month)
+            return {"role": "assistant", "tool_calls": [{"id": "proposal", "type": "function",
+                    "function": {"name": "propose_invoice_changes", "arguments": json.dumps(args)}}]}
+        agent = Agent("U001", self.db_path, scripted_model([read, final]), mode="mock")
+        agent.ask("查询 C001 的 F002，看看用途填了没有")
+        calls = iter((read, None))
+        def edit_model(messages, tools):
+            if reply := next(calls):
+                return reply
+            latest_tool = next(message for message in reversed(messages) if message["role"] == "tool")
+            selection = json.loads(latest_tool["content"])["data"]["selection_id"]
+            return proposal(selection)
+        agent.model = edit_model
+        agent.ask("把它的用途改成资料的打印")
+        self.assertEqual(agent.last_response["invoice_change"]["invoice_nos"], ("F002",))
+        self.assertEqual(agent.last_response["execution"]["stop_reason"], "WAITING_CONFIRMATION")
+        for month, status in ((9, "WAITING_CONFIRMATION"), (8, "SCOPE_MISMATCH")):
+            direct = Agent("U001", self.db_path, scripted_model([proposal("old-selection", month)]), mode="mock")
+            direct.ask("把 C001 的 F002 用途改为资料的打印")
+            self.assertEqual(direct.last_response["execution"]["stop_reason"], status)
+        self.assertEqual(self.connection.execute("SELECT count(*) FROM invoice_audit").fetchone()[0], 0)
+        change = agent.last_response["invoice_change"]
+        status, _ = run_invoice_batch(agent, change["source_request"], change,
+            approve_batch=lambda *_: False, approve_item=lambda _: "confirm", checkpoint=lambda _: None)
+        self.assertEqual(status, "COMPLETED")
+        self.assertTrue(agent.write_receipt["readback_verified"])
+        agent.model = scripted_model([final])
+        agent.ask("把 C001 的 F002 用途改为资料的打印")
+        self.assertEqual(agent.write_receipt["status"], "CURRENT_VALUE_MATCHES")
+        self.assertEqual(self.connection.execute("SELECT count(*) FROM invoice_audit").fetchone()[0], 1)
+
     def test_failed_commit_receipt_and_rollback(self):
         agent = self.agent()
         draft = self.draft(agent)

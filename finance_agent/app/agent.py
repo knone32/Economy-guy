@@ -844,7 +844,8 @@ class Agent:
             self.allowed_tools & {tool["function"]["name"] for tool in turn_tools},
             proposals=self.management_proposals if management is None else None)
         def finish(text, store=True, category="operation_result", *, chat_notice=None, missing_fields=(),
-                   summary_verified=False, explanation_partial=False, single_edit_verified=False):
+                   summary_verified=False, explanation_partial=False, single_edit_verified=False,
+                   task_progress_verified=False):
             page_issue = page_read = None
             if (simple_directory and full_directory and not execution.schedule
                     and execution.stop_reason in {None, "NO_PROGRESS", "COMPLETED", "EVIDENCE_RETURNED",
@@ -1003,7 +1004,8 @@ class Agent:
             response = {"source": "runtime_output", "category": category, "operation_receipt": self.write_receipt,
                         "execution": execution.snapshot(), "query_evidence_count": len(facts), "write_expected": write_expected,
                          "single_edit_verified": single_edit_verified,
-                         "single_query_verified": bool(summary_verified or directory_verified or metric_notice or invoice_sql_verified
+                         "single_query_verified": bool(task_progress_verified or summary_verified
+                                                       or directory_verified or metric_notice or invoice_sql_verified
                                                        or (stop in {"ANSWERED", "EVIDENCE_RETURNED"}
                                                            and invoice_detail_verified())
                                                       or (referenced and referenced["displayed_set_complete"])),
@@ -1242,10 +1244,42 @@ class Agent:
         if summary_needs_period and (summary_request or metric_request) and not has_dates:
             return ask_summary_period()
 
+        task_ids = self.context.scope.get("task_id", ())
+        task_companies = self.context.scope.get("company_id", ())
+        if (read_only and task_note_from_request and len(task_ids) == len(task_companies) == 1
+                and self.context.sources.get("task_id") == "current_sqlite"
+                and re.fullmatch(r"\s*继续(?:处理)?\s*刚才的待办\s*[。！!]?\s*", text_request)
+                and self.workbook_available()):
+            from .responses import render_task_closure
+            from .tasks import task_details
+            try:
+                details = task_details(self.db_path, actor, task_companies[0], task_ids[0], include_filled=True)
+            except (OSError, sqlite3.Error, ValueError):
+                details = None
+            if details and details["ok"] and details["data"]["can_execute"]:
+                current = details["data"]
+                rule = current["check"]["rule"]
+                self.trace("task.focus_rechecked", {"task_id": task_ids[0], "company_id": task_companies[0],
+                           "rule_id": rule["rule_id"], "version": rule["version"], "count": current["check"]["count"],
+                           "source": "current_sqlite"})
+                notice = f"待办 {task_ids[0]} · {rule['rule_id']} v{rule['version']}。\n" + render_task_closure(current)
+                return finish(notice, category="database_query", chat_notice=notice, task_progress_verified=True)
+
         exact_edit = literal_single_invoice_edit(text_request) if invoice_write and not reference else None
+        queried = recent_invoices.get("queried")
+        recent_edit = None
+        if (invoice_write and not reference and queried
+                and len({(item["company_id"], item["invoice_no"]) for item in recent_invoices.values()}) == 1
+                and any(name == "get_invoice" and result["status"] == "SUCCESS"
+                        and result["evidence"].get("source") == "current_sqlite"
+                        and all(result["evidence"]["scope"].get(key) == value for key, value in queried.items())
+                        for name, result in previous_results)):
+            recent_edit = literal_single_invoice_edit(text_request, reference=queried)
+        exact_edit = exact_edit or recent_edit
+        edit_selection_source = "resolve_recent_invoice" if recent_edit else "get_invoice"
 
         def read_exact_edit_target():
-            """Read the literal target for this turn without relying on model or history."""
+            """Reread the explicitly named or uniquely resolved joint key."""
             if (not exact_edit or read_results or execution.schedule or self.user_id != actor
                     or "get_invoice" not in self.allowed_tools or not self.workbook_available()):
                 return None
@@ -1256,13 +1290,14 @@ class Agent:
                 return None
             outcome = handle_tool("get_invoice", raw, actor, self.db_path,
                                   allowed_tools=self.allowed_tools, expected_scope=scope,
-                                  provenance=ScopeProof(actor, scope, dict.fromkeys(scope, "user_current")),
+                                  provenance=ScopeProof(actor, scope, dict.fromkeys(
+                                      scope, "trusted_reference" if recent_edit else "user_current")),
                                   execution=execution)
             read_results.append(("get_invoice", outcome))
             execution.observe("get_invoice", key, outcome)
             self.trace("invoice.target_read", {"arguments": key, "result": outcome})
             if outcome["status"] == "SUCCESS" and outcome["evidence"].get("source") == "current_sqlite":
-                return ((key["company_id"], key["invoice_no"]),), outcome["evidence"]["scope"], "get_invoice"
+                return ((key["company_id"], key["invoice_no"]),), outcome["evidence"]["scope"], edit_selection_source
             return None
 
         confirmed_year = bool(inferred or (pending_from and explicit.get("year")))
@@ -1632,7 +1667,10 @@ class Agent:
                                     # This read uses the explicit edit key, independently of the query period.
                                     tool_scope = {key: [target[key][0]] for key in ("company_id", "invoice_no")}
                                     tool_proof = ScopeProof(session.user_id, tool_scope, dict.fromkeys(tool_scope, "user_current"))
-                        if (recent_semantics and fn.get("name") == "get_invoice"
+                        if recent_edit and fn.get("name") == "get_invoice":
+                            tool_scope = {key: recent_edit[key] for key in ("company_id", "invoice_no")}
+                            tool_proof = ScopeProof(actor, tool_scope, dict.fromkeys(tool_scope, "trusted_reference"))
+                        elif (recent_semantics and fn.get("name") == "get_invoice"
                                 and "invoice_no" not in explicit):
                             # A model-chosen invoice key must pass through the recent resolver.
                             tool_scope = {key: values for key, values in tool_scope.items() if key != "invoice_no"}
@@ -1663,8 +1701,8 @@ class Agent:
                                 if result is None:
                                     selection = selections.get(proposal["selection_id"])
                                     if (selection is None and exact_edit
-                                            and set(proposal) == {"selection_id", "field", "new_value", "mode",
-                                                                  "excluded_invoice_ids"}
+                                            and set(proposal) <= {"selection_id", "field", "new_value", "mode",
+                                                                 "excluded_invoice_ids", "target_year", "target_month"}
                                             and proposal["mode"] == "item" and not proposal["excluded_invoice_ids"]
                                             and all(exact_edit[key] == [proposal[key]] for key in ("field", "new_value"))):
                                         selection = read_exact_edit_target()
@@ -1677,8 +1715,11 @@ class Agent:
                                             result = tool_result("AMBIGUOUS", evidence={"missing_fields": missing},
                                                                  error="集合修改必须明确完整年月")
                                         else:
+                                            edit_periods = requested_periods
+                                            if recent_edit and selection and selection[2] == "resolve_recent_invoice":
+                                                edit_periods = ((selection[1]["year"], selection[1]["month"]),)
                                             invoice_change, status, error = plan_invoice_change(
-                                                self, text, proposal, selection, authorized_periods=requested_periods,
+                                                self, text, proposal, selection, authorized_periods=edit_periods,
                                                 literal_periods=literal_periods, read_results=read_results)
                                             result = tool_result(status, error=error)
                         else:
@@ -1696,8 +1737,9 @@ class Agent:
                                 and result["evidence"].get("source") == "current_sqlite"):
                             scope = result["evidence"]["scope"]
                             invoice = result["data"]
+                            source = edit_selection_source if fn["name"] == "get_invoice" else fn["name"]
                             result["data"] = {**invoice, "selection_id": register_invoice_selection(
-                                selections, [(invoice["company_id"], invoice["invoice_no"])], scope, fn["name"])}
+                                selections, [(invoice["company_id"], invoice["invoice_no"])], scope, source)}
                         if (selections is not None and fn.get("name") == "check_missing_purpose"
                                 and result["status"] == "SUCCESS" and result["evidence"].get("source") == "current_sqlite"):
                             data = result["data"]
