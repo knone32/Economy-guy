@@ -1303,11 +1303,18 @@ class Agent:
         exact_edit = exact_edit or recent_edit
         edit_selection_source = "resolve_recent_invoice" if recent_edit else "get_invoice"
         reconciliation_edit = exact_edit
+        reconciliation_from_reference = bool(recent_edit)
+        if not reconciliation_edit and invoice_write and not reference and len(recent_keys) == 1:
+            (company, invoice_no), = recent_keys
+            reconciliation_edit = literal_single_invoice_edit(
+                text_request, reference={"company_id": company, "invoice_no": invoice_no}, allow_deictic=True)
+            reconciliation_from_reference = reconciliation_edit is not None
         if confirmed_invoice_edit:
             confirmed_scope, confirmed_field, confirmed_value = confirmed_invoice_edit
             reconciliation_edit = {key: [confirmed_scope[key]]
                                    for key in ("company_id", "invoice_no", "year", "month")}
             reconciliation_edit.update(field=[confirmed_field], new_value=[confirmed_value])
+            reconciliation_from_reference = False
 
         def ask_invoice_field(selection, candidate=None, *, discard_final=False):
             if not invoice_proposals or selection is None:
@@ -1340,7 +1347,7 @@ class Agent:
             return finish(notice, store=False, category="clarification", chat_notice=notice,
                           missing_fields=("field",))
 
-        def read_exact_edit_target(target=None):
+        def read_exact_edit_target(target=None, *, from_reference=False):
             """Reread the explicitly named or uniquely resolved joint key."""
             target = target or exact_edit
             if (not target or read_results or execution.schedule or self.user_id != actor
@@ -1352,10 +1359,10 @@ class Agent:
             raw = json.dumps(key)
             if execution.dispatch("get_invoice", raw):
                 return None
+            source = "trusted_reference" if recent_edit or from_reference else "user_current"
             outcome = handle_tool("get_invoice", raw, actor, self.db_path,
                                   allowed_tools=self.allowed_tools, expected_scope=expected,
-                                  provenance=ScopeProof(actor, scope, dict.fromkeys(
-                                      scope, "trusted_reference" if recent_edit else "user_current")),
+                                  provenance=ScopeProof(actor, scope, dict.fromkeys(scope, source)),
                                   execution=execution)
             read_results.append(("get_invoice", outcome))
             execution.observe("get_invoice", key, outcome)
@@ -1527,10 +1534,11 @@ class Agent:
                         notice = "本轮账期已经核验，其余操作尚未完成。请按原条件重试。"
                         return finish(notice, store=False, chat_notice=notice)
                 if (reconciliation_edit and not execution.schedule
-                        and (natural is None or natural["kind"] != "clarification" or confirmed_invoice_edit)):
+                        and (natural is None or natural["kind"] != "clarification" or confirmed_invoice_edit
+                             or set(natural["missing_fields"]) == {"new_value"})):
                     if self.user_id == actor and self.workbook_available():
                         if not read_results:
-                            read_exact_edit_target(reconciliation_edit)
+                            read_exact_edit_target(reconciliation_edit, from_reference=reconciliation_from_reference)
                             if execution.stop_reason:
                                 outcome = read_results[-1][1] if read_results else None
                                 self.messages.pop()

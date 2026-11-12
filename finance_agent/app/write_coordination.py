@@ -98,7 +98,7 @@ class WriteCoordinator:
             return
         company,invoice=scope['company_id'][0],scope['invoice_no'][0]
         if natural_scope and not any(
-            name == "get_invoice" and outcome["status"] == "SUCCESS"
+            name in {"get_invoice", "resolve_recent_invoice"} and outcome["status"] == "SUCCESS"
             and outcome["evidence"].get("source") == "current_sqlite"
             and (row := outcome["data"]).get("company_id") == company
             and row.get("invoice_no") == invoice and row.get(field) == value

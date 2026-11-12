@@ -71,7 +71,7 @@ def invoice_intent_source(text):
             and re.search(rf"{_EDIT_ACTION}[^，,。；;\n]{{0,2}}[为成]\s*\S|改一下|^\s*修改|(?:用途|备注)\s*修改\s*[。！!]?$", text))
 
 
-def literal_single_invoice_edit(text, *, reference=None):
+def literal_single_invoice_edit(text, *, reference=None, allow_deictic=False):
     """Recognize a direct single-invoice assignment for read-only reconciliation."""
     text = text.strip().rstrip("。！!").strip()
     match = _EDIT.match(text)
@@ -79,7 +79,10 @@ def literal_single_invoice_edit(text, *, reference=None):
             or re.search(r"[，,；;。？！!?\n]", text[match.end():])):
         return None
     scope = _edit_scope(match, text)
-    if reference is not None and re.fullmatch(r"[它他]\s*(?:的\s*)?", match["target"]):
+    reference_target = r"[它他]"
+    if allow_deictic:
+        reference_target = rf"(?:{reference_target}|[这那](?:一)?张(?:发票|票)?)"
+    if reference is not None and re.fullmatch(rf"{reference_target}\s*(?:的\s*)?", match["target"]):
         scope.update({key: [reference[key]] for key in ("company_id", "invoice_no")})
     elif not re.fullmatch(_JOINT_TARGET, match["target"], re.I):
         return None

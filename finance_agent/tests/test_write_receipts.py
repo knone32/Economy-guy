@@ -90,6 +90,46 @@ class WriteReceiptTests(DatabaseTestCaseMixin, unittest.TestCase):
         self.assertEqual(self.current(), "回执测试")
         self.assertEqual(self.connection.execute("SELECT count(*) FROM invoice_audit").fetchone()[0], 1)
 
+    def test_recent_single_invoice_final_reconciles_only_the_verified_literal_value(self):
+        writer = self.agent()
+        draft = self.draft(writer)
+        self.assertEqual(writer.commit_update(draft.request_id, draft.fingerprint())["status"], "COMMITTED")
+        key = {"company_id": "C001", "invoice_no": "F002"}
+
+        def call(name, arguments):
+            return {"role": "assistant", "tool_calls": [{"id": name, "type": "function",
+                    "function": {"name": name, "arguments": json.dumps(arguments)}}]}
+
+        final = {"role": "assistant", "content": '{"kind":"information","text":"当前用途相同，无需修改。"}'}
+        for user, value, lookup, conflict, expected in (
+            ("U001", "回执测试", "get_invoice", False, "CURRENT_VALUE_MATCHES"),
+            ("U001", "回执测试", "resolve_recent_invoice", False, "CURRENT_VALUE_MATCHES"),
+            ("U001", "回执测试", None, False, "CURRENT_VALUE_MATCHES"),
+            ("U001", "不同值", "get_invoice", False, "NOT_SUBMITTED"),
+            ("U001", "回执测试", "resolve_recent_invoice", True, "NOT_SUBMITTED"),
+            ("U002", "回执测试", "get_invoice", False, "NOT_SUBMITTED"),
+        ):
+            with self.subTest(user=user, value=value, lookup=lookup, conflict=conflict):
+                reader = Agent(user, self.db_path, scripted_model([call("get_invoice", key), final]), mode="mock")
+                reader.ask("查询 C001 的 F002 的用途")
+                replies = [final]
+                if lookup:
+                    replies.insert(0, call(lookup, key if lookup == "get_invoice" else {"source": "queried"}))
+                reader.model = scripted_model(replies)
+                candidates = {"queried": key}
+                if conflict:
+                    candidates["modified"] = {"company_id": "C001", "invoice_no": "F003"}
+                with patch.object(reader.context, "recent_invoice_candidates", return_value=candidates):
+                    reader.ask(f"把这张发票的用途改成{value}")
+                self.assertEqual(reader.write_receipt["status"], expected)
+                self.assertFalse(reader.update_session.drafts)
+                self.assertNotIn("invoice_change", reader.last_response)
+                if expected == "CURRENT_VALUE_MATCHES":
+                    self.assertIn("无需再次修改", reader.last_response["chat_notice"])
+                    self.assertEqual(reader.last_response["fulfillment"]["status"], "VERIFIED_GOALS")
+        self.assertEqual(self.current(), "回执测试")
+        self.assertEqual(self.connection.execute("SELECT count(*) FROM invoice_audit").fetchone()[0], 1)
+
     def test_exact_edit_recovers_when_model_skips_current_turn_read(self):
         agent = self.agent()
         draft = self.draft(agent)
