@@ -101,25 +101,30 @@ class WriteReceiptTests(DatabaseTestCaseMixin, unittest.TestCase):
                     "function": {"name": name, "arguments": json.dumps(arguments)}}]}
 
         final = {"role": "assistant", "content": '{"kind":"information","text":"当前用途相同，无需修改。"}'}
-        for user, value, lookup, conflict, expected in (
-            ("U001", "回执测试", "get_invoice", False, "CURRENT_VALUE_MATCHES"),
-            ("U001", "回执测试", "resolve_recent_invoice", False, "CURRENT_VALUE_MATCHES"),
-            ("U001", "回执测试", None, False, "CURRENT_VALUE_MATCHES"),
-            ("U001", "不同值", "get_invoice", False, "NOT_SUBMITTED"),
-            ("U001", "回执测试", "resolve_recent_invoice", True, "NOT_SUBMITTED"),
-            ("U002", "回执测试", "get_invoice", False, "NOT_SUBMITTED"),
+        clarification = {"role": "assistant", "content": '{"kind":"clarification","text":"当前用途相同，'
+                                                            '请提供新的用途。","missing_fields":["purpose"]}'}
+        for user, value, lookup, conflict, reply, expected in (
+            ("U001", "回执测试", "get_invoice", False, final, "CURRENT_VALUE_MATCHES"),
+            ("U001", "回执测试", "resolve_recent_invoice", False, final, "CURRENT_VALUE_MATCHES"),
+            ("U001", "回执测试", None, False, final, "CURRENT_VALUE_MATCHES"),
+            ("U001", "不同值", "get_invoice", False, final, "NOT_SUBMITTED"),
+            ("U001", "回执测试", "resolve_recent_invoice", True, final, "NOT_SUBMITTED"),
+            ("U002", "回执测试", "get_invoice", False, final, "NOT_SUBMITTED"),
+            ("U001", "回执测试", "get_invoice", False, clarification, "CURRENT_VALUE_MATCHES"),
+            ("U001", "不同值", "get_invoice", False, clarification, "NOT_SUBMITTED"),
         ):
-            with self.subTest(user=user, value=value, lookup=lookup, conflict=conflict):
+            with self.subTest(user=user, value=value, lookup=lookup, conflict=conflict, reply=reply):
                 reader = Agent(user, self.db_path, scripted_model([call("get_invoice", key), final]), mode="mock")
                 reader.ask("查询 C001 的 F002 的用途")
-                replies = [final]
+                replies = [reply]
                 if lookup:
                     replies.insert(0, call(lookup, key if lookup == "get_invoice" else {"source": "queried"}))
                 reader.model = scripted_model(replies)
-                candidates = {"queried": key}
                 if conflict:
-                    candidates["modified"] = {"company_id": "C001", "invoice_no": "F003"}
-                with patch.object(reader.context, "recent_invoice_candidates", return_value=candidates):
+                    candidates = {"queried": key, "modified": {"company_id": "C001", "invoice_no": "F003"}}
+                    with patch.object(reader.context, "recent_invoice_candidates", return_value=candidates):
+                        reader.ask(f"把这张发票的用途改成{value}")
+                else:
                     reader.ask(f"把这张发票的用途改成{value}")
                 self.assertEqual(reader.write_receipt["status"], expected)
                 self.assertFalse(reader.update_session.drafts)

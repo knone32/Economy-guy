@@ -1520,22 +1520,8 @@ class Agent:
                     clarification = ask_invoice_field(selection, discard_final=True)
                     if clarification is not None:
                         return clarification
-                if natural and natural["kind"] == "clarification" and confirmed_fields.intersection(natural["missing_fields"]):
-                    remaining = [key for key in natural["missing_fields"] if key not in confirmed_fields]
-                    if remaining:
-                        natural["missing_fields"] = remaining
-                    elif not scope_reminder_sent and execution.model_requests < min(execution.block_limit, self.max_requests):
-                        scope_reminder_sent = True
-                        self.messages.pop()
-                        continue
-                    else:
-                        self.messages.pop()
-                        execution.stop("MODEL_FINISHED_WITH_PENDING_WORK")
-                        notice = "本轮账期已经核验，其余操作尚未完成。请按原条件重试。"
-                        return finish(notice, store=False, chat_notice=notice)
-                if (reconciliation_edit and not execution.schedule
-                        and (natural is None or natural["kind"] != "clarification" or confirmed_invoice_edit
-                             or set(natural["missing_fields"]) == {"new_value"})):
+                # Compare trusted evidence before using the model final to decide what is missing.
+                if reconciliation_edit and not execution.schedule:
                     if self.user_id == actor and self.workbook_available():
                         if not read_results:
                             read_exact_edit_target(reconciliation_edit, from_reference=reconciliation_from_reference)
@@ -1550,6 +1536,19 @@ class Agent:
                                 self.trace("error", {"category": "invalid_final_envelope"})
                             return finish("", store=False, chat_notice=self.write_receipt["message"],
                                           single_edit_verified=True)
+                if natural and natural["kind"] == "clarification" and confirmed_fields.intersection(natural["missing_fields"]):
+                    remaining = [key for key in natural["missing_fields"] if key not in confirmed_fields]
+                    if remaining:
+                        natural["missing_fields"] = remaining
+                    elif not scope_reminder_sent and execution.model_requests < min(execution.block_limit, self.max_requests):
+                        scope_reminder_sent = True
+                        self.messages.pop()
+                        continue
+                    else:
+                        self.messages.pop()
+                        execution.stop("MODEL_FINISHED_WITH_PENDING_WORK")
+                        notice = "本轮账期已经核验，其余操作尚未完成。请按原条件重试。"
+                        return finish(notice, store=False, chat_notice=notice)
                 if (read_only and not bulk_no_confirmation and invoice_intent_source(text_request)
                         and natural is not None and natural["kind"] != "clarification"):
                     self.messages.pop()
