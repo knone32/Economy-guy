@@ -948,6 +948,28 @@ class P0Test(unittest.IsolatedAsyncioTestCase):
                 release.set()
             await self.await_state(pilot, lambda: not app.busy)
 
+    async def test_same_value_receipt_appears_in_chat_and_business_history(self):
+        with closing(open_existing(self.path)) as db:
+            db.execute("UPDATE invoices SET purpose=? WHERE company_id=? AND invoice_no=?",
+                       (EDIT["new_value"], EDIT["company_id"], EDIT["invoice_no"]))
+            db.commit()
+        lookup = {key: EDIT[key] for key in ("company_id", "invoice_no")}
+        app = self.app([tool("get_invoice", lookup), FINAL])
+        app.session_path = self.directory / "conversations.sqlite3"
+        async with app.run_test(size=(120, 38)) as pilot:
+            await self.sign_in(app, pilot)
+            field = app.workspace_widget("#prompt", Input)
+            app.submitted(Input.Submitted(field, "把 C001 的 F002 的用途改为资料打印"))
+            await self.await_state(pilot, lambda: not app.busy)
+            self.assertNotIsInstance(app.screen, Approval)
+            self.assertEqual(app.agent.write_receipt["status"], "CURRENT_VALUE_MATCHES")
+            turns = app.conversation.history()["turns"]
+            display = turns[-1]["display"]
+            self.assertEqual(sum(role == "Agent" and "无需再次修改" in text for role, text in display), 1)
+            self.assertTrue(any(role.startswith("业务记录") and "当前值已相同" in text for role, text in display))
+        with closing(open_existing(self.path, readonly=True)) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM invoice_audit").fetchone()[0], 0)
+
     async def test_c_confirmation_internal_link_and_new_process_read(self):
         check = tool("check_missing_purpose", SCOPE)
         create = tool("manage_task", {**SCOPE, "action": "create", "task_id": "", "note": CREATE})

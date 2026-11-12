@@ -1362,8 +1362,6 @@ class AgentWorkspace(ConversationUI, App):
         operation = response["operation_receipt"]
         unchanged = not receipt and not batch and operation["status"] == "CURRENT_VALUE_MATCHES"
         notice = response["chat_notice"]
-        if unchanged and notice == operation["message"]:
-            notice = None
         if notice:
             for tool, result in results:
                 if result["status"] not in {"SUCCESS", "NO_DATA"} or result["evidence"].get("source") != "current_sqlite":
