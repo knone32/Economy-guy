@@ -157,6 +157,50 @@ class WriteReceiptTests(DatabaseTestCaseMixin, unittest.TestCase):
         self.assertEqual(agent.write_receipt["status"], "CURRENT_VALUE_MATCHES")
         self.assertEqual(self.connection.execute("SELECT count(*) FROM invoice_audit").fetchone()[0], 1)
 
+    def test_recent_edit_binds_current_tool_evidence_without_guessing_between_objects(self):
+        def call(name, args, identifier):
+            return {"role": "assistant", "tool_calls": [{"id": identifier, "type": "function",
+                    "function": {"name": name, "arguments": json.dumps(args)}}]}
+
+        invoice = {"company_id": "C001", "invoice_no": "F002"}
+        initial = call("get_invoice", invoice, "initial")
+        final = {"role": "assistant", "content": '{"kind":"information","text":"已核对。"}'}
+        for prompt, lookup, month, conflict, expected in (
+            ("这张票用途换成资料打印", "get_invoice", 9, False, "WAITING_CONFIRMATION"),
+            ("用途改成资料打印", "resolve_recent_invoice", 9, False, "WAITING_CONFIRMATION"),
+            ("用途改成资料打印", "resolve_recent_invoice", 8, False, "SCOPE_MISMATCH"),
+            ("用途改成资料打印", "resolve_recent_invoice", 9, True, "AMBIGUOUS"),
+            ("把它的用图改成资料打印", "resolve_recent_invoice", 9, False, "AMBIGUOUS"),
+        ):
+            with self.subTest(prompt=prompt, lookup=lookup, month=month, conflict=conflict):
+                agent = Agent("U001", self.db_path, scripted_model([initial, final]), mode="mock")
+                agent.ask("查询 C001 的 F002 当前用途")
+                reads = iter((True, False))
+                def model(messages, tools):
+                    if next(reads):
+                        args = invoice if lookup == "get_invoice" else {"source": "queried"}
+                        return call(lookup, args, "lookup")
+                    latest = next(message for message in reversed(messages) if message["role"] == "tool")
+                    selection = json.loads(latest["content"])["data"]["selection_id"]
+                    return call("propose_invoice_changes", dict(selection_id=selection, field="purpose",
+                                new_value="资料打印", mode="item", excluded_invoice_ids=[],
+                                target_year=2026, target_month=month), "proposal")
+                agent.model = model
+                candidates = {"queried": invoice}
+                if conflict:
+                    candidates["modified"] = {"company_id": "C001", "invoice_no": "F003"}
+                with patch.object(agent.context, "recent_invoice_candidates", return_value=candidates):
+                    agent.ask(prompt)
+                response = agent.last_response
+                self.assertEqual(response["execution"]["stop_reason"], expected)
+                if expected == "WAITING_CONFIRMATION":
+                    self.assertEqual(response["invoice_change"]["invoice_nos"], ("F002",))
+                else:
+                    self.assertNotIn("invoice_change", response)
+                if conflict:
+                    self.assertIn("发票来源", response["chat_notice"])
+        self.assertEqual(self.connection.execute("SELECT count(*) FROM invoice_audit").fetchone()[0], 0)
+
     def test_failed_commit_receipt_and_rollback(self):
         agent = self.agent()
         draft = self.draft(agent)

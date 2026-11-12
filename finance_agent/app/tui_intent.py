@@ -59,10 +59,13 @@ _FIELD_NAMES = {"purpose": "用途", "remark": "备注"}
 _HYPOTHETICAL = re.compile(r"^\s*(?:如果|假如|假设|例如|怎样|如何|能否|能不能)")
 
 
+_EDIT_ACTION = r"[改填补设写换]"
+
+
 def invoice_intent_source(text):
     """Only explicit edit language may leave a read-only continuation clue."""
     return (not _HYPOTHETICAL.match(text) and re.search(r"发票|(?<![A-Za-z0-9])F\d+|这张|那张|(?:把|将)\s*[它他]", text, re.I)
-            and re.search(r"[改填补设写换][^，,。；;\n]{0,2}[为成]\s*\S|改一下|^\s*修改|(?:用途|备注)\s*修改\s*[。！!]?$", text))
+            and re.search(rf"{_EDIT_ACTION}[^，,。；;\n]{{0,2}}[为成]\s*\S|改一下|^\s*修改|(?:用途|备注)\s*修改\s*[。！!]?$", text))
 
 
 def literal_single_invoice_edit(text, *, reference=None):
@@ -128,7 +131,7 @@ def invoice_change_evidence(text, field, new_value, *, rule_field=None):
         if ((mentioned and mentioned != {label}) or
                 (not mentioned and rule_field is None and all(name in text for name in _FIELD_NAMES.values()))):
             continue
-        if re.search(r"[改填补设写]|处理", clause) and not re.match(r"\s*(?:查询|查看|统计|列出|检查|解释|比较)", clause):
+        if re.search(rf"{_EDIT_ACTION}|处理", clause) and not re.match(r"\s*(?:查询|查看|统计|列出|检查|解释|比较)", clause):
             return True
         if re.fullmatch(r"\s*新值\s*(?:是|为)\s*", clause) and invoice_intent_source(text):
             return True

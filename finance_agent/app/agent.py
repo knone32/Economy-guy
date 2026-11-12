@@ -1277,13 +1277,17 @@ class Agent:
 
         exact_edit = literal_single_invoice_edit(text_request) if invoice_write and not reference else None
         queried = recent_invoices.get("queried")
+        recent_keys = {(candidate["company_id"], candidate["invoice_no"])
+                       for candidate in recent_invoices.values() if not scope_mismatch(explicit, candidate)}
+        recent_tool_scope = None
         recent_edit = None
         if (invoice_write and not reference and queried
-                and len({(item["company_id"], item["invoice_no"]) for item in recent_invoices.values()}) == 1
+                and recent_keys == {(queried["company_id"], queried["invoice_no"])}
                 and any(name == "get_invoice" and result["status"] == "SUCCESS"
                         and result["evidence"].get("source") == "current_sqlite"
                         and all(result["evidence"]["scope"].get(key) == value for key, value in queried.items())
                         for name, result in previous_results)):
+            recent_tool_scope = {key: [queried[key]] for key in ("company_id", "invoice_no")}
             recent_edit = literal_single_invoice_edit(text_request, reference=queried)
         exact_edit = exact_edit or recent_edit
         edit_selection_source = "resolve_recent_invoice" if recent_edit else "get_invoice"
@@ -1655,6 +1659,7 @@ class Agent:
                         stop = True
                     else:
                         tool_scope = expected_scope
+                        recent_read_bound = False
                         tool_proof = self.context.proof(read_workspace, annual_year=annual_year)
                         if all_invoices:
                             tool_scope = {key: values for key, values in tool_scope.items()
@@ -1688,9 +1693,11 @@ class Agent:
                                     # This read uses the explicit edit key, independently of the query period.
                                     tool_scope = {key: [target[key][0]] for key in ("company_id", "invoice_no")}
                                     tool_proof = ScopeProof(session.user_id, tool_scope, dict.fromkeys(tool_scope, "user_current"))
-                        if recent_edit and fn.get("name") == "get_invoice":
-                            tool_scope = {key: recent_edit[key] for key in ("company_id", "invoice_no")}
-                            tool_proof = ScopeProof(actor, tool_scope, dict.fromkeys(tool_scope, "trusted_reference"))
+                        if recent_tool_scope and fn.get("name") == "get_invoice":
+                            tool_scope = {**expected_scope, **recent_tool_scope}
+                            tool_proof = ScopeProof(actor, recent_tool_scope,
+                                                    dict.fromkeys(recent_tool_scope, "trusted_reference"))
+                            recent_read_bound = True
                         elif (recent_semantics and fn.get("name") == "get_invoice"
                                 and "invoice_no" not in explicit):
                             # A model-chosen invoice key must pass through the recent resolver.
@@ -1732,12 +1739,15 @@ class Agent:
                                                       else tool_result(execution.stop_reason))
                                     if result is None:
                                         missing = [key for key in ("year", "month") if not explicit.get(key)]
-                                        if selection and selection[2] in {"query_business_sql", "check_missing_purpose"} and missing:
+                                        if selection and selection[2] == "resolve_recent_invoice" and len(recent_keys) > 1:
+                                            result = tool_result("AMBIGUOUS", evidence={"missing_fields": ["invoice_reference"]},
+                                                                 error="近期查询与修改指向不同发票，请确认目标")
+                                        elif selection and selection[2] in {"query_business_sql", "check_missing_purpose"} and missing:
                                             result = tool_result("AMBIGUOUS", evidence={"missing_fields": missing},
                                                                  error="集合修改必须明确完整年月")
                                         else:
                                             edit_periods = requested_periods
-                                            if recent_edit and selection and selection[2] == "resolve_recent_invoice":
+                                            if not edit_periods and selection and selection[2] == "resolve_recent_invoice":
                                                 edit_periods = ((selection[1]["year"], selection[1]["month"]),)
                                             invoice_change, status, error = plan_invoice_change(
                                                 self, text, proposal, selection, authorized_periods=edit_periods,
@@ -1758,7 +1768,7 @@ class Agent:
                                 and result["evidence"].get("source") == "current_sqlite"):
                             scope = result["evidence"]["scope"]
                             invoice = result["data"]
-                            source = edit_selection_source if fn["name"] == "get_invoice" else fn["name"]
+                            source = "resolve_recent_invoice" if recent_read_bound else fn["name"]
                             result["data"] = {**invoice, "selection_id": register_invoice_selection(
                                 selections, [(invoice["company_id"], invoice["invoice_no"])], scope, source)}
                         if (selections is not None and fn.get("name") == "check_missing_purpose"
