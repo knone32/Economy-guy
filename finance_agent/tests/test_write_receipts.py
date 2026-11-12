@@ -325,6 +325,34 @@ class WriteReceiptTests(DatabaseTestCaseMixin, unittest.TestCase):
         self.assertEqual(self.current(), "你好")
         self.assertEqual(self.connection.execute("SELECT count(*) FROM invoice_audit").fetchone()[0], 0)
 
+    def test_confirmed_field_reconciles_same_value_after_model_final_without_tools(self):
+        prompt = "再把这张发票的用图改为你好"
+        clarification = {"role": "assistant", "content": '{"kind":"clarification","text":"请补充新用途。",'
+                                                            '"missing_fields":["new_value"]}'}
+        for current in ("你好", "办公"):
+            with self.subTest(current=current):
+                self.connection.execute(
+                    "UPDATE invoices SET purpose='你好' WHERE company_id='C001' AND invoice_no='F002'")
+                self.connection.commit()
+                agent = self.field_clarification_agent(reference=True, value="你好", prompt=prompt,
+                                                      first_reply=clarification)
+                self.assertIn("用途改成「你好」吗", agent.last_response["chat_notice"])
+                self.connection.execute("UPDATE invoices SET purpose=? WHERE company_id='C001' AND invoice_no='F002'",
+                                        (current,))
+                self.connection.commit()
+                agent.model = scripted_model([
+                    {"role": "assistant", "content": '{"kind":"information","text":"无需修改。"}'}])
+                agent.ask("是的")
+                self.assertEqual(agent.write_receipt["status"],
+                                 "CURRENT_VALUE_MATCHES" if current == "你好" else "NOT_SUBMITTED")
+                self.assertEqual([(name, result["evidence"]["source"]) for name, result in
+                                  agent.last_response["tool_results"]], [("get_invoice", "current_sqlite")])
+                if current == "你好":
+                    self.assertIn("无需再次修改", agent.last_response["chat_notice"])
+                self.assertFalse(agent.update_session.drafts)
+                self.assertEqual(self.current(), current)
+        self.assertEqual(self.connection.execute("SELECT count(*) FROM invoice_audit").fetchone()[0], 0)
+
     def test_invoice_field_continuation_retires_on_new_scope_and_rechecks_permissions(self):
         for action in ("account", "cancel", "different_invoice", "permission", "changed_value"):
             with self.subTest(action=action):
