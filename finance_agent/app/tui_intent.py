@@ -106,20 +106,21 @@ def unresolved_invoice_field(text, scope, *, candidate=None, recent_reference=Fa
         explicit = explicit_scope(target, include_update_aliases=True)
         if all(explicit.get(key) == [scope[key]] for key in ("company_id", "invoice_no")):
             return values[0], None
-    if not candidate or values[0] != candidate["new_value"]:
+    if candidate and values[0] != candidate["new_value"]:
         return None
-    label = _FIELD_NAMES[candidate["field"]]
-    if match["marker"] and re.fullmatch(r"[\u3400-\u9fff]{1,3}", target):
-        return values[0], label
-    # The model supplies the candidate. Only a near match on the field itself
-    # can extend a verified invoice reference into a semantic question.
+    labels = (_FIELD_NAMES[candidate["field"]],) if candidate else _FIELD_NAMES.values()
+    if candidate and match["marker"] and re.fullmatch(r"[\u3400-\u9fff]{1,3}", target):
+        return values[0], labels[0]
+    # A near match can only suggest a question about a verified reference.
     owner, separator, field = target.rpartition("的")
     field = field.strip()
     if (recent_reference and separator and (match["marker"] or re.search(r"[把将]", owner))
             and not (_HYPOTHETICAL.match(owner) or _NEGATED_EDIT.search(owner))
-            and re.fullmatch(r"[\u3400-\u9fff]{2}", field)
-            and sum(actual != expected for actual, expected in zip(field, label)) == 1):
-        return values[0], label
+            and re.fullmatch(r"[\u3400-\u9fff]{2}", field)):
+        matches = [label for label in labels
+                   if sum(actual != expected for actual, expected in zip(field, label)) == 1]
+        if len(matches) == 1:
+            return values[0], matches[0]
     return None
 
 

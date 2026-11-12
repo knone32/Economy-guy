@@ -1312,7 +1312,8 @@ class Agent:
                     or (candidate and (candidate["mode"] != "item" or candidate["excluded_invoice_ids"]
                                        or candidate.get("rule_business_date") or candidate.get("rule_cohort")))):
                 return None
-            recent_reference = bool(hint and hint["ordinal"] is None and not hint["anchor_id"])
+            recent_reference = bool(recent_keys == set(keys) and hint
+                                    and hint["ordinal"] is None and not hint["anchor_id"])
             if recent_keys != set(keys) or (source != "resolve_recent_invoice" and not recent_reference):
                 candidate = None
             missing = unresolved_invoice_field(text_request, scope, candidate=candidate,
@@ -1488,8 +1489,20 @@ class Agent:
                         return finish(render_clarification(missing["evidence"]), store=False,
                                       category="clarification")
                 natural = parse_final(reply.get("content"))
-                if invoice_write and len(selections) == 1:
-                    clarification = ask_invoice_field(next(iter(selections.values())), discard_final=True)
+                if invoice_write:
+                    selection = next(iter(selections.values())) if len(selections) == 1 else None
+                    if (not read_results and len(recent_keys) == 1 and natural and natural["kind"] == "clarification"
+                            and set(natural["missing_fields"]) == {"new_value"}):
+                        key, = recent_keys
+                        for name, outcome in reversed(previous_results):
+                            evidence = outcome["evidence"]
+                            scope = evidence.get("scope", {})
+                            if (name in {"get_invoice", "resolve_recent_invoice"} and outcome["status"] == "SUCCESS"
+                                    and evidence.get("source") == "current_sqlite"
+                                    and key == (scope.get("company_id"), scope.get("invoice_no"))):
+                                selection = (tuple(recent_keys), scope, name)
+                                break
+                    clarification = ask_invoice_field(selection, discard_final=True)
                     if clarification is not None:
                         return clarification
                 if natural and natural["kind"] == "clarification" and confirmed_fields.intersection(natural["missing_fields"]):
