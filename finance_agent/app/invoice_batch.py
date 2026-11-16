@@ -65,7 +65,7 @@ def _apply_target(agent, message, values, period, old, confirm, checkpoint):
         receipt = agent.commit_update(draft.request_id, fingerprint)
     except Exception:
         # A checkpoint exists. The caller must inspect the audit before any retry.
-        coordinator.receipt = coordinator._receipt("UNKNOWN_OUTCOME", {"request_id": draft.request_id})
+        coordinator.require_update_verification(draft, None)
         return "UNKNOWN_OUTCOME", draft.request_id
     return receipt["status"], draft.request_id
 
@@ -283,8 +283,8 @@ def run_invoice_batch(agent, message, request, *, approve_batch, approve_item, c
     coordinator = agent.coordinator
     if (request["actor"], request["workbook"], request["turn"]) != (agent.user_id, str(agent.db_path), agent.trace_id):
         return "DENIED", "对话轮次、账簿或用户已变化，原清单失效。"
-    if coordinator.receipt["status"] == "UNKNOWN_OUTCOME":
-        return "UNKNOWN_OUTCOME", "上一次提交结果仍未知，请先核查审计。"
+    if coordinator.unverified_draft is not None:
+        return "UNKNOWN_OUTCOME", coordinator.receipt["message"]
 
     if not invoice_nos or len(invoice_nos) > MAX_BATCH_INVOICES:
         return "INVALID_ARGUMENTS", f"可信清单必须包含 1 至 {MAX_BATCH_INVOICES} 张发票。"

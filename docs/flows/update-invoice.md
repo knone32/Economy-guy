@@ -8,7 +8,9 @@
 4. CLI展示source_request、企业、发票、字段、旧/新值；用户完整输入confirm request_id → Agent.commit_update → WriteCoordinator.commit_update → updates.confirm_draft绑定会话/本轮/指纹。
 5. updates.commit_invoice_update：BEGIN IMMEDIATE → 重查授权 → 查request_id成功审计及指纹 → 查旧值 → 白名单字段UPDATE+invoice_audit同事务 → COMMIT。重复请求不重写；冲突/失败回滚。
 6. inspect_request/_readback使用新连接：返回历史成功审计和当前发票；WriteCoordinator核对request_id/身份/指纹/企业/发票/字段/旧新值/回读一致性生成回执。未知或证据不完整为UNKNOWN_OUTCOME，先查审计，不自动重试写。
-7. WriteCoordinator.events先保存来源trusted_cli的历史事件，再尽力记录JSONL；日志失败不能遮蔽提交回执。CLI展示程序回执，模型原文不能触发COMMITTED。后续model_messages以name=harness_history的assistant数据消息投影历史事件，不追加user、不伪造模型Tool Call；当前值仍需重新查库。取消回执绑定已撤销的request_ids/intent_id，取消不回滚已有业务提交。
+7. WriteCoordinator.events先保存来源trusted_cli的历史事件，再尽力记录JSONL；日志失败不能遮蔽提交回执。CLI展示程序回执，模型原文不能触发COMMITTED。后续model_messages以name=harness_history的assistant数据消息投影历史事件，不追加user、不伪造模型Tool Call；当前值仍需重新查库。取消回执绑定已撤销的request_ids/intent_id。
+
+若提交结果待核实，F4 和 `/cancel` 仍撤销尚未提交的草稿与确认，保留原请求编号及待核实回执。普通查询继续；当前会话暂停打开新的发票修改确认，直到核清原请求。工作台和 CLI 对话均可输入 `/inspect-update`，按原请求和可信身份查审计并用新连接回读，区分回读匹配、历史审计已确认但当前值已变化，以及证据仍不足。核查只读。重新提交仍需新的草稿和可信确认。独立 CLI `inspect-update --request-id …` 可按编号查询历史。
 
 原始用户信息、模型追问、Tool Call与真实工具结果保留各自来源。CLI身份/管理能力为比赛模拟；能力不是模型参数。新主题、取消、重启、身份变化不能继承旧确认。
 

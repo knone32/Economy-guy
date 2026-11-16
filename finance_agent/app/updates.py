@@ -212,6 +212,9 @@ def commit_invoice_update(path, session, request_id):
     finally:
         connection.close()
     try:
-        return inspect_request(path, session.user_id, request_id)
+        checked = inspect_request(path, session.user_id, request_id)
+        if checked["status"] in {"COMMITTED", "NO_CHANGE"}:
+            return checked
     except sqlite3.Error:
-        return result("UNKNOWN_OUTCOME", {"request_id": request_id}, "已尝试提交，回读失败；先查审计")
+        pass
+    return result("UNKNOWN_OUTCOME", {"request_id": request_id}, "已尝试提交，回读失败；先查审计")

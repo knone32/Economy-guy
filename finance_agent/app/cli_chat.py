@@ -99,8 +99,7 @@ def chat_loop(agent, args, profile_options, serialize, home):
                 if home and text.strip() == "1":
                     edit = input("描述修改目标和新值（/cancel 取消）：").strip()
                     if not edit or edit in {"/cancel", "0"}:
-                        agent.cancel_update()
-                        print("已取消。")
+                        print(agent.cancel_update()["message"])
                         continue
                     text = edit if edit in {"/home", "/quit"} else "/edit " + edit
             except (EOFError, KeyboardInterrupt):
@@ -133,6 +132,9 @@ def chat_loop(agent, args, profile_options, serialize, home):
                     continue
                 if text.strip() == "/cancel":
                     print(serialize(agent.cancel_update(), indent=2))
+                    continue
+                if text.strip() == "/inspect-update":
+                    print(serialize(agent.reconcile_update(), indent=2))
                     continue
                 allow_prepare = text.startswith("/edit ")
                 request = text[6:] if allow_prepare else text

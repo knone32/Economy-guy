@@ -3,7 +3,7 @@ import sqlite3
 import re
 from datetime import date
 from uuid import uuid4
-from .updates import UpdateSession, confirm_draft, commit_invoice_update, result as tool_result
+from .updates import UpdateSession, confirm_draft, commit_invoice_update, inspect_request, result as tool_result
 from .trace import warn_trace_degraded
 from .responses import explicit_scope, scope_mismatch
 from .tasks import task_progress
@@ -15,9 +15,13 @@ class WriteCoordinator:
         self.session = UpdateSession(user_id)
         self.receipt = self._receipt("NOT_SUBMITTED")
         self.pending = None
+        self.unverified_draft = None
         self.events = []
 
     def begin(self, text, allow_prepare=False, continue_edit=False, edit_scope=None, edit_correction=False):
+        if self.unverified_draft is not None:
+            self.session.begin_turn(text)
+            return False
         original = self.pending if continue_edit and self.pending and self.pending["user_id"] == self.user_id else None
         enabled = bool(allow_prepare or original)
         if allow_prepare:
@@ -61,7 +65,9 @@ class WriteCoordinator:
             "CONFLICT": "当前值或请求内容冲突，未执行本次更新；请重新核对。",
             "NOT_FOUND": "未找到目标记录，未保存。",
             "ERROR": "操作失败，未核实保存成功；请查看业务错误。",
-            "UNKNOWN_OUTCOME": "提交或回读结果未知，尚未核实最终状态；请先按request_id核查审计。",
+            "UNKNOWN_OUTCOME": "提交结果待核实，请输入 /inspect-update 核查原请求的审计和当前值。",
+            "CURRENT_VALUE_CHANGED": "原请求的成功审计已核实，当前值已变化。",
+            "NO_PENDING_VERIFICATION": "当前会话没有待核实的发票修改。",
             "INVALID_ARGUMENTS": "参数无效，未保存。",
             "SCOPE_MISMATCH": "范围不一致，未创建草稿或保存；请重新/edit明确更正目标。",
             "AMBIGUOUS": "请明确唯一企业和发票编号，未创建草稿或保存。",
@@ -130,14 +136,22 @@ class WriteCoordinator:
         self.session.confirmations.clear()
         self.session.drafts.clear()
         self.pending = None
+        if self.unverified_draft is not None:
+            self._trace_update("update.cancelled_drafts",
+                               {**data, "unverified_request_id": self.unverified_draft.request_id})
+            return self.receipt
+        if self.receipt["status"] in {"COMMITTED", "NO_CHANGE", "CURRENT_VALUE_CHANGED"}:
+            return self.receipt
         self.receipt = self._receipt("CANCELLED", data)
         self.events.append({"event_id":uuid4().hex, "turn_id":self.session.turn_id, "request_id":None,
                             "source":"trusted_cli", "receipt":self.receipt})
-        self._trace_receipt()
+        self._trace_update("update.result", self.receipt)
         return self.receipt
 
     def commit_update(self, request_id, fingerprint, commit_function=commit_invoice_update):
         """仅可信CLI调用；根据实际Commit及绑定回读证据生成回执。"""
+        if self.unverified_draft is not None:
+            return self.receipt
         draft = self.session.drafts.get(request_id)
         if not confirm_draft(self.session, request_id, fingerprint):
             outcome = tool_result("DENIED", error="没有本会话绑定草稿的最终确认")
@@ -147,33 +161,79 @@ class WriteCoordinator:
             except sqlite3.Error:
                 outcome = tool_result("UNKNOWN_OUTCOME", {"request_id":request_id}, error="提交或回读异常，先查审计")
         status = outcome["status"]
-        verified = False
-        if status in {"COMMITTED", "NO_CHANGE"}:
-            data = outcome.get("data") or {}
-            audit = data.get("historical_commit") or {}
-            current = data.get("current_invoice") or {}
-            verified = bool(draft and audit.get("request_id") == request_id
-                            and audit.get("fingerprint") == draft.fingerprint()
-                            and audit.get("status") == status and audit.get("actor") == self.user_id
-                            and audit.get("company_id") == draft.company_id
-                            and audit.get("invoice_no") == draft.invoice_no
-                            and audit.get("field") == draft.field
-                            and audit.get("old_value") == draft.old_value
-                            and audit.get("new_value") == draft.new_value
-                            and current.get("company_id") == draft.company_id
-                            and current.get("invoice_no") == draft.invoice_no
-                            and current.get(draft.field) == draft.new_value
-                            and data.get("current_matches") is True)
-            if not verified:
-                status = "UNKNOWN_OUTCOME"
+        verified = status in {"COMMITTED", "NO_CHANGE"} and self._bound_readback(draft, outcome) is True
+        if status == "UNKNOWN_OUTCOME" or (status in {"COMMITTED", "NO_CHANGE"} and not verified):
+            return self.require_update_verification(draft, outcome)
+
         self.receipt = self._receipt(status, outcome, verified)
         if verified:
             # Commit/审计/回读已核实后再独立读取任务，不把进度查询失败改成提交失败。
-            self.receipt['task_progress']=self._post_commit_progress(current)
-        self.events.append({"event_id":uuid4().hex, "turn_id":self.session.turn_id, "request_id":request_id, "source":"trusted_cli", "receipt":self.receipt})
+            self.receipt["task_progress"] = self._post_commit_progress(outcome["data"]["current_invoice"])
         self.pending = None
-        self._trace_receipt()
+        self._record_update(request_id)
         return self.receipt
+
+    def require_update_verification(self, draft, outcome):
+        """保留原草稿作为核查证据，并撤销本轮提交许可。"""
+        self.unverified_draft = draft
+        self.session.drafts.clear()
+        self.session.confirmations.clear()
+        self.session.allow_prepare = False
+        self.pending = None
+        self.receipt = self._verification_receipt("UNKNOWN_OUTCOME", draft, outcome)
+        self._record_update(draft.request_id)
+        return self.receipt
+
+    def reconcile_update(self):
+        """按可信身份核查原请求。整个过程只读。"""
+        draft = self.unverified_draft
+        if draft is None:
+            return self._receipt("NO_PENDING_VERIFICATION")
+        try:
+            outcome = inspect_request(self.db_path, self.user_id, draft.request_id)
+        except sqlite3.Error:
+            outcome = tool_result("UNKNOWN_OUTCOME", {"request_id": draft.request_id}, error="审计或当前值暂时无法读取")
+
+        matches = self._bound_readback(draft, outcome)
+        status = "UNKNOWN_OUTCOME"
+        if matches is not None:
+            status = outcome["status"] if matches else "CURRENT_VALUE_CHANGED"
+            self.unverified_draft = None
+        self.receipt = self._verification_receipt(status, draft, outcome, matches is True)
+        self.receipt["reconciled"] = True
+        self._record_update(draft.request_id)
+        return self.receipt
+
+    def _verification_receipt(self, status, draft, outcome, verified=False):
+        receipt = self._receipt(status, outcome, verified)
+        receipt["request_id"] = draft.request_id
+        receipt["message"] = f'{receipt["message"]} 请求编号 {draft.request_id}。'
+        return receipt
+
+    def _bound_readback(self, draft, outcome):
+        """True/False 是绑定回读的匹配结果，None 表示证据不足。"""
+        if draft is None or outcome["status"] not in {"COMMITTED", "NO_CHANGE"}:
+            return None
+        data = outcome.get("data") or {}
+        audit = data.get("historical_commit") or {}
+        current = data.get("current_invoice") or {}
+        expected = {
+            "request_id": draft.request_id, "fingerprint": draft.fingerprint(),
+            "status": outcome["status"], "actor": self.user_id, "company_id": draft.company_id,
+            "invoice_no": draft.invoice_no, "field": draft.field, "old_value": draft.old_value,
+            "new_value": draft.new_value,
+        }
+        if (any(key not in audit or audit[key] != value for key, value in expected.items())
+                or current.get("company_id") != draft.company_id or current.get("invoice_no") != draft.invoice_no
+                or draft.field not in current):
+            return None
+        matches = current[draft.field] == draft.new_value
+        return matches if data.get("current_matches") is matches else None
+
+    def _record_update(self, request_id):
+        self.events.append({"event_id": uuid4().hex, "turn_id": self.session.turn_id, "request_id": request_id,
+                            "source": "trusted_cli", "receipt": self.receipt})
+        self._trace_update("update.result", self.receipt)
 
     def _post_commit_progress(self,current):
         """仅隔离已经核实提交后的可选进度；绝不捕获Commit/审计/回读事务异常。"""
@@ -190,10 +250,10 @@ class WriteCoordinator:
             # 此作用域只有附加只读操作；显式返回ERROR，不影响已生成的权威成功回执。
             return tool_result('ERROR',error='已核实的提交状态不变；附加任务进度不可用，请重新查询')
 
-    def _trace_receipt(self):
+    def _trace_update(self, event, data):
         """日志是可观测性副作用，不能遮蔽已经完成的业务结果。"""
         try:
-            self.trace("update.result", self.receipt)
+            self.trace(event, data)
         except OSError:
             self.receipt["trace_degraded"] = True
             warn_trace_degraded()

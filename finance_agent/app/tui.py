@@ -827,13 +827,13 @@ class AgentWorkspace(ConversationUI, App):
 
     def action_cancel_edit(self):
         if self.agent and not self.busy:
-            self.agent.cancel_update()
+            receipt = self.agent.cancel_update()
             self.task_focus = None
             self.remember_focus()
             self.update_header()
             self.supplement = False
             self.workspace_widget("#supplement", Button).display = False
-            self.note("已取消当前未提交操作。")
+            self.note("已取消当前未提交操作。" if receipt["status"] == "CANCELLED" else receipt["message"])
 
     @on(Button.Pressed)
     def button(self, event):
@@ -911,6 +911,12 @@ class AgentWorkspace(ConversationUI, App):
         except (OSError, ProfileError, ValueError, sqlite3.Error):
             self.update_header()
             self.note("暂时无法发送。请使用「配置 AI 模型」检查设置。")
+            return
+        if message == "/inspect-update":
+            event.input.value = ""
+            receipt = self.agent.reconcile_update()
+            self.chat_message("业务回执", receipt["message"])
+            self.note(receipt["message"])
             return
         if diagnose and (not self.agent.transport or not self.trace_path):
             self.note("一次性诊断需要真实模型和已配置的 Trace。")

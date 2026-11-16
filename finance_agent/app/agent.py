@@ -202,6 +202,18 @@ class Agent:
         receipt["trace_degraded"] = self.trace_degraded or receipt.get("trace_degraded", False)
         return receipt
 
+    def reconcile_update(self):
+        if self._active or self._retired:
+            raise ProfileError("运行中或已结束的会话不能核查提交")
+        self._check_identity()
+        self._active = True
+        try:
+            if not self.workbook_available():
+                return self.write_receipt if self.coordinator.unverified_draft else self._receipt("ERROR")
+            return self.coordinator.reconcile_update()
+        finally:
+            self._active = False
+
     def _check_identity(self):
         """所有入口均作身份边界检查，不必等到下一次ask。"""
         if self.coordinator.user_id != self.user_id:
@@ -473,7 +485,8 @@ class Agent:
                             f'{scope["invoice_no"]} 的{supplement["field"]}改成{field_edit["new_value"]}')
                 else:
                     text = pending_from + "\n" + literal
-        unresolved_receipt = self.write_receipt if self.write_receipt["status"] == "UNKNOWN_OUTCOME" else None
+        unresolved_receipt = self.write_receipt if self.coordinator.unverified_draft is not None else None
+        blocked_edit = unresolved_receipt is not None and (allow_prepare or continue_edit or invoice_intent_source(text))
         self.last_user_request=text
         bulk_no_confirmation = bool(
             re.search(r"用途", text) and re.search(r"发票|单据", text)
@@ -500,7 +513,6 @@ class Agent:
             turn_tools = [tool for tool in turn_tools if tool["function"]["name"] not in {
                 "prepare_invoice_update", "propose_invoice_changes", "manage_task", "manage_preference",
                 "manage_display_preference", "set_schedule"}]
-        self.write_receipt = self._receipt("NOT_SUBMITTED")
         self.trace_id = uuid4().hex
         self.trace("turn.started", {"user": self.user_id, "transport_bound": self.transport is not None})
         self.execution = execution = TurnExecution(self.budget_policy,self.trace)
@@ -1109,8 +1121,6 @@ class Agent:
             if (chat_notice is None and not facts and not goal_coverage and not read_results
                     and self.write_receipt["status"] == "NOT_SUBMITTED" and stop != "WAITING_CONFIRMATION"):
                 chat_notice = text or "本轮没有取得可核实的业务结果。"
-            if unresolved_receipt is not None and read_only:
-                self.write_receipt = unresolved_receipt
             self.last_response = {**response, "text": text, "operation_receipt": self.write_receipt,
                                   "trace_degraded": self.trace_degraded, "chat_notice": chat_notice,
                                   "tool_results": tuple(read_results)}
@@ -1133,6 +1143,9 @@ class Agent:
                                          "fulfillment": fulfillment["status"], "query_evidence_count": len(facts)})
             self.last_response["trace_degraded"] = self.trace_degraded
             return text
+        if blocked_edit:
+            execution.stop("UNKNOWN_OUTCOME")
+            return finish(unresolved_receipt["message"], chat_notice=unresolved_receipt["message"])
         if rule_reference:
             selection = pending.get("displayed_invoices") if pending_from else displayed_invoices
             if not selection:
