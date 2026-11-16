@@ -5,7 +5,7 @@ import json
 import sqlite3
 from uuid import uuid4
 from .permissions import check_permission
-from .queries import get_invoice
+from .queries import QueryError, get_invoice
 from .stage2_schema import open_existing
 
 FIELDS = {"purpose", "remark"}
@@ -142,7 +142,10 @@ def _readback(path, user_id, audit):
     try:
         if not check_permission(connection, user_id, audit["company_id"], "modify").allowed:
             return result("DENIED", error="回读时权限已失效")
-        invoice = get_invoice(connection, user_id, audit["company_id"], audit["invoice_no"])
+        try:
+            invoice = get_invoice(connection, user_id, audit["company_id"], audit["invoice_no"])
+        except QueryError:
+            return result("DENIED", error="回读时读取权限不可用")
         return result(audit["status"], {"request_id": audit["request_id"], "historical_commit": dict(audit),
                      "current_invoice": invoice,
                      "current_matches": invoice is not None and invoice[audit["field"]] == audit["new_value"]})

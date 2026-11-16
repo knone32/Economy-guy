@@ -1,6 +1,7 @@
 """Regression at the real workbench and CLI boundaries for an unknown invoice commit."""
 import io
 import json
+import os
 import sqlite3
 import unittest
 from contextlib import closing, redirect_stdout
@@ -16,7 +17,8 @@ from app.cli_chat import chat_loop
 from app.cli_workspaces import import_workspace
 from app.model_config import DEFAULT_TEMPLATE
 from app.tui import AgentWorkspace, ChatLog
-from app.tui_screens import Approval
+from app.tui_screens import Approval, Settings
+from app.updates import _readback
 from tests import test_tui_p0
 
 
@@ -42,6 +44,115 @@ class UnknownCancelTests(unittest.IsolatedAsyncioTestCase):
         self.directory = Path(tmp.name)
         self.path = self.directory / "workspace.db"
         import_workspace(FIXTURE, self.path)
+
+    async def start_workbench_edit(self, app, pilot):
+        app.screen.query_one("#login-user", Select).value = "U001"
+        await pilot.click("#sign-in")
+        await self.await_state(pilot, lambda: app.user == "U001")
+        await test_tui_p0.P0Test.send(self, app, pilot, "/edit " + EDIT_TEXT)
+        await self.await_state(pilot, lambda: isinstance(app.screen, Approval))
+        draft, = app.agent.update_session.drafts.values()
+        return draft
+
+    await_state = test_tui_p0.P0Test.await_state
+    press_button = test_tui_p0.P0Test.press_button
+
+    async def test_ai_switch_keeps_original_request_without_restoring_confirmation(self):
+        self.local = self.directory / "profiles.json"
+        test_tui_p0.P0Test.configured_profile(self)
+        app = AgentWorkspace(self.path, DEFAULT_TEMPLATE, self.local,
+                             model=scripted_model([tool("prepare_invoice_update", EDIT)]),
+                             trace_path=self.directory / "switch-ai.jsonl",
+                             session_path=self.directory / "sessions.sqlite3")
+        app.mode = "mock"
+        with patch.dict(os.environ, {"FINANCE_MODEL_PROFILE": "first-ai",
+                                     "UX_TEST_API_KEY": "synthetic-offline-only"}):
+            async with app.run_test(size=(150, 42)) as pilot:
+                draft = await self.start_workbench_edit(app, pilot)
+                old = app.agent
+                original = ("资料打印", [(draft.request_id, "COMMITTED")])
+                with patch("app.updates._readback", side_effect=sqlite3.OperationalError("readback failed")):
+                    app.screen.query_one("#approve").press()
+                    await self.await_state(pilot, lambda: not app.busy)
+                self.assertEqual(old.write_receipt["request_id"], draft.request_id)
+                self.assertEqual(snapshot(self.path), original)
+
+                app.open_settings()
+                await test_tui_p0.P0Test.open_model_detail(self, app, pilot)
+                await test_tui_p0.P0Test.press_button(self, app, pilot, "#use-profile")
+                await self.await_state(pilot, lambda: isinstance(app.screen, Approval))
+                app.screen.query_one("#approve").press()
+                await self.await_state(pilot, lambda: isinstance(app.screen, Settings)
+                                       and "first-ai" in str(app.screen.query_one("#profile-state", Static).renderable)
+                                       and bool(app.screen.query("#ai-profile-0")))
+                await pilot.press("escape")
+                await self.await_state(pilot, lambda: app.screen is app.screen_stack[0])
+                self.assertEqual(app.profile, "first-ai")
+                self.assertFalse(app.can_change_conversation())
+                with patch("app.updates._readback", side_effect=sqlite3.OperationalError("readback still down")):
+                    await test_tui_p0.P0Test.send(self, app, pilot, "/inspect-update")
+                self.assertIsNone(app.agent)
+                note = str(app.workspace_widget("#chat-note", Static).renderable)
+                self.assertIn(draft.request_id, note)
+
+                app.model_override = scripted_model([tool("prepare_invoice_update", {**EDIT, "new_value": "会议资料"})])
+                await test_tui_p0.P0Test.send(self, app, pilot, "/edit " + RETRY_TEXT)
+                await self.await_state(pilot, lambda: not app.busy or isinstance(app.screen, Approval))
+                self.assertNotIsInstance(app.screen, Approval)
+                self.assertIsNot(app.agent, old)
+                self.assertNotEqual(app.agent.update_session.session_id, old.update_session.session_id)
+                self.assertEqual((app.agent.user_id, app.agent.db_path), (old.user_id, old.db_path))
+                self.assertFalse(app.agent.update_session.drafts)
+                self.assertFalse(app.agent.update_session.confirmations)
+                self.assertEqual(app.agent.write_receipt["status"], "UNKNOWN_OUTCOME")
+                self.assertEqual(app.agent.write_receipt["request_id"], draft.request_id)
+
+                await test_tui_p0.P0Test.send(self, app, pilot, "/inspect-update")
+                self.assertEqual(app.agent.write_receipt["status"], "COMMITTED")
+                self.assertEqual(app.agent.write_receipt["request_id"], draft.request_id)
+                self.assertTrue(app.agent.write_receipt["readback_verified"])
+                self.assertEqual(snapshot(self.path), original)
+
+    async def test_workbench_edit_permission_lost_after_commit_can_reconcile(self):
+        app = AgentWorkspace(self.path, DEFAULT_TEMPLATE, self.directory / "no-profiles.json",
+                             model=scripted_model([tool("prepare_invoice_update", EDIT)]),
+                             trace_path=self.directory / "read-permission.jsonl",
+                             session_path=self.directory / "sessions.sqlite3")
+        app.mode = "mock"
+
+        def read_permission(enabled):
+            with closing(sqlite3.connect(self.path)) as db, db:
+                db.execute("UPDATE permissions SET can_read=? WHERE user_id='U001' AND company_id='C001'", (enabled,))
+                self.assertEqual(db.execute("SELECT can_modify FROM permissions "
+                                            "WHERE user_id='U001' AND company_id='C001'").fetchone(), (1,))
+
+        async with app.run_test(size=(150, 42)) as pilot:
+            draft = await self.start_workbench_edit(app, pilot)
+            original = ("资料打印", [(draft.request_id, "COMMITTED")])
+
+            def revoke_then_readback(path, actor, audit):
+                self.assertEqual(snapshot(self.path), original)
+                read_permission(0)
+                return _readback(path, actor, audit)
+
+            with patch("app.updates._readback", side_effect=revoke_then_readback) as lookup:
+                app.screen.query_one("#approve").press()
+                await self.await_state(pilot, lambda: not app.busy)
+                lookup.assert_called_once()
+            self.assertEqual(app.agent.write_receipt["status"], "UNKNOWN_OUTCOME")
+            self.assertEqual(app.agent.write_receipt["request_id"], draft.request_id)
+
+            await test_tui_p0.P0Test.send(self, app, pilot, "/inspect-update")
+            self.assertEqual(app.agent.write_receipt["status"], "UNKNOWN_OUTCOME")
+            self.assertEqual(app.agent.write_receipt["request_id"], draft.request_id)
+            self.assertEqual(app.agent.write_receipt["data"]["status"], "DENIED")
+
+            read_permission(1)
+            await test_tui_p0.P0Test.send(self, app, pilot, "/inspect-update")
+            self.assertEqual(app.agent.write_receipt["status"], "COMMITTED")
+            self.assertEqual(app.agent.write_receipt["request_id"], draft.request_id)
+            self.assertTrue(app.agent.write_receipt["readback_verified"])
+            self.assertEqual(snapshot(self.path), original)
 
     async def test_workbench_f4_keeps_unknown_and_blocks_both_retries(self):
         app = AgentWorkspace(self.path, DEFAULT_TEMPLATE, self.directory / "no-profiles.json",

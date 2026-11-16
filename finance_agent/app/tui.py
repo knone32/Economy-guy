@@ -165,6 +165,7 @@ class AgentWorkspace(ConversationUI, App):
         self.trace_path = trace_path
         self.model_override = model
         self.agent = None
+        self._model_update_verification = None
         self.user = None
         self.profile = None
         self.profile_restore_error = False
@@ -346,6 +347,9 @@ class AgentWorkspace(ConversationUI, App):
             self.reset_agent(clear_log=False)
             if had_agent or self.has_saved_history:
                 message = "模型连接已更换。上方文字可供回看。新的 AI 上下文从此处开始，未提交操作已取消。"
+                verification = self._switched_update()
+                if verification is not None and verification.unverified_draft is not None:
+                    message += " " + verification.receipt["message"]
                 self.resumed, self.resume_displays, self.resume_focus = [], [], None
                 if self.conversation:
                     try:
@@ -382,7 +386,17 @@ class AgentWorkspace(ConversationUI, App):
         if (self.profile or self.profile_restore_error) and self.model_override is None:
             self.mode = "live"
 
+    def _switched_update(self):
+        verification = self._model_update_verification
+        if verification is not None and (verification.user_id, verification.db_path) == (self.user, self.db):
+            return verification
+        return None
+
     def reset_agent(self, *, clear_log):
+        if clear_log:
+            self._model_update_verification = None
+        elif self.agent and self.agent.coordinator.unverified_draft is not None:
+            self._model_update_verification = self.agent.coordinator
         if self.agent and self.agent.workbook_available():
             self.agent.cancel_update()
         self.agent = None
@@ -626,6 +640,12 @@ class AgentWorkspace(ConversationUI, App):
         self.agent = Agent(self.user, self.db, mode=self.mode, trace_path=self.trace_path,
                            management_confirmation=self.confirm_management,
                            display_preference=self.conversation.manage_detail if self.conversation else None, **options)
+        verification = self._switched_update()
+        if verification is not None:
+            # Only transfer the evidence and receipt into the fresh update session.
+            self.agent.coordinator.unverified_draft = verification.unverified_draft
+            self.agent.write_receipt = verification.receipt.copy()
+        self._model_update_verification = None
         self.agent.defer_display_anchors = True
         self.agent.messages[0]["content"] += (
             "\n本工作台由运行时把本轮用户原话用作待办 create/update/correct 的备注。"
@@ -710,6 +730,10 @@ class AgentWorkspace(ConversationUI, App):
             return False
         if self.busy or self.turn_seq is not None or isinstance(self.screen, Approval):
             self.note("本轮仍在处理或等待确认，请先完成或取消本轮操作。")
+            return False
+        verification = self._switched_update()
+        if verification is not None and verification.unverified_draft is not None:
+            self.note(verification.receipt["message"])
             return False
         if self.agent:
             status = self.agent.write_receipt["status"]
@@ -891,6 +915,19 @@ class AgentWorkspace(ConversationUI, App):
             self.note("可补充企业或发票，或输入「新值是…」。也可用引号括住完整新值，或发送一项新的要求。")
             self.workspace_widget("#prompt", Input).focus()
 
+    def inspect_pending_update(self):
+        if self.agent is not None:
+            return self.agent.reconcile_update()
+        verification = self._switched_update()
+        if verification is None:
+            return Agent._receipt("NO_PENDING_VERIFICATION")
+        try:
+            if self.conversation:
+                self.conversation.validate()
+        except (OSError, ValueError, sqlite3.Error):
+            return Agent._receipt("ERROR")
+        return verification.reconcile_update()
+
     @on(Input.Submitted, "#prompt")
     def submitted(self, event):
         message = event.value.strip()
@@ -906,17 +943,17 @@ class AgentWorkspace(ConversationUI, App):
         if self.conversation_blocked:
             self.note("此账号的账簿对话已在另一窗口打开。请关闭后重新登录。")
             return
+        if message == "/inspect-update":
+            event.input.value = ""
+            receipt = self.inspect_pending_update()
+            self.chat_message("业务回执", receipt["message"])
+            self.note(receipt["message"])
+            return
         try:
             self.ensure_agent()
         except (OSError, ProfileError, ValueError, sqlite3.Error):
             self.update_header()
             self.note("暂时无法发送。请使用「配置 AI 模型」检查设置。")
-            return
-        if message == "/inspect-update":
-            event.input.value = ""
-            receipt = self.agent.reconcile_update()
-            self.chat_message("业务回执", receipt["message"])
-            self.note(receipt["message"])
             return
         if diagnose and (not self.agent.transport or not self.trace_path):
             self.note("一次性诊断需要真实模型和已配置的 Trace。")
