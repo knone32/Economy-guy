@@ -715,7 +715,7 @@ def confirmed_task_creation(outcome):
             and bool((outcome["data"] or {}).get("task", {}).get("task_id")))
 
 
-def render_query_conclusion(results, *, invoice_coverage=None):
+def render_query_conclusion(results, *, invoice_coverage=None, include_source=False):
     """Summarize verified reads without copying the detail pane or guessing coverage."""
     lines = []
     directories = {}
@@ -741,7 +741,8 @@ def render_query_conclusion(results, *, invoice_coverage=None):
             period = (f"{scope['year']:04d}-{scope['month']:02d}" if scope.get("month") else f"{scope['year']} 年")
         else:
             period = ""
-        heading = " ".join(filter(None, ("、".join(companies), period)))
+        heading = (render_scope(evidence, conversational=True) if include_source
+                   else " ".join(filter(None, ("、".join(companies), period))))
         if name in {"get_finance_summary", "get_annual_finance_summary"}:
             rule = evidence.get("rule") or {}
             rule_id = rule.get("rule_id") or rule.get("id")
@@ -750,6 +751,8 @@ def render_query_conclusion(results, *, invoice_coverage=None):
                       f"支出 {data['bank_expense_total']} 元{basis}。")
             if outcome["status"] == "NO_DATA":
                 detail = "该账期没有发票或银行流水。" + detail
+            if include_source and (explanation := render_summary_basis(rule)):
+                detail += "\n" + explanation
         elif name == "count_invoice_fields":
             detail = render_invoice_field_count(data)
             rule = evidence.get("rule")
@@ -790,7 +793,8 @@ def render_query_conclusion(results, *, invoice_coverage=None):
             else:
                 detail = f"本次筛选返回 {data['row_count']} 行，明细见业务记录。"
                 if 1 <= data["row_count"] <= 2 and len(data["columns"]) <= 4 and (
-                    directory_count_only(data) is not None or
+                    all(value is None or type(value) in {int, float}
+                         for row in data["rows"] for value in row) or
                     (any(data["derived"]) and all(
                         column.endswith("_cents") or column in {"company_id", "cnt", "numerator", "denominator"}
                         for column in data["columns"]))
@@ -810,7 +814,7 @@ def render_query_conclusion(results, *, invoice_coverage=None):
         else:
             detail = ("没有匹配的记录。" if outcome["status"] == "NO_DATA"
                       else "查询结果见业务记录。")
-        line = f"{heading}：{detail}" if heading else detail
+        line = ("\n" if include_source else "：").join(filter(None, (heading, detail)))
         if line not in lines:
             lines.append(line)
     for (heading, dated, _), pages in directories.items():

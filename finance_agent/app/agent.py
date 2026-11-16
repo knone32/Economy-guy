@@ -1622,7 +1622,8 @@ class Agent:
                             name in SQL_ANSWER_TOOLS and outcome["status"] in {"SUCCESS", "NO_DATA"}
                             and outcome.get("evidence", {}).get("source") == "current_sqlite"
                             for name, outcome in read_results)):
-                    notice = natural["text"]
+                    self.messages.pop()  # The raw model conclusion remains in Trace.
+                    notice = render_query_conclusion(read_results, include_source=True)
                     return finish(notice + "\n\n" + render_information(read_results), store=False,
                                   category="database_query", chat_notice=notice)
                 if wants_explanation and read_only:
