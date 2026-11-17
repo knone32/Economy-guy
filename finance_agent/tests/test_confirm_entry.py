@@ -1,6 +1,10 @@
 """Exercise the compatibility chat's transition to a trusted invoice edit."""
+import base64
 import io
 import json
+import os
+import shutil
+import subprocess
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -65,11 +69,62 @@ class ConfirmEntryTests(unittest.IsolatedAsyncioTestCase):
                  {**proposal, "invoice_nos": ("F002",), "rule_reference": {"rule_id": "R002"}})
         for case in cases:
             with self.subTest(case=case):
-                notice = invoice_proposal_guidance(case)
+                notice = invoice_proposal_guidance(case, self.path)
                 self.assertIn("同一账簿", notice)
-                self.assertIn("python main.py tui", notice)
+                self.assertIn("PowerShell", notice)
+                self.assertIn(" --db ", notice)
+                self.assertIn(" tui\n", notice)
                 self.assertIn("确认或取消", notice)
                 self.assertNotIn("/edit ", notice)
+
+    @unittest.skipUnless(shutil.which("powershell.exe"), "requires Windows PowerShell")
+    def test_batch_guidance_launches_with_bound_workbook_from_another_directory(self):
+        workbook = self.path.parent / "another folder" / "team's $archive ‘case’.sqlite3"
+        import_workspace(FIXTURE, workbook)
+
+        calls = iter((True, False))
+
+        def model(messages, _tools):
+            if next(calls):
+                return tool("check_missing_purpose", {"company_id": "C001", "year": 2026, "month": 9,
+                                                        "rule_business_date": "2026-09-01"})
+            response = next(message for message in reversed(messages) if message["role"] == "tool")
+            selection = json.loads(response["content"])["data"]["selection_id"]
+            return tool("propose_invoice_changes", {
+                **PROPOSAL, "selection_id": selection, "rule_business_date": "2026-09-01", "rule_cohort": True,
+                "new_value": "社区演练归档",
+            })
+
+        self.agent = Agent("U001", workbook, model, mode="mock", trace_path=workbook.with_suffix(".jsonl"))
+        self.chat(["按 C001 2026年9月适用的用途规则，把当月全部必填但用途未填的发票用途改为社区演练归档", "exit"])
+        self.assertGreater(len(self.agent.last_response["invoice_change"]["invoice_nos"]), 1)
+        output = self.output.getvalue()
+        self.assertNotIn("/edit ", output)
+        lines = [line for line in output.splitlines() if line.startswith("& ") and line.endswith(" tui")]
+        self.assertEqual(len(lines), 1, output)
+        probe = self.path.parent / "startup capture"
+        probe.mkdir()
+        (probe / "sitecustomize.py").write_text(
+            "import json, sys\n"
+            "def capture(frame, event, arg):\n"
+            "    if event == 'call' and frame.f_code.co_name == 'launch_tui':\n"
+            "        args = frame.f_locals['args']\n"
+            "        print(json.dumps({'db': str(args.db), 'explicit_db': args.explicit_db, 'command': args.command}))\n"
+            "        raise SystemExit(0)\n"
+            "sys.setprofile(capture)\n",
+            encoding="utf-8",
+        )
+        encoded = base64.b64encode(lines[0].encode("utf-16-le")).decode("ascii")
+        process = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+            cwd=probe, env={**os.environ, "PYTHONPATH": str(probe)}, capture_output=True, check=False, timeout=20,
+        )
+        self.assertEqual(process.returncode, 0, (process.stdout, process.stderr))
+        self.assertEqual(json.loads(process.stdout),
+                         {"db": str(workbook.resolve()), "explicit_db": True, "command": "tui"})
+        self.assertFalse(self.agent.update_session.drafts)
+        self.assertEqual(snapshot(workbook), (None, []))
+
 
     def test_proposal_gives_executable_edit_and_exit_leaves_no_audit(self):
         self.chat([EDIT_TEXT, "exit"])

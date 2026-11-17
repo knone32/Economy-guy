@@ -2,7 +2,9 @@
 import json
 import os
 from dataclasses import asdict
+from pathlib import Path
 import re
+import sys
 
 from .responses import render_information
 from .trace import redact
@@ -13,7 +15,12 @@ def safe_text(value):
     return re.sub(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\ud800-\udfff]", "", redact(value))
 
 
-def invoice_proposal_guidance(proposal):
+def _powershell_literal(value):
+    # PowerShell treats typographic single quotes as delimiters too.
+    return "'" + re.sub(r"['‘’]", r"\g<0>\g<0>", str(value)) + "'"
+
+
+def invoice_proposal_guidance(proposal, db_path):
     """Give an executable next step for a verified proposal without a CLI draft."""
     notice = "发票修改提案已核验，本轮尚未提交，也没有待确认草稿。"
     source = proposal["source_request"].strip()
@@ -26,8 +33,12 @@ def invoice_proposal_guidance(proposal):
                 + "/edit " + source
                 + "\n在「最终确认」核对企业、票号、字段及旧值和新值，再输入提示中的完整 confirm 命令。"
                   "输入 /cancel 可取消。")
-    return (notice + "\n请打开同一账簿的全屏工作台（从 finance_agent 运行 python main.py tui），"
-            "重新说明企业、发票或筛选条件、字段及新值，再在确认窗口核对并确认或取消。")
+    entry = Path(__file__).resolve().parents[1] / "main.py"
+    command = (f"& {_powershell_literal(sys.executable)} {_powershell_literal(entry)} "
+               f"--db {_powershell_literal(Path(db_path).resolve())} tui")
+    return (notice + "\n请在 PowerShell 中运行下面整行，打开同一账簿的全屏工作台。\n"
+            + command
+            + "\n重新说明企业、发票或筛选条件、字段及新值，再在确认窗口核对并确认或取消。")
 
 
 def turn_tools(messages):
@@ -193,7 +204,7 @@ def chat_loop(agent, args, profile_options, serialize, home):
                 calls = turn_tools(agent.messages[offset:]) if home else []
                 if proposal is not None:
                     answer = "\n".join(filter(None, (render_information(response["tool_results"]),
-                                                      invoice_proposal_guidance(proposal))))
+                                                      invoice_proposal_guidance(proposal, agent.db_path))))
                     for call in calls:
                         if call["tool"] == "propose_invoice_changes" and call["status"] == "WAITING_CONFIRMATION":
                             call["status"] = "提案已核验，请从修改入口继续"
