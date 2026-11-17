@@ -47,6 +47,8 @@ _AGGREGATES = {"avg", "count", "min", "max", "sum", "dense_rank", "rank", "row_n
 _INVOICE_SELECT = re.compile(r"\s*SELECT\s+([\w.,*\s]+?)\s+FROM\s+invoices(?=\s|;|$)"
                              r"(?P<tail>.*)", re.I | re.S)
 _SQL_PAGING = re.compile(r"'(?:[^']|'')*'|--[^\n]*|/\*.*?\*/|\b(LIMIT|OFFSET)\b", re.I | re.S)
+_SQL_SELECT = re.compile(
+    r"""'(?:[^']|'')*'|"(?:[^"]|"")*"|`(?:[^`]|``)*`|\[[^\]]*\]|--[^\n]*|/\*.*?\*/|\b(SELECT)\b""", re.I | re.S)
 
 
 def _invoice_projection(sql, columns):
@@ -311,6 +313,8 @@ class BusinessSQL:
             raise BusinessSQLError("SQL_REJECTED", "SQL 无效或包含未获准的操作、表或函数") from None
         finally:
             db.set_progress_handler(None, 0)
+            # Coverage and selection checks keep the read-only guard without counting as user SQL.
+            db.set_authorizer(_authorizer)
         data = {"sql": sql, "columns": columns, "rows": rows, "row_count": len(rows),
                 "truncated": truncated, "derived": derived,
                 "query_scope": _query_scope(sql, scope, reads, selects)}
@@ -333,7 +337,9 @@ class BusinessSQL:
         keys = ()
         if (rows and not truncated and columns == ["company_id", "invoice_no"]
                 and selects == 1 and reads == {"invoices"} and not functions & _AGGREGATES
-                and _KEY_QUERY.match(sql) and not _PARTIAL_QUERY.search(sql)):
+                and (projection_start := _KEY_QUERY.match(sql)) and not _PARTIAL_QUERY.search(sql)
+                # SQLite can optimize away authorizer events for nested SELECTs.
+                and not any(token[1] for token in _SQL_SELECT.finditer(sql, projection_start.end()))):
             keys = tuple(rows)
             placeholders = ",".join("(?,?)" for _ in keys)
             dates = db.execute(
