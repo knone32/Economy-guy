@@ -1,6 +1,7 @@
 """Regression for mixed detail reads and a separate one-invoice change."""
 import json
 import unittest
+from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -9,6 +10,7 @@ from textual.widgets import Select
 from app.agent import Agent
 from app.cli_workspaces import import_workspace
 from app.model_config import DEFAULT_TEMPLATE
+from app.stage2_schema import open_existing
 from app.tui import AgentWorkspace, ChatLog
 from app.tui_screens import Approval
 from tests import test_tui_p0
@@ -20,6 +22,7 @@ LIVE_REQUEST = "查一下乙企业 2026 年 9 月 F006 和 F007 的用途，再�
 VALUE = "培训待复核"
 B_PARAPHRASE = "麻烦先核对甲企业 2026-09 F005、F010 的用途，接着仅将 F010 的备注改为『期末打印单据待对照』，用途保持原样。"
 B_VALUE = "期末打印单据待对照"
+AMBIGUOUS_CHOICE = B_PARAPHRASE.replace("仅将 F010", "把其中一张")
 
 
 def mixed_model(*, company="C002", keys=("F006", "F007"), target="F007", field="remark",
@@ -118,6 +121,105 @@ class MixedInvoiceScopeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("invoice_change", response)
         self.assertFalse(agent.update_session.drafts)
         self.assertEqual(snapshot(self.path), before)
+
+    def test_short_choice_resumes_the_saved_edit_and_rereads_only_that_invoice(self):
+        before = snapshot(self.path)
+        for reply in ("F010", "发票号是 F010。", "就 F010 那张吧", "就 C001 的 F010 那张吧"):
+            with self.subTest(reply=reply):
+                agent = self.agent(b_paraphrase_model())
+                agent.ask(AMBIGUOUS_CHOICE)
+                self.assertEqual(agent.last_response["category"], "clarification")
+                agent.ask(reply)
+                change = agent.last_response["invoice_change"]
+                self.assertEqual((change["company_id"], change["year"], change["month"]), ("C001", 2026, 9))
+                self.assertEqual((change["invoice_nos"], change["field"], change["new_value"]),
+                                 (("F010",), "remark", B_VALUE))
+                (tool, result), = agent.last_response["tool_results"]
+                self.assertEqual((tool, result["status"], result["data"]["invoice_no"]),
+                                 ("get_invoice", "SUCCESS", "F010"))
+                self.assertEqual(agent.last_response["execution"]["model_requests"], 0)
+                self.assertIsNone(agent.pending_intent)
+                self.assertEqual(snapshot(self.path), before)
+
+    def test_choice_outside_the_read_set_keeps_the_question_and_can_be_cancelled(self):
+        before = snapshot(self.path)
+        agent = self.agent(b_paraphrase_model())
+        agent.ask(AMBIGUOUS_CHOICE)
+        agent.ask("F008")
+        self.assertIn("F005", agent.last_response["chat_notice"])
+        self.assertIn("F010", agent.last_response["chat_notice"])
+        self.assertFalse(agent.last_response["tool_results"])
+        self.assertNotIn("invoice_change", agent.last_response)
+        self.assertIsNotNone(agent.pending_intent)
+        agent.ask("算了")
+        self.assertIsNone(agent.pending_intent)
+        self.assertEqual(agent.last_response["execution"]["stop_reason"], "CANCELLED")
+        agent.model = lambda *_: {
+            "role": "assistant", "content": json.dumps({"kind": "information", "text": "请说明要查询的内容"})}
+        agent.ask("F010")
+        self.assertNotIn("invoice_change", agent.last_response)
+        self.assertEqual(snapshot(self.path), before)
+
+    def test_a_new_query_does_not_resume_pending_invoice_edit(self):
+        agent = self.agent(b_paraphrase_model())
+        agent.ask(AMBIGUOUS_CHOICE)
+        self.assertIsNotNone(agent.pending_intent)
+        agent.model = lambda *_: {
+            "role": "assistant", "content": json.dumps({"kind": "information", "text": "查销方"})}
+        agent.ask("C001 的 F010 的销方是谁？")
+        self.assertNotIn("invoice_change", agent.last_response)
+        self.assertIsNone(agent.pending_intent)
+
+    def test_choice_checks_current_permission_and_period(self):
+        read_only_agent = Agent("U002", self.path, b_paraphrase_model(), mode="mock")
+        read_only_agent.ask(AMBIGUOUS_CHOICE)
+        read_only_agent.ask("F010")
+        self.assertEqual(read_only_agent.last_response["execution"]["stop_reason"], "DENIED")
+        self.assertNotIn("invoice_change", read_only_agent.last_response)
+
+        agent = self.agent(b_paraphrase_model())
+        agent.ask(AMBIGUOUS_CHOICE)
+        with closing(open_existing(self.path)) as db:
+            db.execute("UPDATE invoices SET invoice_date=? WHERE company_id=? AND invoice_no=?",
+                       ("2026-10-01", "C001", "F010"))
+            db.commit()
+        before = snapshot(self.path)
+        agent.ask("F010")
+        self.assertEqual(agent.last_response["execution"]["stop_reason"], "SCOPE_MISMATCH")
+        self.assertNotIn("invoice_change", agent.last_response)
+        self.assertEqual(snapshot(self.path), before)
+
+    async def test_workbench_choice_uses_fresh_value_then_cancels_without_changes(self):
+        app = AgentWorkspace(self.path, DEFAULT_TEMPLATE, self.path.with_name("no-profiles.json"),
+                             model=b_paraphrase_model(), trace_path=self.path.with_name("choice.jsonl"),
+                             session_path=self.path.with_name("sessions.sqlite3"))
+        app.mode = "mock"
+        async with app.run_test(size=(150, 44)) as pilot:
+            app.screen.query_one("#login-user", Select).value = "U001"
+            await pilot.click("#sign-in")
+            await self.await_state(pilot, lambda: app.user == "U001")
+            await test_tui_p0.P0Test.send(self, app, pilot, AMBIGUOUS_CHOICE)
+            await self.await_state(pilot, lambda: bool(app.records) and not app.busy)
+            self.assertNotIsInstance(app.screen, Approval)
+            with closing(open_existing(self.path)) as db:
+                db.execute("UPDATE invoices SET remark=? WHERE company_id=? AND invoice_no=?",
+                           ("已收到新附件", "C001", "F010"))
+                db.commit()
+            before = snapshot(self.path)
+            records = len(app.records)
+            await test_tui_p0.P0Test.send(self, app, pilot, "发票号是 F010")
+            await self.await_state(pilot, lambda: isinstance(app.screen, Approval) or
+                                   (len(app.records) > records and not app.busy))
+            dialog = app.screen
+            self.assertIsInstance(dialog, Approval)
+            self.assertIn("C001 · 2026-09", dialog.body)
+            self.assertIn("字段　备注", dialog.body)
+            self.assertIn(f"第 1 / 1 张\nF010\n原值　已收到新附件\n新值　{B_VALUE}", dialog.body)
+            self.assertEqual(snapshot(self.path), before)
+            dialog.answer(False)
+            await self.await_state(pilot, lambda: len(app.records) > records and not app.busy)
+            self.assertEqual(app.agent.write_receipt["status"], "CANCELLED")
+            self.assertEqual(snapshot(self.path), before)
 
     def test_wrong_target_wrong_field_or_incomplete_read_cannot_preview(self):
         before = snapshot(self.path)

@@ -309,6 +309,17 @@ def invoice_supplement(text, missing):
     return None
 
 
+def invoice_choice_reply(text):
+    """Recognize a standalone response to a pending invoice-number question."""
+    value = text.strip().rstrip("。！!").strip()
+    if value == "算了" or _CANCEL.fullmatch(value):
+        return {"cancel": True}
+    value = re.sub(r"^(?:就选|就|选)\s*", "", value)
+    value = re.sub(r"\s*(?:(?:这|那)(?:一)?张(?:发票|票)?\s*)?(?:吧|就行)?$", "", value).strip()
+    supplied = invoice_supplement(value, ("invoice_no",))
+    return supplied if supplied and supplied.get("invoice_no") else None
+
+
 def invoice_change_evidence(text, field, new_value, *, rule_field=None):
     """Require a literal value and reject clear read-only, hypothetical or forbidden requests."""
     if not new_value.strip() or _HYPOTHETICAL.match(text) or text.rstrip().endswith(("?", "？")):
@@ -383,7 +394,14 @@ def named_invoice_read_and_edit(text):
         return request
     values = literal_value(value)
     target = (match["target"] or match["direct"] or "").strip()
-    if not values or not re.fullmatch(
+    if not values:
+        return request
+    change = {"field": ["purpose" if field == "用途" else "remark"], "new_value": values}
+    if re.fullmatch(r"(?:(?:其中|之中|里面)\s*)?(?:任意|某)?\s*(?:一|1)\s*张\s*(?:发票|票)?\s*(?:的)?", target):
+        if invoice_change_evidence(write, change["field"][0], values[0]):
+            request["pending_choice"] = change
+        return request
+    if not re.fullmatch(
             rf"(?:(?:{_INVOICE_OWNER_MONTH}|{_COMPANY})\s*(?:的\s*)?)?(?:发票\s*)?{_INVOICE}\s*(?:发票)?\s*(?:的)?",
             target, re.I):
         return request
@@ -391,9 +409,7 @@ def named_invoice_read_and_edit(text):
     if (not set(scope["invoice_no"]) <= set(read_scope["invoice_no"])
             or any(key in scope and scope[key] != read_scope[key] for key in ("company_id", "periods"))):
         return request
-    request["write_scope"] = {**read_scope, **scope,
-                              "field": [{"用途": "purpose", "备注": "remark"}[field]],
-                              "new_value": values}
+    request["write_scope"] = {**read_scope, **scope, **change}
     return request
 
 
