@@ -27,7 +27,7 @@ Stage 3C普通查询仍走Fast Path，无额外规划模型调用。模型调用
 4P-E：Agent._ask在当前调用方工具子集内生成turn_tools；仅当WriteCoordinator.begin认可本轮准备流程时暴露prepare_invoice_update。只读轮不暴露该工具，伪造调用仍由白名单拒绝，不恢复调用方已隐藏的工具。test_stage4pe及原test_security_boundaries验证只读/合法编辑/子集边界。缺失日期的任意自然语言语义仍不是Handler已完整验证的事实：S4-P-E的A1有模型猜月份后查询的反例，不能以本轮过滤写工具声称已解决该问题。
 
 
-普通分析在本轮成功取得当前账簿工具证据后，查询正文和结果卡按同一份结果呈现。正文标明实际查询范围和来源，小型数值结果沿用结果卡的字段与金额格式，汇总依据来自工具附带的规则。模型的原始查询结论留在 Trace。
+普通分析在本轮成功取得当前账簿工具证据后，查询正文和结果卡按同一份结果呈现。正文标明实际查询范围和来源，小型数值结果沿用结果卡的字段与金额格式，汇总依据来自工具附带的规则。模型的原始查询结论留在 Trace。SQL 的授权快照仍作为执行边界。可识别的单表查询以实际企业、账期和筛选条件为每条结果定界，正文和结果卡共用这一标题。无法核实时标明实际范围未核实及授权快照。部分失败时保留每项已核验的结果，并提示其余查询尚未核实。
 
 ## S4-P0C：可信范围来源
 Agent分发显式传入ContextBuilder.proof() → ScopeProof → handle_tool → 企业权限优先 → expected_scope/validate_scope → 原业务查询。月度工具要求明确company/year/month；缺来源=AMBIGUOUS+missing_fields，冲突=SCOPE_MISMATCH，权限仍DENIED。get_invoice保留联合键契约、不强制年月；set_schedule同守卫。模型自报source和猜测SQL成功均不能洗成用户来源。见tests/test_stage4p0c.py及[S4-P0C](../verification/stage4/S4-P0C.md)。

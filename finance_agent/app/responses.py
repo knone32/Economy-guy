@@ -3,6 +3,7 @@ import json
 import re
 from decimal import Decimal, InvalidOperation
 
+from .business_sql import SQL_SOURCE
 from .queries import INVOICE_FIELD_LABELS, _money
 
 
@@ -354,13 +355,26 @@ def scope_key(evidence):
             scope.get("rule_business_date"))
 
 
+def _sql_scope_heading(scope):
+    companies = "、".join(scope["company_ids"])
+    periods = ("、".join(f"{year:04d}-{month:02d}" for year, month in scope["periods"])
+               if "periods" in scope else f"{scope['year']} 年")
+    return f"企业 {companies} · {periods}"
+
+
 def render_scope(evidence, *, conversational=False):
     scope = evidence.get("scope",{})
     if "company_ids" in scope:
-        companies = "、".join(scope["company_ids"])
-        periods = ("、".join(f"{year:04d}-{month:02d}" for year, month in scope["periods"])
-                   if "periods" in scope else f"{scope['year']} 年")
-        return f"企业 {companies} · {periods}（当前账簿 SQL 快照）"
+        query = evidence.get("query_scope") or {}
+        actual = query.get("scope")
+        if actual is None:
+            heading = f"实际查询范围未核实（当前账簿 SQL 快照，授权快照：{_sql_scope_heading(scope)}）"
+        else:
+            date_field = "开票日期" if query["date_field"] == "invoice_date" else "交易日期"
+            heading = f"{_sql_scope_heading(actual)}（当前账簿 SQL 快照，按{date_field}归属账期）"
+        filters = "，".join(condition.replace("\r", r"\r").replace("\n", r"\n")
+                           for condition in query.get("filters", ()))
+        return f"{heading} · 筛选条件：{filters}" if filters else heading
     company = scope.get("company_id","未限定")
     if "year" in scope and "month" in scope:
         period = f"{scope['year']:04d}-{scope['month']:02d}"
@@ -585,15 +599,7 @@ def render_sql_evidence(data):
     return "\n".join(lines)
 
 
-# Only label projections whose expression and source are both visible in this small SQL form.
-_SQL_SOURCE = re.compile(
-    r"\s*select\s+([\w\s,()*]+?)\s+from\s+(invoices|bank_transactions)"
-    r"(?:\s+where\s+\w+\s*(?:[<>=!]+|like)\s*(?:-?\d+|'(?:[^']|'')*')"
-    r"(?:\s+and\s+\w+\s*(?:[<>=!]+|like)\s*(?:-?\d+|'(?:[^']|'')*'))*)?"
-    r"(?:\s+group\s+by\s+\w+(?:\s*,\s*\w+)*)?"
-    r"(?:\s+order\s+by\s+\w+(?:\s+(?:asc|desc))?(?:\s*,\s*\w+(?:\s+(?:asc|desc))?)*)?"
-    r"\s*;?\s*", re.IGNORECASE,
-)
+# Only label projections whose expression and source are both visible in the statement.
 _SQL_LABELS = {
     "invoices": {"invoice_no": "发票编号", "invoice_date": "开票日期", "seller_name": "销售方",
                  "item_name": "项目", "purpose": "用途", "remark": "备注", "amount_cents": "价税合计",
@@ -619,14 +625,13 @@ def sql_display_rows(data):
                      for field, label in (("purpose", "用途"), ("remark", "备注")) if field in invoice]
             lines.append("\n".join(filter(None, (" · ".join(header), " / ".join(party), " · ".join(notes)))))
         return lines
-    match = _SQL_SOURCE.fullmatch(data["sql"])
+    match = SQL_SOURCE.fullmatch(data["sql"])
     columns = data["columns"]
     names = list(columns)
     units = [""] * len(columns)
     if match:
-        projections, table = match.groups()
-        table = table.lower()
-        expressions = projections.split(",")
+        table = match["table"].lower()
+        expressions = match["projection"].split(",")
         if len(expressions) == len(columns):
             for i, expression in enumerate(expressions):
                 source = re.fullmatch(r"(\w+|(?:sum|count)\s*\(\s*(?:\w+|\*)\s*\))"
@@ -782,8 +787,9 @@ def render_query_conclusion(results, *, invoice_coverage=None, include_source=Fa
             if redundant_directory_count(outcome, directory_totals):
                 continue
             if invoice_coverage and data.get(invoice_coverage):
-                detail = render_invoice_sql_coverage(data[invoice_coverage],
-                                                     filtered=invoice_coverage == "blank_purpose_coverage")
+                coverage = render_invoice_sql_coverage(data[invoice_coverage],
+                                                       filtered=invoice_coverage == "blank_purpose_coverage")
+                detail = f"覆盖核对（授权快照：{_sql_scope_heading(scope)}）。{coverage}"
                 if data["row_count"]:
                     detail += "明细见业务记录。"
             elif outcome["status"] == "NO_DATA":
@@ -814,7 +820,10 @@ def render_query_conclusion(results, *, invoice_coverage=None, include_source=Fa
         else:
             detail = ("没有匹配的记录。" if outcome["status"] == "NO_DATA"
                       else "查询结果见业务记录。")
-        line = ("\n" if include_source else "：").join(filter(None, (heading, detail)))
+        if name == "query_business_sql":
+            line = f"{render_scope(evidence)} {detail}"
+        else:
+            line = ("\n" if include_source else "：").join(filter(None, (heading, detail)))
         if line not in lines:
             lines.append(line)
     for (heading, dated, _), pages in directories.items():
@@ -859,6 +868,9 @@ def render_information(results):
         if outcome["status"] not in {"SUCCESS", "NO_DATA", "NO_CHANGE"}:
             continue
         data = outcome["data"]
+        if name == "query_business_sql":
+            parts.extend((render_scope(outcome["evidence"]), render_sql_evidence(data)))
+            continue
         add_scope(outcome.get("evidence", {}))
         if name in {"get_finance_summary", "get_annual_finance_summary"}:
             parts.append(f"本轮查询：发票价税合计 {data['invoice_total']} 元（{data['invoice_count']}张）；"
@@ -879,8 +891,6 @@ def render_information(results):
             parts.append(f"发票目录 · {DIRECTORY_SORT_LABELS[order]} · 共 {data['total']} 张 · "
                          f"第 {data['page']} 页 · 每页 {data['page_size']} 张。")
             parts.append(json.dumps(data["rows"], ensure_ascii=False))
-        elif name == "query_business_sql":
-            parts.append(render_sql_evidence(data))
         elif name == "count_invoice_fields":
             parts.append(render_invoice_field_count(data))
         elif name == "list_annual_blank_purpose":

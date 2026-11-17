@@ -420,7 +420,8 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
             if keys and invoice_selections is not None:
                 data["selection_id"] = register_invoice_selection(invoice_selections, keys, scope, name)
             status = "SUCCESS" if data["rows"] or data["truncated"] else "NO_DATA"
-            return tool_result(status, data, {"scope": scope, "source": "current_sqlite"})
+            return tool_result(status, data, {"scope": scope, "query_scope": data.pop("query_scope"),
+                                              "source": "current_sqlite"})
         if name == "resolve_recent_invoice":
             if execution:
                 rejection = execution.guard(name, args)

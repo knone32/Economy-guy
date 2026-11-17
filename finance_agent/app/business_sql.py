@@ -31,6 +31,16 @@ MAX_RESULT_ROWS = 30
 MAX_RESULT_BYTES = 10_000
 MAX_SQL_BYTES = 4096
 _QUERY = re.compile(r"\s*(?:SELECT|WITH)\b", re.I)
+_CONDITION = r"(\w+)\s*([<>=!]+|like)\s*(-?\d+|'(?:[^']|'')*')"
+SQL_SOURCE = re.compile(
+    r"\s*select\s+(?P<projection>[\w\s,()*]+?)\s+from\s+(?P<table>invoices|bank_transactions)"
+    rf"(?:\s+where\s+(?P<where>{_CONDITION}(?:\s+and\s+{_CONDITION})*))?"
+    r"(?:\s+group\s+by\s+(?P<group>\w+(?:\s*,\s*\w+)*))?"
+    r"(?:\s+order\s+by\s+\w+(?:\s+(?:asc|desc))?(?:\s*,\s*\w+(?:\s+(?:asc|desc))?)*)?"
+    r"\s*;?\s*", re.IGNORECASE,
+)
+_SQL_CONDITION = re.compile(_CONDITION, re.IGNORECASE)
+_MONTH_PREFIX = re.compile(r"'(\d{4})-(0[1-9]|1[0-2])-?%'")
 _KEY_QUERY = re.compile(r"\s*SELECT\s+company_id\s*,\s*invoice_no\s+FROM\s+invoices(?=\s|;|$)", re.I)
 _PARTIAL_QUERY = re.compile(r"\b(?:LIMIT|OFFSET|GROUP|HAVING|WINDOW|UNION|INTERSECT|EXCEPT)\b", re.I)
 _AGGREGATES = {"avg", "count", "min", "max", "sum", "dense_rank", "rank", "row_number"}
@@ -82,6 +92,50 @@ def _invoice_coverage(db, scope, data, projection, *, blank_purpose=False):
             "sql_paginated": paginated,
             "display_truncated": data["truncated"]}
 
+
+
+def _query_scope(sql, snapshot, reads, selects):
+    """Attribute a direct read to its verified snapshot intersection and extra predicates."""
+    match = SQL_SOURCE.fullmatch(sql)
+    if not match or selects != 1 or match["group"]:
+        return {"scope": None, "filters": ()}
+    table = match["table"].lower()
+    if reads != {table}:
+        return {"scope": None, "filters": ()}
+
+    conditions = list(_SQL_CONDITION.finditer(match["where"] or ""))
+    unknown = {"scope": None, "filters": tuple(condition[0] for condition in conditions)}
+    date_field = "invoice_date" if table == "invoices" else "transaction_date"
+    companies = snapshot["company_ids"]
+    periods = snapshot.get("periods")
+    filters = []
+    for condition in conditions:
+        field, operator, value = condition.groups()
+        field, operator = field.lower(), operator.lower()
+        if field == "company_id":
+            if operator != "=" or not value.startswith("'"):
+                return unknown
+            companies = tuple(company for company in companies if company == value[1:-1].replace("''", "'"))
+        elif field == date_field:
+            month = _MONTH_PREFIX.fullmatch(value) if operator == "like" else None
+            if not month:
+                return unknown
+            period = tuple(map(int, month.groups()))
+            if periods is None:
+                periods = (period,) if snapshot["year"] == period[0] else ()
+            else:
+                periods = tuple(item for item in periods if item == period)
+        else:
+            filters.append(condition[0])
+
+    if not companies or periods == ():
+        return unknown
+    scope = {"company_ids": companies}
+    if periods is None:
+        scope["year"] = snapshot["year"]
+    else:
+        scope["periods"] = periods
+    return {"scope": scope, "filters": tuple(filters), "date_field": date_field}
 
 
 class BusinessSQLError(ValueError):
@@ -258,7 +312,8 @@ class BusinessSQL:
         finally:
             db.set_progress_handler(None, 0)
         data = {"sql": sql, "columns": columns, "rows": rows, "row_count": len(rows),
-                "truncated": truncated, "derived": derived}
+                "truncated": truncated, "derived": derived,
+                "query_scope": _query_scope(sql, scope, reads, selects)}
         projection = _invoice_projection(sql, columns)
         if {"invoice_no", "invoice_date", "amount_cents"} <= projection.keys():
             data["invoice_projection"] = projection

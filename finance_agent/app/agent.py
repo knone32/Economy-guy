@@ -1947,6 +1947,10 @@ class Agent:
                     known = render_query_conclusion(read_results)
                     notice = (known + "\n后续查询的范围与请求不一致，已停止。" if known
                               else f"没有取得 {full_directory[0]} 的全账期目录。实际查询范围与请求不一致。")
+                elif read_only and any(name == "query_business_sql" for name, _ in read_results):
+                    known = render_query_conclusion(read_results, include_source=True)
+                    if known:
+                        notice = f"{known}\n其余查询结果尚未核实。{notice}"
                 return finish(notice, chat_notice=notice)
         if not execution.stop_reason:
             execution.stop("MODEL_LIMIT")

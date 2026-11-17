@@ -137,3 +137,109 @@ class ConflictingCountTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("0 张", shown)
             self.assertNotIn("999", shown)
             self.assertNotIn("没有匹配的记录", shown)
+
+    async def workbench_query(self, question, replies):
+        app = AgentWorkspace(self.path, DEFAULT_TEMPLATE, self.directory / "no-profiles.json",
+                             model=scripted_model(replies), trace_path=self.directory / "workbench.jsonl")
+        app.mode = "mock"
+        async with app.run_test(size=(150, 42)) as pilot:
+            app.screen.query_one("#login-user", Select).value = "U001"
+            await pilot.click("#sign-in")
+            await self.await_state(pilot, lambda: app.user == "U001")
+            await test_tui_p0.P0Test.send(self, app, pilot, question)
+            await self.await_state(pilot, lambda: app.agent is not None and not app.busy and app.agent.last_response)
+            chat = str(app.workspace_widget("#chat-log", ChatLog).entries[-1])
+            cards = [str(item.renderable) for item in app.workspace_widget("#business-log", ChatLog).entries]
+            return chat, cards, app.agent.last_response
+
+    async def assert_two_scopes(self, ranges):
+        calls = []
+        expected = []
+        for index, (company, period) in enumerate(ranges):
+            sql = self.filtered_sql("SUM(amount_cents) AS invoice_total_cents", company, period)
+            cents = self.sqlite_rows(sql)[0][0]
+            expected.append((company, period, f"¥{cents // 100:,}.{cents % 100:02}"))
+            calls += test_tui_p0.tool("query_business_sql", {"sql": sql}, f"scope{index}")["tool_calls"]
+        first, second = reversed(ranges)
+        question = f"分析 {first[0]} {first[1]} 和 {second[0]} {second[1]} 的发票价税合计，分别列出。"
+        chat, cards, response = await self.workbench_query(question, [
+            {"role": "assistant", "tool_calls": calls}, final("工具汇总显示 99999.99 元。")])
+        self.assertEqual(len(cards), 2)
+        self.assertEqual(len(response["tool_results"]), 2)
+        self.assertNotIn("99999.99", chat)
+        for index, (company, period, amount) in enumerate(expected):
+            lines = [line for line in chat.splitlines() if amount in line]
+            self.assertEqual(len(lines), 1)
+            for shown in (lines[0], cards[index]):
+                self.assertIn(company, shown)
+                self.assertIn(period, shown)
+                self.assertIn(amount, shown)
+                for other, own in zip(expected[1-index], expected[index]):
+                    if other != own:
+                        self.assertNotIn(other, shown)
+
+    async def test_each_sql_result_keeps_its_own_company_when_order_changes(self):
+        await self.assert_two_scopes([("C002", "2026-09"), ("C001", "2026-09")])
+
+    async def test_each_sql_result_keeps_its_own_month_when_order_changes(self):
+        await self.assert_two_scopes([("C002", "2026-09"), ("C002", "2026-08")])
+
+    async def test_partial_sql_keeps_success_and_explains_unverified_result(self):
+        sql = self.filtered_sql("SUM(amount_cents) AS invoice_total_cents", "C001", "2026-09")
+        cents = self.sqlite_rows(sql)[0][0]
+        amount = f"¥{cents // 100:,}.{cents % 100:02}"
+        calls = test_tui_p0.tool("query_business_sql", {"sql": sql}, "good")["tool_calls"]
+        bad_sql = self.filtered_sql("COUNT(unknown_sample_column)", "C002", "2026-09")
+        calls += test_tui_p0.tool("query_business_sql", {"sql": bad_sql}, "bad")["tool_calls"]
+        chat, cards, response = await self.workbench_query(
+            "分析 C001 2026-09 和 C002 2026-09 的发票价税合计，逐一说明。",
+            [{"role": "assistant", "tool_calls": calls}, final("两项查询均成功，99999.99 元。")])
+        self.assertEqual([outcome["status"] for _, outcome in response["tool_results"]], ["SUCCESS", "SQL_REJECTED"])
+        self.assertEqual(len(cards), 1)
+        for shown in (chat, cards[0]):
+            for text in ("C001", "2026-09", amount):
+                self.assertIn(text, shown)
+            self.assertNotIn("99999.99", shown)
+        self.assertIn("未核实", chat)
+        self.assertNotIn("C002", cards[0])
+
+    async def test_filtered_zero_shows_invoice_predicate_in_chat_and_card(self):
+        filtered = COUNT_SQL + " AND invoice_no = 'F999'"
+        self.assertEqual(self.sqlite_rows(COUNT_SQL), [(10,)])
+        self.assertEqual(self.sqlite_rows(filtered), [(0,)])
+        chat, cards, _ = await self.workbench_query(COUNT_PROMPT, [
+            test_tui_p0.tool("query_business_sql", {"sql": filtered}), final("9 月一共 0 张发票。")])
+        self.assertEqual(len(cards), 1)
+        for shown in (chat, cards[0]):
+            for text in ("C001", "2026-09", "筛选", "F999", "0 张", "开票日期"):
+                self.assertIn(text, shown)
+            self.assertNotIn("一共 0 张", shown)
+
+    async def test_sql_range_without_evidence_is_explicit_on_both_surfaces(self):
+        sql = ("SELECT COUNT(*) AS invoice_count FROM invoices "
+               "WHERE invoice_no = 'F999' OR invoice_no = 'F002'")
+        chat, cards, _ = await self.workbench_query(COUNT_PROMPT, [
+            test_tui_p0.tool("query_business_sql", {"sql": sql}), final("当月总计 1 张。")])
+        self.assertEqual(len(cards), 1)
+        for shown in (chat, cards[0]):
+            self.assertIn("实际查询范围未核实", shown)
+            self.assertIn("授权快照", shown)
+            self.assertNotIn("当月总计", shown)
+
+    @staticmethod
+    def filtered_sql(projection, company, period):
+        return (f"SELECT {projection} FROM invoices "
+                f"WHERE company_id = '{company}' AND invoice_date LIKE '{period}%'")
+
+    def test_directory_coverage_total_keeps_its_snapshot_scope(self):
+        sql = self.filtered_sql("company_id, invoice_no, invoice_date, amount_cents", "C001", "2026-08")
+        agent, _ = self.ask("查 C001 2026-08 和 2026-09 的所有发票", "query_business_sql", {"sql": sql},
+                            "已经列出两个账期的全部发票。")
+        result = agent.last_response
+        self.assertEqual(len(self.sqlite_rows(sql)), 10)
+        self.assertEqual(result["tool_results"][0][1]["data"]["invoice_coverage"]["total"], 20)
+        notice = result["chat_notice"]
+        self.assertIn("企业 C001 · 2026-08（当前账簿 SQL 快照", notice)
+        self.assertIn("覆盖核对（授权快照：企业 C001 · 2026-08、2026-09）", notice)
+        self.assertIn("该范围共 20 张", notice)
+        self.assertIn("本次展示 10 张", notice)
