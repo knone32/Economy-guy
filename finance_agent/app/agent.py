@@ -12,7 +12,7 @@ from .write_coordination import WriteCoordinator
 from .updates import commit_invoice_update, edit_scope_error
 from .provenance import SOURCES, ScopeProof
 from .business_sql import BusinessSQL, BusinessSQLError, TABLES as SQL_TABLES
-from .tui_intent import (invoice_intent_source, invoice_query_followup, invoice_supplement,
+from .tui_intent import (invoice_followup_supplement, invoice_intent_source, invoice_query_followup, invoice_supplement,
                          literal_single_invoice_edit, unresolved_invoice_field)
 from .invoice_batch import plan_invoice_change
 from .responses import (DIRECTORY_INLINE_LIMIT, directory_complete, directory_count_only, directory_display_pages, explicit_scope,
@@ -458,34 +458,40 @@ class Agent:
         pending, self.pending_intent = self.pending_intent, None
         pending_from = None
         followup = None
+        followup_step = None
+        followup_sources = {}
         confirmed_invoice_edit = None
         supplemental_year = None
         if (pending and not (allow_prepare or continue_edit or management or self.teaching)
                 and pending["actor"] == self.user_id and pending["workbook"] == str(self.db_path)):
-            supplement = invoice_supplement(text, pending["missing_fields"])
-            if pending.get("invoice_followup") and set(supplement or ()) != {"invoice_no"}:
-                supplement = None
+            invoice_pending = pending.get("invoice_followup")
+            resumed = invoice_followup_supplement(text, pending) if invoice_pending else None
+            supplement = None if invoice_pending else invoice_supplement(text, pending["missing_fields"])
             field_edit = pending.get("invoice_field")
             if field_edit and field_edit["suggested"] and text.strip().rstrip("。！!") in {"是", "是的"}:
                 supplement = {"field": field_edit["suggested"]}
             needed = set(pending["missing_fields"])
             if "invoice_reference" in needed:
                 needed.add("invoice_no")
-            if (supplement and set(supplement) & needed
-                    and not any(key in pending["scope"] and pending["scope"][key] != value
-                                for key, value in supplement.items())):
+            if resumed and (resumed[1].get("company_id") or pending["scope"].get("company_id")):
+                followup_step, current = resumed
+                first_company = pending.get("first_company_id") if followup_step == "first" else None
+                company = current.get("company_id") or first_company or pending["scope"]["company_id"][0]
+                number = current.get("invoice_no", invoice_pending)
+                followup = {"company_id": company, "invoice_no": number}
+                followup_sources = {key: "user_current" if key in current else "session_confirmed" for key in followup}
+                pending_from = pending["request"]
+                text = f"查 {company} 的 {number} 发票"
+            elif (supplement and set(supplement) & needed
+                  and not any(key in pending["scope"] and pending["scope"][key] != value
+                              for key, value in supplement.items())):
                 pending_from = pending["request"]
                 if "year" in supplement and "month" not in supplement:
                     supplemental_year, = supplement["year"]
                 literal = current_request.strip().rstrip("。！!").strip()
                 if "year" in supplement and re.fullmatch(r"\d{4}", literal):
                     literal += "年"
-                if pending.get("invoice_followup"):
-                    company, = pending["scope"]["company_id"]
-                    number, = supplement["invoice_no"]
-                    followup = {"company_id": company, "invoice_no": number}
-                    text = f"查 {company} 的 {number} 发票"
-                elif field_edit:
+                if field_edit:
                     scope = pending["scope"]
                     confirmed_invoice_edit = (
                         scope, {"用途": "purpose", "备注": "remark"}[supplement["field"]], field_edit["new_value"])
@@ -535,6 +541,7 @@ class Agent:
         mixed = allow_prepare and read_request is not None and not (management or self.teaching)
         query_text = read_request if mixed else text
         text_request = text
+        invoice_chain = invoice_query_followup(text_request) if read_only and not followup else None
         deferred = False
         if read_only:
             parts = re.split(r"\s*[，,；;。]?\s*(?:然后|接着|再)\s*(?=查看|看|查)", text, maxsplit=1)
@@ -551,7 +558,7 @@ class Agent:
         explicit = {} if rule_reference else explicit_scope(query_text, include_update_aliases=True)
         goal = query_goal(query_text) if mixed or deferred else None
         corrected = False
-        date_sources = {"company_id": "session_confirmed"} if followup else {}
+        date_sources = dict(followup_sources)
         if (read_only and not pending_from and "invoice_no" not in explicit
                 and query_goal(query_text) is None
                 and len(explicit.get("company_id", ())) <= 1
@@ -592,6 +599,11 @@ class Agent:
             known = self.context.scope.get("company_id", ())
             if len(known) == 1:
                 scope_companies = known
+        if invoice_chain and not invoice_chain["company_id"] and len(scope_companies) == 1:
+            company, = scope_companies
+            invoice_chain["company_id"] = company
+            explicit["company_id"] = [company]
+            date_sources["company_id"] = "session_confirmed"
         infer_year = bool((read_only or mixed) and missing_year_months and scope_companies
                           and not re.search(RELATIVE_PERIOD, query_text))
         inferred = {}
@@ -1171,16 +1183,38 @@ class Agent:
                                          "fulfillment": fulfillment["status"], "query_evidence_count": len(facts)})
             self.last_response["trace_degraded"] = self.trace_degraded
             return text
+        def hold_invoice_chain(request, first, company, missing):
+            self.pending_intent = {"request": request, "scope": {"company_id": [company]} if company else {},
+                                   "missing_fields": (missing,), "actor": actor,
+                                   "workbook": str(self.db_path), "invoice_followup": first}
+
+        def ask_for_second_invoice(request, first, read):
+            company, number = first["company_id"], first["invoice_no"]
+            hold_invoice_chain(request, number, company, "invoice_no")
+            question = f"请提供第二张发票的编号，继续查询 {company}。"
+            return finish(render_information([read]) + "\n" + question, store=False,
+                          category="clarification", chat_notice=render_query_conclusion([read]) + "\n" + question,
+                          missing_fields=("invoice_no",))
+
         if blocked_edit:
             execution.stop("UNKNOWN_OUTCOME")
             return finish(unresolved_receipt["message"], chat_notice=unresolved_receipt["message"])
+        if invoice_chain and not invoice_chain["company_id"]:
+            hold_invoice_chain(current_request, invoice_chain["invoice_no"], None, "company_id")
+            return finish("请提供第一张发票所属的企业，我会继续查同一家公司的另一张发票。", store=False,
+                          category="clarification", missing_fields=("company_id",))
         if followup:
-            if followup["invoice_no"] == pending["invoice_followup"]:
-                self.pending_intent = pending
-                return finish("第一张已查过，请提供另一张发票的编号。", store=False, category="clarification",
-                              missing_fields=("invoice_no",))
+            if followup_step == "first":
+                hold_invoice_chain(pending_from, followup["invoice_no"], followup["company_id"], "first_invoice_no")
+            else:
+                first_company = pending.get("first_company_id") or pending["scope"]["company_id"][0]
+                self.pending_intent = {**pending, "scope": {"company_id": [followup["company_id"]]},
+                                       "first_company_id": first_company}
+                if followup == {"company_id": first_company, "invoice_no": pending["invoice_followup"]}:
+                    return finish("第一张已查过，请提供另一张发票的编号。", store=False, category="clarification",
+                                  missing_fields=("invoice_no",))
             scope = {key: [value] for key, value in followup.items()}
-            proof = ScopeProof(actor, scope, {"company_id": "session_confirmed", "invoice_no": "user_current"})
+            proof = ScopeProof(actor, scope, followup_sources)
             name = "get_invoice"
             raw = json.dumps(followup)
             blocked = execution.dispatch(name, raw) if self.user_id == actor and self.workbook_available() else "ERROR"
@@ -1190,14 +1224,24 @@ class Agent:
             outcome = handle_tool(name, raw, actor, self.db_path, allowed_tools=self.allowed_tools,
                                   expected_scope=scope, provenance=proof, execution=execution)
             execution.observe(name, followup, outcome)
-            self.trace("invoice.followup_read", {"original_request": pending_from, "arguments": followup,
-                                                "provenance": proof.metadata(), "result": outcome})
+            self.trace("invoice.followup_read", {"original_request": pending_from, "step": followup_step,
+                                                "arguments": followup, "provenance": proof.metadata(), "result": outcome})
             read_results.append((name, outcome))
             evidence = outcome["evidence"]
-            verified = outcome["status"] == "SUCCESS" and evidence.get("source") == "current_sqlite"
-            notice = render_query_conclusion(read_results) if verified else render_tool_failure(outcome["status"], name, outcome)
-            answer = finish(render_information(read_results) if verified else notice, chat_notice=notice,
-                            category="database_query" if verified else "operation_result", verified_read=verified)
+            verified = (followup["company_id"], followup["invoice_no"]) in verified_invoice_reads()
+            if verified and followup_step == "first":
+                answer = ask_for_second_invoice(pending_from, followup, (name, outcome))
+            elif verified:
+                self.pending_intent = None
+                answer = finish(render_information(read_results), chat_notice=render_query_conclusion(read_results),
+                                category="database_query", verified_read=True)
+            elif outcome["status"] == "NO_DATA":
+                position = "第一张" if followup_step == "first" else "第二张"
+                notice = f'在 {followup["company_id"]} 未找到 {followup["invoice_no"]}，请核对{position}发票的编号。'
+                answer = finish(notice, store=False, category="clarification", chat_notice=notice)
+            else:
+                notice = render_tool_failure(outcome["status"], name, outcome)
+                answer = finish(notice, chat_notice=notice)
             self.last_response["invoice_followup_read"] = {
                 "id": f"harness-followup-{self.trace_id}", "tool": name, "arguments": followup,
                 "status": outcome["status"], "scope": evidence.get("scope"), "source": evidence.get("source"),
@@ -1647,11 +1691,10 @@ class Agent:
                                     and data["count"] == len(data["missing_invoices"]))
                     return finish(notice, store=False, category="database_query", chat_notice=notice,
                                   verified_read=verified)
-                first_invoice = invoice_query_followup(text_request) if read_only and not invoice_write else None
-                invoice_reads = verified_invoice_reads() if first_invoice or (read_only and natural
+                invoice_reads = verified_invoice_reads() if invoice_chain or (read_only and natural
                     and natural["kind"] == "clarification" and "invoice_no" in natural["missing_fields"]) else {}
-                if first_invoice:
-                    company, first_number = first_invoice["company_id"], first_invoice["invoice_no"]
+                if invoice_chain:
+                    company, first_number = invoice_chain["company_id"], invoice_chain["invoice_no"]
                     first_read = invoice_reads.get((company, first_number))
                     if first_read:
                         self.messages.pop()
@@ -1661,13 +1704,7 @@ class Agent:
                             matched = [first_read, *second_reads]
                             return finish(render_information(matched), store=False, category="database_query",
                                           chat_notice=render_query_conclusion(matched), verified_read=True)
-                        self.pending_intent = {"request": current_request, "scope": {"company_id": [company]},
-                                               "missing_fields": ("invoice_no",), "actor": actor,
-                                               "workbook": str(self.db_path), "invoice_followup": first_number}
-                        question = f"请提供第二张发票的编号，继续查询 {company}。"
-                        notice = render_query_conclusion([first_read]) + "\n" + question
-                        return finish(render_information([first_read]) + "\n" + question, store=False,
-                                      category="clarification", chat_notice=notice, missing_fields=("invoice_no",))
+                        return ask_for_second_invoice(current_request, invoice_chain, first_read)
                 wants_explanation = natural is not None and natural["kind"] == "explanation"
                 if natural is not None and not execution.schedule and invoice_detail_verified():
                     self.messages.pop()

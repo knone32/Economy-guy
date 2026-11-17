@@ -130,18 +130,56 @@ def unresolved_invoice_field(text, scope, *, candidate=None, recent_reference=Fa
 def invoice_query_followup(text):
     """Recognize an explicit detail read followed by a missing invoice number."""
     match = re.fullmatch(
-        rf"\s*(?:请\s*)?(?:先\s*)?(?:查询|查看|查)\s*({_COMPANY})\s*(?:的\s*)?({_INVOICE})\s*(?:发票)?"
+        rf"\s*(?:请\s*)?(?:先\s*)?(?:查询|查看|查)\s*(?:({_COMPANY})\s*(?:的\s*)?)?({_INVOICE})\s*(?:发票)?"
+        r"(?:\s*(?:的\s*)?(?:当前\s*)?(?:用途|备注)(?:\s*[和与及、]\s*(?:用途|备注))?)?"
         r"\s*[，,；;。]?\s*(?:然后\s*(?:再\s*)?|接着\s*(?:再\s*)?|再\s*)"
-        rf"(?:查询|查看|查)\s*(?:({_COMPANY})\s*(?:的\s*)?)?另一张\s*发票\s*[。！？!?]?\s*",
+        rf"(?:查询|查看|查)\s*(?:(?:({_COMPANY})|同一(?:家)?(?:企业|公司))\s*(?:的\s*)?)?"
+        r"另一张\s*(?:发票|票)?\s*[。！？!?]?\s*",
         text, re.IGNORECASE,
     )
     if not match:
         return None
     company_text, first, second_company = match.groups()
-    company, = explicit_scope(company_text, include_update_aliases=True)["company_id"]
+    company = None
+    if company_text:
+        company, = explicit_scope(company_text, include_update_aliases=True)["company_id"]
     if second_company and explicit_scope(second_company, include_update_aliases=True)["company_id"] != [company]:
         return None
     return {"company_id": company, "invoice_no": first.upper()}
+
+
+def invoice_followup_supplement(text, pending):
+    """Bind a reply to the outstanding read or to an explicit correction of one target."""
+    missing, = pending["missing_fields"]
+    literal = text.strip().rstrip("。！!?？").strip()
+    correction = re.fullmatch(
+        rf"(第[一二])张(?:发票)?\s*(?:的?编号\s*)?(?:改查|改为|更正为|应为|是)\s*"
+        rf"(?:({_COMPANY})\s*(?:的\s*|/\s*)?)?({_INVOICE})", literal, re.IGNORECASE,
+    )
+    if correction:
+        position, company, number = correction.groups()
+        if position == "第二" and missing != "invoice_no":
+            return None
+        target = {"invoice_no": number.upper()}
+        if company:
+            target["company_id"], = explicit_scope(company, include_update_aliases=True)["company_id"]
+        return ("first" if position == "第一" else "second"), target
+
+    replacement = _CORRECTION.fullmatch(literal)
+    if replacement and (replacement["old"] or "").upper() == pending["invoice_followup"]:
+        target = explicit_scope(replacement["new"])
+        if target.get("invoice_no"):
+            number, = target["invoice_no"]
+            return "first", {"invoice_no": number}
+
+    supplied = invoice_supplement(text, ("company_id", "invoice_no")) or {}
+    if missing == "company_id" and supplied.keys() == {"company_id"}:
+        company, = supplied["company_id"]
+        return "first", {"company_id": company}
+    if missing in {"first_invoice_no", "invoice_no"} and supplied.keys() == {"invoice_no"}:
+        number, = supplied["invoice_no"]
+        return ("first" if missing == "first_invoice_no" else "second"), {"invoice_no": number}
+    return None
 
 
 def invoice_supplement(text, missing):

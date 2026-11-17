@@ -21,6 +21,9 @@ from tests import test_tui_p0
 FIRST = {"company_id": "C001", "invoice_no": "F002"}
 SECOND = {"company_id": "C001", "invoice_no": "F003"}
 REQUEST = "查 C001 的 F002，然后再查 C001 的另一张发票。"
+PURPOSE = "先查 C001 的 F002 的用途，然后再查 C001 的另一张发票。"
+SAME_COMPANY = "先查 C001 的 F002，再查同一家公司的另一张发票。"
+NO_COMPANY = "先查 F002 的用途，再查同一家公司的另一张"
 CLARIFY = {"role": "assistant", "content": json.dumps({
     "kind": "clarification", "text": "请提供第二张的发票编号。", "missing_fields": ["invoice_no"],
 }, ensure_ascii=False)}
@@ -129,6 +132,81 @@ class QueryContinuityTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(event["provenance"]["sources"], {"company_id": "session_confirmed", "invoice_no": "user_current"})
         self.assert_zero_audit()
 
+    async def test_workbench_keeps_followup_for_purpose_and_same_company(self):
+        app = self.app(tool("get_invoice", FIRST), CLARIFY)
+        async with app.run_test(size=(150, 42)) as pilot:
+            await self.login(app, pilot)
+            for request in (PURPOSE, SAME_COMPANY, NO_COMPANY):
+                with self.subTest(request=request):
+                    app.read_workspace = ("C001", 2026, 9)
+                    if app.agent:
+                        app.agent.model = scripted_model([tool("get_invoice", FIRST), CLARIFY])
+                    first = await self.ask(app, pilot, request)
+                    self.assertEqual(first["execution"]["stop_reason"], "WAITING_USER")
+                    self.assertIn("F002", first["chat_notice"])
+                    self.assertIn("第二张", first["chat_notice"])
+                    self.assertIn("F002", str(app.workspace_widget("#business-log", ChatLog).entries[-1].renderable))
+                    self.assertEqual(app.agent.pending_intent["scope"], {"company_id": ["C001"]})
+                    app.read_workspace = ("C002", 2026, 9)
+                    app.agent.model = Mock(side_effect=AssertionError("待补企业已可信确认"))
+                    second = await self.ask(app, pilot, "F003")
+                    app.agent.model.assert_not_called()
+                    self.assertEqual(second["invoice_followup_read"]["arguments"], SECOND)
+                    self.assertEqual(second["invoice_followup_read"]["status"], "SUCCESS")
+                    self.assertIsNone(app.agent.pending_intent)
+        trace = [json.loads(line) for line in (self.directory / "workbench.jsonl").read_text(
+            encoding="utf-8").splitlines()]
+        proofs = [item["data"] for item in trace if item["event"] == "invoice.followup_read"]
+        self.assertEqual([item["original_request"] for item in proofs], [PURPOSE, SAME_COMPANY, NO_COMPANY])
+        for entry in proofs:
+            self.assertEqual(entry["provenance"]["sources"], {"company_id": "session_confirmed", "invoice_no": "user_current"})
+        self.assert_zero_audit()
+
+    def test_missing_company_can_be_supplied_without_losing_either_read(self):
+        model = Mock(side_effect=AssertionError("没有可信企业时须追问"))
+        agent = Agent("U001", self.path, model, mode="mock")
+        self.assertIn("企业", agent.ask(NO_COMPANY))
+        self.assertEqual(agent.pending_intent["missing_fields"], ("company_id",))
+        self.assertFalse(agent.last_response["tool_results"])
+        first = agent.ask("甲企业")
+        self.assertIn("F002", first)
+        self.assertIn("第二张", first)
+        self.assertEqual(agent.pending_intent["scope"], {"company_id": ["C001"]})
+        agent.ask("F003")
+        self.assertEqual(agent.last_response["invoice_followup_read"]["arguments"], SECOND)
+        self.assertEqual(agent.last_response["invoice_followup_read"]["status"], "SUCCESS")
+        self.assertIsNone(agent.pending_intent)
+        model.assert_not_called()
+        self.assert_zero_audit()
+
+    def test_local_correction_replaces_only_that_read_and_failed_second_remains_pending(self):
+        agent = Agent("U001", self.path, scripted_model([tool("get_invoice", FIRST), CLARIFY]), mode="mock")
+        agent.ask(REQUEST)
+        agent.model = Mock(side_effect=AssertionError("已知局部更正应使用可信读取"))
+        self.assertIn("未找到 F999", agent.ask("第一张改查 F999"))
+        self.assertEqual(agent.pending_intent["missing_fields"], ("first_invoice_no",))
+        self.assertEqual(agent.last_response["execution"]["stop_reason"], "WAITING_USER")
+        first = agent.ask("F004")
+        self.assertIn("F004", first)
+        self.assertIn("第二张", first)
+        self.assertEqual(agent.pending_intent["invoice_followup"], "F004")
+        self.assertEqual(agent.pending_intent["request"], REQUEST)
+        self.assertEqual(agent.pending_intent["scope"], {"company_id": ["C001"]})
+
+        agent.ask("第二张改查 F999")
+        self.assertEqual(agent.last_response["invoice_followup_read"]["arguments"],
+                         {"company_id": "C001", "invoice_no": "F999"})
+        self.assertEqual(agent.last_response["invoice_followup_read"]["status"], "NO_DATA")
+        self.assertEqual(agent.last_response["execution"]["stop_reason"], "WAITING_USER")
+        self.assertIn("未找到 F999", agent.last_response["chat_notice"])
+        self.assertEqual(agent.pending_intent["invoice_followup"], "F004")
+        agent.ask("第二张改查 F003")
+        self.assertEqual(agent.last_response["invoice_followup_read"]["arguments"], SECOND)
+        self.assertEqual(agent.last_response["invoice_followup_read"]["status"], "SUCCESS")
+        self.assertIsNone(agent.pending_intent)
+        agent.model.assert_not_called()
+        self.assert_zero_audit()
+
     def test_first_read_alone_does_not_discard_clarification_for_second(self):
         for targets, expected in (([FIRST], "WAITING_USER"), ([FIRST, SECOND], "ANSWERED")):
             with self.subTest(targets=targets):
@@ -191,7 +269,8 @@ class QueryContinuityTests(unittest.IsolatedAsyncioTestCase):
         app = self.app(tool("get_invoice", FIRST), CLARIFY)
         async with app.run_test(size=(150, 42)) as pilot:
             await self.login(app, pilot)
-            for control, request in (("f4", REQUEST), ("/cancel", "先" + REQUEST.replace("C001", "甲企业"))):
+            for control, request in (("f4", SAME_COMPANY), ("/cancel", NO_COMPANY)):
+                app.read_workspace = ("C001", 2026, 9)
                 with self.subTest(control=control):
                     if app.agent:
                         app.agent.model = scripted_model([tool("get_invoice", FIRST), CLARIFY])
