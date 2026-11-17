@@ -20,6 +20,7 @@ from tests.test_sql_invoice_selection import snapshot
 LIVE_REQUEST = "请把 C002 2026年9月的发票 F006 和 F007 的备注都改为秋季培训费用待复核"
 VALUE = "秋季培训费用待复核"
 LIVE_KEYS = (("C002", "F006"), ("C002", "F007"))
+LIVE_SQL = "SELECT company_id, invoice_no FROM invoices WHERE company_id = 'C002' AND invoice_no IN ('F006','F007')"
 
 
 def tool_group(name, args):
@@ -28,15 +29,19 @@ def tool_group(name, args):
     return {"role": "assistant", "tool_calls": tools}
 
 
-def named_read_model(keys=LIVE_KEYS, *, value=VALUE, field="remark", excluded=(), selection_override=None):
-    rounds = iter(("read", "propose"))
+def named_read_model(keys=LIVE_KEYS, *, value=VALUE, field="remark", excluded=(), selection_override=None, sql=None):
+    rounds = iter(("read", "sql", "propose") if sql else ("read", "propose"))
 
     def model(messages, _tools):
-        if next(rounds) == "read":
+        stage = next(rounds)
+        if stage == "read":
             return tool_group("get_invoice", ({"company_id": c, "invoice_no": n} for c, n in keys))
+        if stage == "sql":
+            return tool_group("query_business_sql", ({"sql": sql},))
         selections = [data["selection_id"] for message in messages if message["role"] == "tool"
                       if (data := json.loads(message["content"]).get("data")) and data.get("selection_id")]
-        selections = [selection_override] if selection_override else selections[-len(keys):]
+        count = 1 if sql else len(keys)
+        selections = [selection_override] if selection_override else selections[-count:]
         return tool_group("propose_invoice_changes", (
             {"selection_id": selection, "field": field, "new_value": value, "mode": "batch",
              "excluded_invoice_ids": list(excluded), "target_year": 2026, "target_month": 9}
@@ -78,6 +83,43 @@ class NamedInvoiceSelectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(agent.update_session.drafts)
         self.assertEqual(snapshot(self.path), before)
 
+    def test_live_sql_selection_defaults_to_item_without_explicit_batch_request(self):
+        for request, value in ((LIVE_REQUEST, VALUE), (LIVE_REQUEST.replace(VALUE, "“整批确认”"), "整批确认")):
+            with self.subTest(request=request):
+                agent = self.ask(request, model=named_read_model(value=value, sql=LIVE_SQL))
+                response = agent.last_response
+                self.assertEqual([(name, result["status"]) for name, result in response["tool_results"]],
+                                 [("get_invoice", "SUCCESS"), ("get_invoice", "SUCCESS"),
+                                  ("query_business_sql", "SUCCESS"), ("propose_invoice_changes", "WAITING_CONFIRMATION")])
+                proposal = response["invoice_change"]
+                self.assertEqual((proposal["invoice_nos"], proposal["new_value"], proposal["mode"]),
+                                 (("F006", "F007"), value, "item"))
+                self.assertFalse(agent.update_session.drafts)
+        self.assertEqual(snapshot(self.path)[1], [])
+
+    async def test_sql_workbench_shows_item_or_batch_only_as_requested(self):
+        before = snapshot(self.path)
+        app = AgentWorkspace(self.path, DEFAULT_TEMPLATE, self.path.with_name("no-profiles.json"),
+                             model=named_read_model(sql=LIVE_SQL), trace_path=self.path.with_name("workbench.jsonl"),
+                             session_path=self.path.with_name("sessions.sqlite3"))
+        app.mode = "mock"
+        async with app.run_test(size=(150, 42)) as pilot:
+            app.screen.query_one("#login-user", Select).value = "U001"
+            await pilot.click("#sign-in")
+            await self.await_state(pilot, lambda: app.user == "U001")
+            for suffix, title in (("", "逐张确认发票修改"), ("，整批确认", "确认整批发票修改")):
+                records = len(app.records)
+                if app.agent:
+                    app.agent.model = named_read_model(sql=LIVE_SQL)
+                await test_tui_p0.P0Test.send(self, app, pilot, LIVE_REQUEST + suffix)
+                await self.await_state(pilot, lambda: isinstance(app.screen, Approval))
+                self.assertEqual(app.screen.title_text, title)
+                self.assertIn("全部匹配 2 张", app.screen.body)
+                self.assertEqual(snapshot(self.path), before)
+                app.screen.answer(False)
+                await self.await_state(pilot, lambda: len(app.records) > records and not app.busy)
+                self.assertEqual(snapshot(self.path), before)
+
     def test_named_recovery_accepts_other_company_and_reversed_order(self):
         named = "请将 2026-09 的甲企业发票 F006、F004 的备注统一设置为差旅凭证待复核"
         keys = (("C001", "F004"), ("C001", "F006"))
@@ -100,11 +142,13 @@ class NamedInvoiceSelectionTests(unittest.IsolatedAsyncioTestCase):
 
     def test_explicit_batch_confirmation_and_exclusion_keep_user_scope(self):
         explicit = LIVE_REQUEST + "，排除 F008，整批确认"
-        agent = self.ask(explicit, model=named_read_model(excluded=("F008",)))
-        change = agent.last_response["invoice_change"]
-        self.assertEqual((change["invoice_nos"], change["excluded"], change["mode"]),
-                         (("F006", "F007"), ("F008",), "batch"))
-        self.assertFalse(agent.update_session.drafts)
+        for sql in (None, LIVE_SQL):
+            with self.subTest(sql=sql):
+                agent = self.ask(explicit, model=named_read_model(excluded=("F008",), sql=sql))
+                change = agent.last_response["invoice_change"]
+                self.assertEqual((change["invoice_nos"], change["excluded"], change["mode"]),
+                                 (("F006", "F007"), ("F008",), "batch"))
+                self.assertFalse(agent.update_session.drafts)
         self.assertEqual(snapshot(self.path)[1], [])
 
     def test_incomplete_or_untrusted_reads_and_ambiguous_intent_do_not_preview(self):

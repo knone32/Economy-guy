@@ -1993,9 +1993,8 @@ class Agent:
                                         if selection and selection[2] == "get_invoice" and len(selection[0]) == 1:
                                             recovered = recover_named_invoice_selection(current_request, proposal, selections)
                                             if recovered:
-                                                keys, scope, mode = recovered
-                                                selection = (keys, scope, "get_invoice")
-                                                proposal = {**proposal, "mode": mode}
+                                                recovered_keys, recovered_scope = recovered
+                                                selection = (recovered_keys, recovered_scope, "get_invoice")
                                         missing = [key for key in ("year", "month") if not explicit.get(key)]
                                         if confirmed_invoice_edit and selection and (
                                                 selection[0] != ((confirmed_invoice_edit[0]["company_id"],
@@ -2024,8 +2023,8 @@ class Agent:
                                                 selection_id = register_invoice_selection(selections, *selection)
                                                 self.trace("invoice_selection.recovered",
                                                            {"from_selection": proposal["selection_id"],
-                                                            "selection_id": selection_id, "scope": scope,
-                                                            "keys": keys, "mode": mode})
+                                                            "selection_id": selection_id, "scope": recovered_scope,
+                                                            "keys": recovered_keys, "mode": invoice_change["mode"]})
                                             if status == "AMBIGUOUS":
                                                 field_question = (selection, proposal)
                         else:

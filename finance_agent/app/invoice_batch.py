@@ -133,8 +133,7 @@ def recover_named_invoice_selection(text, proposal, selections):
         verified.add(key)
     if verified != keys:
         return None
-    mode = "batch" if named["batch_confirmation"] and proposal["mode"] == "batch" else "item"
-    return tuple(sorted(keys)), {"company_id": company, "year": year, "month": month}, mode
+    return tuple(sorted(keys)), {"company_id": company, "year": year, "month": month}
 
 
 def plan_invoice_change(agent, source_request, proposal, selection, *, authorized_periods=(),
@@ -293,6 +292,10 @@ def plan_invoice_change(agent, source_request, proposal, selection, *, authorize
                         for key, value in (("year", year), ("month", month))):
         return None, "SCOPE_MISMATCH", "候选发票账期与用户要求不一致。"
     request = {key: proposal[key] for key in ("field", "new_value", "mode")}
+    if source in {"query_business_sql", "get_invoice"} and not rule and len(named) > 1 and request["mode"] != "item":
+        intent = literal_named_invoice_edit(source_request)
+        if request["mode"] != "batch" or not intent or not intent["batch_confirmation"]:
+            request["mode"] = "item"
     if rule:
         request["rule_reference"] = {"business_date": rule_date, "rule_id": rule["rule_id"],
                                      "version": rule["version"], "params": rule["params"], "cohort": cohort,
