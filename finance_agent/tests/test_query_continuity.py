@@ -97,6 +97,51 @@ class QueryContinuityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event["arguments"], SECOND)
         self.assertEqual(event["provenance"]["sources"], {"company_id": "session_confirmed", "invoice_no": "user_current"})
 
+    async def test_workbench_followup_accepts_prefix_and_company_alias(self):
+        variants = ("先" + REQUEST, REQUEST.replace("C001", "甲企业"))
+        app = self.app(tool("get_invoice", FIRST), CLARIFY)
+        async with app.run_test(size=(150, 42)) as pilot:
+            await self.login(app, pilot)
+            for request in variants:
+                with self.subTest(request=request):
+                    if app.agent is not None:
+                        app.agent.model = scripted_model([tool("get_invoice", FIRST), CLARIFY])
+                    first = await self.ask(app, pilot, request)
+                    self.assertEqual(first["execution"]["stop_reason"], "WAITING_USER")
+                    self.assertIn("F002", first["chat_notice"])
+                    self.assertIn("第二张", first["chat_notice"])
+                    self.assertIn("F002", str(app.workspace_widget("#business-log", ChatLog).entries[-1].renderable))
+                    self.assertEqual(app.agent.pending_intent["scope"], {"company_id": ["C001"]})
+                    self.assertEqual(app.agent.pending_intent["request"], request)
+                    blocked = Mock(side_effect=AssertionError("续查范围由待补状态提供"))
+                    app.agent.model = blocked
+                    followup = await self.ask(app, pilot, "F003")
+                    blocked.assert_not_called()
+                    self.assertEqual(followup["invoice_followup_read"]["arguments"], SECOND)
+                    self.assertEqual(followup["invoice_followup_read"]["status"], "SUCCESS")
+                    self.assertIsNone(app.agent.pending_intent)
+        events = [json.loads(line) for line in (self.directory / "workbench.jsonl").read_text(
+            encoding="utf-8").splitlines()]
+        proves = [event["data"] for event in events if event["event"] == "invoice.followup_read"]
+        self.assertEqual([event["original_request"] for event in proves], list(variants))
+        for event in proves:
+            self.assertEqual(event["arguments"], SECOND)
+            self.assertEqual(event["provenance"]["sources"], {"company_id": "session_confirmed", "invoice_no": "user_current"})
+        self.assert_zero_audit()
+
+    def test_first_read_alone_does_not_discard_clarification_for_second(self):
+        for targets, expected in (([FIRST], "WAITING_USER"), ([FIRST, SECOND], "ANSWERED")):
+            with self.subTest(targets=targets):
+                calls = [tool("get_invoice", target, f"invoice-{i}") for i, target in enumerate(targets)]
+                agent = Agent("U001", self.path, scripted_model([*calls, CLARIFY]), mode="mock")
+                agent.ask("查 C001 的 F002 和 F003")
+                response = agent.last_response
+                self.assertEqual([outcome["data"]["invoice_no"] for _, outcome in response["tool_results"]],
+                                 [target["invoice_no"] for target in targets])
+                self.assertEqual(response["execution"]["stop_reason"], expected)
+                self.assertEqual("发票编号" in (response["chat_notice"] or ""), len(targets) == 1)
+        self.assert_zero_audit()
+
     def test_followup_rechecks_current_read_permission(self):
         agent = Agent("U001", self.path, scripted_model([tool("get_invoice", FIRST), CLARIFY]), mode="mock")
         agent.ask(REQUEST)
@@ -142,15 +187,55 @@ class QueryContinuityTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(explicit["tool_results"][0][1]["data"]["invoice_no"], "F002")
             self.assert_zero_audit()
 
+    async def test_cancel_while_waiting_clears_bare_number_and_relative_reference(self):
+        app = self.app(tool("get_invoice", FIRST), CLARIFY)
+        async with app.run_test(size=(150, 42)) as pilot:
+            await self.login(app, pilot)
+            for control, request in (("f4", REQUEST), ("/cancel", "先" + REQUEST.replace("C001", "甲企业"))):
+                with self.subTest(control=control):
+                    if app.agent:
+                        app.agent.model = scripted_model([tool("get_invoice", FIRST), CLARIFY])
+                    waiting = await self.ask(app, pilot, request)
+                    self.assertEqual(waiting["execution"]["stop_reason"], "WAITING_USER")
+                    self.assertIsNotNone(app.agent.pending_intent)
+                    if control == "f4":
+                        await pilot.press("f4")
+                    else:
+                        await test_tui_p0.P0Test.send(self, app, pilot, control)
+                    self.assertIsNone(app.agent.pending_intent)
+
+                    app.agent.model = scripted_model([tool("get_invoice", SECOND), FINAL])
+                    bare = await self.ask(app, pilot, "F003")
+                    self.assertNotIn("invoice_followup_read", bare)
+                    self.assertEqual(bare["tool_results"][0][1]["status"], "AMBIGUOUS")
+                    self.assertIn("company_id", bare["tool_results"][0][1]["evidence"]["missing_fields"])
+                    app.agent.model = Mock(return_value=tool("resolve_recent_invoice", {"source": "queried"}))
+                    relative = await self.ask(app, pilot, "刚才那张发票")
+                    self.assertEqual(relative["category"], "reference_error")
+                    self.assertIn("发票编号", relative["chat_notice"])
+                    self.assertFalse(relative["tool_results"])
+                    app.agent.model.assert_not_called()
+
+                    app.agent.model = scripted_model([tool("get_invoice", FIRST), FINAL])
+                    explicit = await self.ask(app, pilot, "C001/F002")
+                    self.assertEqual(explicit["tool_results"][0][1]["data"]["invoice_no"], "F002")
+            self.assert_zero_audit()
+
     def test_cli_cancel_retires_relative_invoice_and_allows_explicit_key(self):
-        agent = Agent("U001", self.path, scripted_model([tool("get_invoice", FIRST), FINAL]), mode="mock",
+        agent = Agent("U001", self.path, scripted_model([tool("get_invoice", FIRST), CLARIFY]), mode="mock",
                       trace_path=self.directory / "cli.jsonl")
         output = io.StringIO()
 
         def keyboard():
-            yield "查询 C001 的 F002 当前用途"
+            yield REQUEST
             self.assertEqual(agent.last_response["tool_results"][0][1]["status"], "SUCCESS")
+            self.assertEqual(agent.last_response["execution"]["stop_reason"], "WAITING_USER")
+            self.assertIsNotNone(agent.pending_intent)
             yield "/cancel"
+            self.assertIsNone(agent.pending_intent)
+            agent.model = scripted_model([tool("get_invoice", SECOND), FINAL])
+            yield "F003"
+            self.assertEqual(agent.last_response["tool_results"][0][1]["status"], "AMBIGUOUS")
             model = Mock(return_value=tool("get_invoice", FIRST))
             agent.model = model
             yield "刚才那张发票"

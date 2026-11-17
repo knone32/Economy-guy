@@ -740,6 +740,25 @@ class Agent:
                               r"(?:\s*[、和及与]\s*(用途|备注))?(?:\s*是什么)?\s*[。！？!?]?\s*",
                               query_text, flags=re.IGNORECASE))
 
+        numbered_invoice_request = (
+            single_read and not invoice_write and len(explicit.get("company_id", ())) == 1
+            and re.fullmatch(read_subject + r"/?\s*F\d+(?:\s*[、和及与]\s*F\d+)*\s*(?:发票)?\s*[。！？!?]?\s*",
+                             query_text, flags=re.IGNORECASE)
+        )
+
+        def verified_invoice_reads():
+            verified = {}
+            for name, outcome in read_results:
+                evidence = outcome["evidence"]
+                if (name not in {"get_invoice", "resolve_invoice_reference", "resolve_recent_invoice"}
+                        or outcome["status"] != "SUCCESS" or evidence.get("source") != "current_sqlite"):
+                    continue
+                scope, data = evidence.get("scope", {}), outcome["data"] or {}
+                company, number = scope.get("company_id"), scope.get("invoice_no")
+                if company and number and data.get("company_id") == company and data.get("invoice_no") == number:
+                    verified[company, number] = (name, outcome)
+            return verified
+
         def invoice_detail_verified():
             if not invoice_detail:
                 return False
@@ -1629,20 +1648,25 @@ class Agent:
                     return finish(notice, store=False, category="database_query", chat_notice=notice,
                                   verified_read=verified)
                 first_invoice = invoice_query_followup(text_request) if read_only and not invoice_write else None
+                invoice_reads = verified_invoice_reads() if first_invoice or (read_only and natural
+                    and natural["kind"] == "clarification" and "invoice_no" in natural["missing_fields"]) else {}
                 if first_invoice:
-                    matched = [(name, outcome) for name, outcome in read_results
-                               if name == "get_invoice" and outcome["status"] == "SUCCESS"
-                               and outcome["evidence"].get("source") == "current_sqlite"
-                               and all(outcome["evidence"]["scope"].get(key) == value
-                                       for key, value in first_invoice.items())]
-                    if matched:
+                    company, first_number = first_invoice["company_id"], first_invoice["invoice_no"]
+                    first_read = invoice_reads.get((company, first_number))
+                    if first_read:
                         self.messages.pop()
-                        self.pending_intent = {"request": current_request, "scope": {"company_id": [first_invoice["company_id"]]},
+                        second_reads = [read for (owner, number), read in invoice_reads.items()
+                                        if owner == company and number != first_number]
+                        if second_reads:
+                            matched = [first_read, *second_reads]
+                            return finish(render_information(matched), store=False, category="database_query",
+                                          chat_notice=render_query_conclusion(matched), verified_read=True)
+                        self.pending_intent = {"request": current_request, "scope": {"company_id": [company]},
                                                "missing_fields": ("invoice_no",), "actor": actor,
-                                               "workbook": str(self.db_path), "invoice_followup": first_invoice["invoice_no"]}
-                        question = f'请提供第二张发票的编号，继续查询 {first_invoice["company_id"]}。'
-                        notice = render_query_conclusion(matched) + "\n" + question
-                        return finish(render_information(matched) + "\n" + question, store=False,
+                                               "workbook": str(self.db_path), "invoice_followup": first_number}
+                        question = f"请提供第二张发票的编号，继续查询 {company}。"
+                        notice = render_query_conclusion([first_read]) + "\n" + question
+                        return finish(render_information([first_read]) + "\n" + question, store=False,
                                       category="clarification", chat_notice=notice, missing_fields=("invoice_no",))
                 wants_explanation = natural is not None and natural["kind"] == "explanation"
                 if natural is not None and not execution.schedule and invoice_detail_verified():
@@ -1752,19 +1776,25 @@ class Agent:
                     if simple_directory and self.context.previous_directory(read_results):
                         self.messages.pop()
                         return finish(render_information(read_results), store=False, category="database_query")
-                    if read_only and set(fields) == {"invoice_no"} and any(
-                            name in {"list_invoice_directory", "resolve_invoice_reference", "get_invoice"}
-                            and result["status"] in {"SUCCESS", "NO_DATA"}
-                            and result["evidence"].get("source") == "current_sqlite"
-                            for name, result in read_results):
-                        self.messages.pop()
-                        self.trace("final.clarification_discarded", {"fields": fields, "source": "verified_invoice_read"})
-                        return finish(render_information(read_results), store=False, category="database_query")
+                    if numbered_invoice_request and set(fields) == {"invoice_no"}:
+                        company_id, = explicit["company_id"]
+                        requested_keys = {(company_id, number) for number in explicit["invoice_no"]}
+                        if requested_keys <= invoice_reads.keys():
+                            self.messages.pop()
+                            self.trace("final.clarification_discarded",
+                                       {"fields": fields, "source": "verified_invoice_read",
+                                        "invoice_keys": sorted(requested_keys)})
+                            return finish(render_information(read_results), store=False, category="database_query")
                     company = (read_workspace or self.context.scope).get("company_id", [])
                     if "business_object" in fields and annual_year and len(company) == 1:
                         natural["missing_fields"] = [f for f in fields if f not in {"company_id", "year", "month"}]
-                    return finish(render_clarification(natural), store=False, category="clarification",
-                                  missing_fields=natural["missing_fields"])
+                    question = render_clarification(natural)
+                    if invoice_reads:
+                        matched = list(invoice_reads.values())
+                        return finish(render_information(matched) + "\n" + question, store=False,
+                                      category="clarification", missing_fields=natural["missing_fields"],
+                                      chat_notice=render_query_conclusion(matched) + "\n" + question)
+                    return finish(question, store=False, category="clarification", missing_fields=natural["missing_fields"])
                 if natural["kind"] == "general" and not allow_prepare and not read_results and not expected_scope:
                     # 一般说明作为未核实模型表达单独标注，绝不写入操作回执。
                     return finish("一般说明（模型生成，未核实；不代表数据库执行或当前业务事实）：\n" + natural["text"],
