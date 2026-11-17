@@ -1615,6 +1615,7 @@ class Agent:
                 context.append({"role": "system", "content":
                     "本轮查询和修改对象独立。先逐张用 get_invoice 核验查询分句的所有票。"
                     "仅使用修改分句唯一指定票的本轮 selection_id 提案，字段和新值以该分句为准。"
+                    "只查询的票本来就不在修改范围内，excluded_invoice_ids 留空。"
                     "修改对象不明确时，保留查询结果并追问。可信范围如下："
                     + json.dumps({"read": scoped_edit["read_scope"], "write": scoped_edit["write_scope"]},
                                  ensure_ascii=False)})
@@ -2026,17 +2027,24 @@ class Agent:
                                                       else tool_result(execution.stop_reason))
                                     if result is None and scoped_edit:
                                         target = scoped_edit["write_scope"]
-                                        if not scoped_invoice_reads():
+                                        scoped_reads = scoped_invoice_reads()
+                                        if not scoped_reads:
                                             result = tool_result("AMBIGUOUS", error="请先核验查询分句指定的全部发票。")
                                         elif not target:
                                             result = tool_result("AMBIGUOUS", error="请明确要修改的发票编号及修改内容。")
-                                        elif (not selection or selection[0] != ((target["company_id"][0], target["invoice_no"][0]),)
-                                              or any(target[key] != [proposal[key]] for key in ("field", "new_value"))
-                                              or proposal["excluded_invoice_ids"] or proposal.get("rule_business_date")
-                                              or proposal.get("rule_cohort")):
-                                            result = tool_result("SCOPE_MISMATCH", error="提案与修改分句的唯一发票、字段或新值不一致。")
                                         else:
-                                            proposal = {**proposal, "mode": "item"}
+                                            target_company, = target["company_id"]
+                                            target_number, = target["invoice_no"]
+                                            read_only_numbers = {outcome["data"]["invoice_no"]
+                                                                 for _, outcome in scoped_reads} - {target_number}
+                                            excluded = {invoice.upper() for invoice in proposal["excluded_invoice_ids"]}
+                                            if (not selection or selection[0] != ((target_company, target_number),)
+                                                    or any(target[key] != [proposal[key]] for key in ("field", "new_value"))
+                                                    or not excluded <= read_only_numbers or proposal.get("rule_business_date")
+                                                    or proposal.get("rule_cohort")):
+                                                result = tool_result("SCOPE_MISMATCH", error="提案与修改分句的唯一发票、字段或新值不一致。")
+                                            else:
+                                                proposal = {**proposal, "mode": "item", "excluded_invoice_ids": []}
                                     if result is None:
                                         recovered = None
                                         if not scoped_edit and selection and selection[2] == "get_invoice" and len(selection[0]) == 1:

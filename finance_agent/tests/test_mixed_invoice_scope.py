@@ -18,9 +18,12 @@ from tests.test_sql_invoice_selection import snapshot
 
 LIVE_REQUEST = "查一下乙企业 2026 年 9 月 F006 和 F007 的用途，再只把 F007 的备注改成「培训待复核」，用途别动。"
 VALUE = "培训待复核"
+B_PARAPHRASE = "麻烦先核对甲企业 2026-09 F005、F010 的用途，接着仅将 F010 的备注改为『期末打印单据待对照』，用途保持原样。"
+B_VALUE = "期末打印单据待对照"
 
 
-def mixed_model(*, company="C002", keys=("F006", "F007"), target="F007", field="remark"):
+def mixed_model(*, company="C002", keys=("F006", "F007"), target="F007", field="remark",
+                value=VALUE, excluded=(), rule_date=None):
     calls = iter(("read", "proposal"))
 
     def model(messages, _tools):
@@ -28,12 +31,19 @@ def mixed_model(*, company="C002", keys=("F006", "F007"), target="F007", field="
             return tool_group("get_invoice", ({"company_id": company, "invoice_no": invoice} for invoice in keys))
         evidence = [json.loads(msg["content"]).get("data") for msg in messages if msg["role"] == "tool"]
         selected = next(data for data in reversed(evidence) if data and data.get("invoice_no") == target)
-        return tool_group("propose_invoice_changes", ({
-            "selection_id": selected["selection_id"], "field": field, "new_value": VALUE, "mode": "item",
-            "excluded_invoice_ids": [], "target_year": 2026, "target_month": 9,
-        },))
+        proposal = {
+            "selection_id": selected["selection_id"], "field": field, "new_value": value, "mode": "item",
+            "excluded_invoice_ids": list(excluded), "target_year": 2026, "target_month": 9,
+        }
+        if rule_date is not None:
+            proposal["rule_business_date"] = rule_date
+        return tool_group("propose_invoice_changes", (proposal,))
 
     return model
+
+
+def b_paraphrase_model(excluded=("F005",), keys=("F005", "F010"), **options):
+    return mixed_model(company="C001", keys=keys, target="F010", value=B_VALUE, excluded=excluded, **options)
 
 
 class MixedInvoiceScopeTests(unittest.IsolatedAsyncioTestCase):
@@ -120,6 +130,56 @@ class MixedInvoiceScopeTests(unittest.IsolatedAsyncioTestCase):
         unauthorized.ask(LIVE_REQUEST)
         self.assertEqual(unauthorized.last_response["execution"]["stop_reason"], "DENIED")
         self.assertNotIn("invoice_change", unauthorized.last_response)
+        self.assertEqual(snapshot(self.path), before)
+
+    def test_redundant_exclusions_do_not_bypass_scope_or_write_conditions(self):
+        before = snapshot(self.path)
+        cases = (
+            ("write target excluded", B_PARAPHRASE, b_paraphrase_model(("F005", "F010")), "SCOPE_MISMATCH"),
+            ("unrequested read excluded", B_PARAPHRASE, b_paraphrase_model(("F005", "F003")), "SCOPE_MISMATCH"),
+            ("unverified read excluded", B_PARAPHRASE, b_paraphrase_model(keys=("F010",)), "AMBIGUOUS"),
+            ("added rule date", B_PARAPHRASE, b_paraphrase_model(rule_date="2026-09-01"), "SCOPE_MISMATCH"),
+            ("conditional assignment", B_PARAPHRASE.replace("用途保持原样", "仅限金额超过 1000 元"),
+             b_paraphrase_model(), "WAITING_USER"),
+        )
+        for case, request, model, status in cases:
+            with self.subTest(case=case):
+                agent = self.agent(model)
+                agent.ask(request)
+                response = agent.last_response
+                self.assertEqual(response["execution"]["stop_reason"], status)
+                self.assertNotIn("invoice_change", response)
+                self.assertFalse(agent.update_session.drafts)
+        self.assertEqual(snapshot(self.path), before)
+
+    async def test_b_live_paraphrase_previews_only_f010_and_cancels_without_writes(self):
+        before = snapshot(self.path)
+        app = AgentWorkspace(self.path, DEFAULT_TEMPLATE, self.path.with_name("no-profiles.json"),
+                             model=b_paraphrase_model(), trace_path=self.path.with_name("b-paraphrase.jsonl"),
+                             session_path=self.path.with_name("sessions.sqlite3"))
+        app.mode = "mock"
+        async with app.run_test(size=(150, 44)) as pilot:
+            app.screen.query_one("#login-user", Select).value = "U001"
+            await pilot.click("#sign-in")
+            await self.await_state(pilot, lambda: app.user == "U001")
+            await test_tui_p0.P0Test.send(self, app, pilot, B_PARAPHRASE)
+            await self.await_state(pilot, lambda: isinstance(app.screen, Approval) or not app.busy)
+            response = app.agent.last_response
+            self.assertEqual([(name, result["status"]) for name, result in response["tool_results"]],
+                             [("get_invoice", "SUCCESS"), ("get_invoice", "SUCCESS"),
+                              ("propose_invoice_changes", "WAITING_CONFIRMATION")])
+            self.assertIsInstance(app.screen, Approval)
+            self.assert_separated(response, "C001", ("F005", "F010"))
+            dialog = app.screen
+            self.assertIn("C001 · 2026-09", dialog.body)
+            self.assertIn("字段　备注", dialog.body)
+            self.assertIn(f"第 1 / 1 张\nF010\n原值　月底资料整理\n新值　{B_VALUE}", dialog.body)
+            self.assertNotIn("F005", dialog.body.splitlines())
+            self.assertEqual(snapshot(self.path), before)
+            dialog.answer(False)
+            await self.await_state(pilot, lambda: len(app.records) and not app.busy)
+            self.assertEqual(app.agent.write_receipt["status"], "CANCELLED")
+            self.assertFalse(app.agent.update_session.drafts)
         self.assertEqual(snapshot(self.path), before)
 
     async def test_workbench_preview_is_one_remark_and_cancel_leaves_every_row_intact(self):
