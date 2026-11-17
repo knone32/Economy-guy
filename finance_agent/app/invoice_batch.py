@@ -8,7 +8,7 @@ import sqlite3
 from .permissions import check_permission
 from .queries import get_invoice, list_invoices
 from .rules import missing_required_purpose, resolve_rule
-from .tui_intent import excluded_invoice_ids, invoice_change_evidence
+from .tui_intent import excluded_invoice_ids, invoice_change_evidence, literal_named_invoice_edit
 from .responses import explicit_scope
 from .stage2_schema import open_existing
 from .trace import redact
@@ -105,6 +105,36 @@ def _matches_subset_filters(row, filters):
         if not predicate and current != value:
             return False
     return True
+
+
+def recover_named_invoice_selection(text, proposal, selections):
+    """Promote only a referenced, complete set of this turn's direct SQLite reads."""
+    if proposal.get("rule_business_date") or proposal.get("rule_cohort"):
+        return None
+    named = literal_named_invoice_edit(text)
+    if (not named or len(named.get("company_id", ())) != 1 or len(named.get("periods", ())) != 1
+            or (named["field"], named["new_value"]) != (proposal["field"], proposal["new_value"])
+            or named["excluded"] != {number.upper() for number in proposal["excluded_invoice_ids"]}):
+        return None
+    company, = named["company_id"]
+    (year, month), = named["periods"]
+    keys = {(company, invoice) for invoice in named["invoice_no"] if invoice not in named["excluded"]}
+    reads = {selection_id: (read_keys, scope) for selection_id, (read_keys, scope, source) in selections.items()
+             if source == "get_invoice"}
+    if len(keys) < 2 or proposal["selection_id"] not in reads:
+        return None
+    verified = set()
+    for read_keys, scope in reads.values():
+        if len(read_keys) != 1 or (scope.get("company_id"), scope.get("year"), scope.get("month")) != (company, year, month):
+            return None
+        key, = read_keys
+        if key != (scope["company_id"], scope.get("invoice_no")):
+            return None
+        verified.add(key)
+    if verified != keys:
+        return None
+    mode = "batch" if named["batch_confirmation"] and proposal["mode"] == "batch" else "item"
+    return tuple(sorted(keys)), {"company_id": company, "year": year, "month": month}, mode
 
 
 def plan_invoice_change(agent, source_request, proposal, selection, *, authorized_periods=(),

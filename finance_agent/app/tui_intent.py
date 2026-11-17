@@ -91,6 +91,50 @@ def literal_single_invoice_edit(text, *, reference=None, allow_deictic=False):
     return None
 
 
+def literal_named_invoice_edit(text):
+    """Bind a plain named list with one explicit company, month, field and value."""
+    text = text.strip().rstrip("。！!").strip()
+    text = re.sub(r"^(?:请帮我|帮我|麻烦|请)\s*", "", text)
+    leading = re.match(r"(?:把|将)\s*", text)
+    separator = r"\s*(?:的\s*)?" if leading else r"\s*[，,：:]\s*"
+    if leading:
+        text = text[leading.end():]
+    period = (r"\d{4}\s*(?:年\s*(?:的\s*)?(?:1[0-2]|0?[1-9]|十一|十二|[一二三四五六七八九十])\s*月"
+              r"|[-/]\s*(?:1[0-2]|0?[1-9]))")
+    owner = rf"(?:{_COMPANY}\s*(?:的\s*)?{period}|{period}\s*(?:的\s*)?{_COMPANY})"
+    numbers = rf"{_INVOICE}(?:\s*(?:以及|[、和及与，,])\s*{_INVOICE})+"
+    target = (rf"{owner}\s*(?:的\s*)?(?:发票\s*)?{numbers}"
+              r"(?:\s*(?:这\s*)?(?P<count>[1-9][0-9]?|[一二两三四五六七八九十])\s*张)?\s*(?:发票)?")
+    match = re.fullmatch(
+        rf"(?P<target>{target}){separator}"
+        rf"(?P<field>用途|备注)\s*(?:都|均|一并|统一|分别)?\s*(?:{_ASSIGNMENT}|填成|填为)\s*"
+        r'(?P<value>“[^”\r\n]+”|"[^"\r\n]+"|[^，,。；;：:！？!?（）()\[\]【】［］{}｛｝\r\n“”"]+)'
+        rf"(?:\s*[，,；;]\s*排除\s*(?P<excluded>{_INVOICE_GROUP}))?"
+        r"(?:\s*[，,；;]\s*(?P<batch>(?:请\s*)?(?:整批|一次性)确认))?",
+        text, re.IGNORECASE)
+    if not match:
+        return None
+    value = match["value"].strip()
+    values = literal_value(value)
+    if not values or (value[0] not in ('“', '"') and re.search(
+            r"如果|若|假如|除非|前提|仅(?:限|当)|只(?:限|有|在|改)|"
+            r"(?:金额|价税)\s*(?:超过|大于|小于|不少于)|(?:再|另|并)(?:查|改)", value)):
+        return None
+    excluded = {number.upper() for number in re.findall(_INVOICE, match["excluded"] or "", re.I)}
+    if excluded != excluded_invoice_ids(text):
+        return None
+    scope = explicit_scope(match["target"], include_update_aliases=True)
+    count = match["count"]
+    if count:
+        size = int(count) if count.isdigit() else "一二三四五六七八九十".index(
+            "二" if count == "两" else count) + 1
+        if len(scope["invoice_no"]) != size:
+            return None
+    return {**scope, "field": {"用途": "purpose", "备注": "remark"}[match["field"]],
+            "new_value": values[0], "excluded": excluded,
+            "batch_confirmation": bool(match["batch"])}
+
+
 def unresolved_invoice_field(text, scope, *, candidate=None, recent_reference=False):
     """Extract only a literal value from a single assignment eligible for a field question."""
     text = text.strip().rstrip("。！!").strip()

@@ -15,7 +15,7 @@ from .business_sql import BusinessSQL, BusinessSQLError, TABLES as SQL_TABLES
 from .invoice_continuity import InvoiceQueryChain, InvoiceRead
 from .tui_intent import (invoice_followup_action, invoice_intent_source, invoice_query_followup, invoice_supplement,
                          literal_single_invoice_edit, unresolved_invoice_field)
-from .invoice_batch import plan_invoice_change
+from .invoice_batch import plan_invoice_change, recover_named_invoice_selection
 from .responses import (DIRECTORY_INLINE_LIMIT, directory_complete, directory_count_only, directory_display_pages, explicit_scope,
                         parse_final, render_information, render_query_conclusion, render_clarification, render_summary_basis,
                         render_explanation_evidence, render_grounded_explanation, render_invoice_comparison, render_reference_error, render_stopped,
@@ -1989,6 +1989,13 @@ class Agent:
                                             result = (read_results[-1][1] if read_results
                                                       else tool_result(execution.stop_reason))
                                     if result is None:
+                                        recovered = None
+                                        if selection and selection[2] == "get_invoice" and len(selection[0]) == 1:
+                                            recovered = recover_named_invoice_selection(current_request, proposal, selections)
+                                            if recovered:
+                                                keys, scope, mode = recovered
+                                                selection = (keys, scope, "get_invoice")
+                                                proposal = {**proposal, "mode": mode}
                                         missing = [key for key in ("year", "month") if not explicit.get(key)]
                                         if confirmed_invoice_edit and selection and (
                                                 selection[0] != ((confirmed_invoice_edit[0]["company_id"],
@@ -2013,6 +2020,12 @@ class Agent:
                                                 self, text, proposal, selection, authorized_periods=edit_periods,
                                                 literal_periods=literal_periods, read_results=read_results)
                                             result = tool_result(status, error=error)
+                                            if recovered and status == "WAITING_CONFIRMATION":
+                                                selection_id = register_invoice_selection(selections, *selection)
+                                                self.trace("invoice_selection.recovered",
+                                                           {"from_selection": proposal["selection_id"],
+                                                            "selection_id": selection_id, "scope": scope,
+                                                            "keys": keys, "mode": mode})
                                             if status == "AMBIGUOUS":
                                                 field_question = (selection, proposal)
                         else:
