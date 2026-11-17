@@ -4,11 +4,30 @@ import os
 from dataclasses import asdict
 import re
 
+from .responses import render_information
 from .trace import redact
+from .tui_intent import literal_single_invoice_edit
 
 
 def safe_text(value):
     return re.sub(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\ud800-\udfff]", "", redact(value))
+
+
+def invoice_proposal_guidance(proposal):
+    """Give an executable next step for a verified proposal without a CLI draft."""
+    notice = "发票修改提案已核验，本轮尚未提交，也没有待确认草稿。"
+    source = proposal["source_request"].strip()
+    literal = literal_single_invoice_edit(source)
+    if (len(proposal["invoice_nos"]) == 1 and not proposal.get("rule_reference")
+            and len(source.splitlines()) == 1 and safe_text(source) == source and literal
+            and literal.get("invoice_no") == list(proposal["invoice_nos"])
+            and all(literal.get(key) == [proposal[key]] for key in ("company_id", "field", "new_value"))):
+        return (notice + "\n请在下一次「你：」提示输入下面整行，重新准备本张发票的草稿。\n"
+                + "/edit " + source
+                + "\n在「最终确认」核对企业、票号、字段及旧值和新值，再输入提示中的完整 confirm 命令。"
+                  "输入 /cancel 可取消。")
+    return (notice + "\n请打开同一账簿的全屏工作台（从 finance_agent 运行 python main.py tui），"
+            "重新说明企业、发票或筛选条件、字段及新值，再在确认窗口核对并确认或取消。")
 
 
 def turn_tools(messages):
@@ -169,7 +188,15 @@ def chat_loop(agent, args, profile_options, serialize, home):
                         print("对话已中断。若提交结果未知，请先查看审计。")
                         break
                     raise
+                response = agent.last_response or {}
+                proposal = response.get("invoice_change") if not agent.update_session.drafts else None
                 calls = turn_tools(agent.messages[offset:]) if home else []
+                if proposal is not None:
+                    answer = "\n".join(filter(None, (render_information(response["tool_results"]),
+                                                      invoice_proposal_guidance(proposal))))
+                    for call in calls:
+                        if call["tool"] == "propose_invoice_changes" and call["status"] == "WAITING_CONFIRMATION":
+                            call["status"] = "提案已核验，请从修改入口继续"
                 if calls:
                     print("本轮工具与结果")
                     for call in calls:
@@ -202,7 +229,8 @@ def chat_loop(agent, args, profile_options, serialize, home):
                         progress = render_task_progress(outcome['task_progress'])
                         print(safe_text(progress) if home else progress)
                 if home:
-                    stop = (agent.last_response or {}).get("execution", {})
+                    stop = ({"stop_reason": "提案已核验，请从修改入口继续"} if proposal is not None
+                            else response.get("execution", {}))
                     home.remember(request, stop, [{"tool": call["tool"], "status": call["status"]} for call in calls],
                                   agent.write_receipt["status"])
     finally:
