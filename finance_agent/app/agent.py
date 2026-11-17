@@ -14,7 +14,7 @@ from .provenance import SOURCES, ScopeProof
 from .business_sql import BusinessSQL, BusinessSQLError, TABLES as SQL_TABLES
 from .invoice_continuity import InvoiceQueryChain, InvoiceRead
 from .tui_intent import (invoice_followup_action, invoice_intent_source, invoice_query_followup, invoice_supplement,
-                         literal_single_invoice_edit, unresolved_invoice_field)
+                         literal_single_invoice_edit, named_invoice_read_and_edit, unresolved_invoice_field)
 from .invoice_batch import plan_invoice_change, recover_named_invoice_selection
 from .responses import (DIRECTORY_INLINE_LIMIT, directory_complete, directory_count_only, directory_display_pages, explicit_scope,
                         parse_final, render_information, render_query_conclusion, render_clarification, render_summary_basis,
@@ -553,7 +553,8 @@ class Agent:
         if not invoice_proposals:
             turn_tools = [tool for tool in turn_tools if tool["function"]["name"] != "propose_invoice_changes"]
         mixed = allow_prepare and read_request is not None and not (management or self.teaching)
-        query_text = read_request if mixed else text
+        scoped_edit = named_invoice_read_and_edit(current_request) if invoice_proposals else None
+        query_text = scoped_edit["read"] if scoped_edit else read_request if mixed else text
         text_request = text
         invoice_chain = invoice_query_followup(text_request) if read_only and not invoice_action else None
         deferred = False
@@ -641,7 +642,7 @@ class Agent:
             date_sources["periods"] = "current_sqlite"
             if not literal_periods:
                 date_sources["year"] = "current_sqlite"
-        invoice_write = invoice_proposals and bool(invoice_intent_source(text_request))
+        invoice_write = invoice_proposals and bool(scoped_edit or invoice_intent_source(text_request))
         previous_results = (self.last_response or {}).get("tool_results", ())
         explain_payment = bool(re.search(r"付款|回款|支付|付清|结清|已付|付过|(?:发票.*流水|流水.*发票).*(?:关联|对应)", text))
         previous_facts = self.context.explanation_facts(previous_results, explicit, historical=True) if read_only else {}
@@ -785,6 +786,24 @@ class Agent:
                 if company and number and data.get("company_id") == company and data.get("invoice_no") == number:
                     verified[company, number] = (name, outcome)
             return verified
+
+        def scoped_invoice_reads():
+            if not scoped_edit:
+                return []
+            scope = scoped_edit["read_scope"]
+            company, = scope["company_id"]
+            (year, month), = scope["periods"]
+            reads = verified_invoice_reads()
+            matched = []
+            for number in scope["invoice_no"]:
+                pair = reads.get((company, number))
+                if not pair:
+                    return []
+                actual = pair[1]["evidence"]["scope"]
+                if (actual.get("year"), actual.get("month")) != (year, month):
+                    return []
+                matched.append(pair)
+            return matched
 
         def invoice_detail_verified():
             if not invoice_detail:
@@ -1215,6 +1234,10 @@ class Agent:
             return finish(answer, store=False, category=category, chat_notice=notice,
                           missing_fields=missing, verified_read=any(outcome["status"] == "SUCCESS" for _, outcome in reads))
 
+        def finish_scoped_edit_question(reads):
+            notice = (render_query_conclusion(reads) + "\n请明确要修改的发票编号，再确认该票的字段和新值。")
+            return finish(notice, store=False, category="clarification", chat_notice=notice)
+
         if blocked_edit:
             execution.stop("UNKNOWN_OUTCOME")
             return finish(unresolved_receipt["message"], chat_notice=unresolved_receipt["message"])
@@ -1588,6 +1611,13 @@ class Agent:
                     "若用户还要求修改，读取成功只是取证。具备依据时继续提出修改候选；否则精准追问或说明限制。"
                     "工具未执行的操作不声称成功；SQL 不提供写入回执或替代规则判定。\n"
                     + json.dumps(sql_context, ensure_ascii=False))})
+            if scoped_edit:
+                context.append({"role": "system", "content":
+                    "本轮查询和修改对象独立。先逐张用 get_invoice 核验查询分句的所有票。"
+                    "仅使用修改分句唯一指定票的本轮 selection_id 提案，字段和新值以该分句为准。"
+                    "修改对象不明确时，保留查询结果并追问。可信范围如下："
+                    + json.dumps({"read": scoped_edit["read_scope"], "write": scoped_edit["write_scope"]},
+                                 ensure_ascii=False)})
             if invoice_proposals and any(name in {"query_business_sql", "check_missing_purpose"} and outcome["status"] == "SUCCESS"
                                          and outcome["data"].get("selection_id") for name, outcome in read_results):
                 context.append({"role": "system", "content":
@@ -1657,6 +1687,12 @@ class Agent:
                         return finish(render_clarification(missing["evidence"]), store=False,
                                       category="clarification")
                 natural = parse_final(reply.get("content"))
+                if scoped_edit and (verified := scoped_invoice_reads()):
+                    self.messages.pop()
+                    if not scoped_edit["write_scope"]:
+                        return finish_scoped_edit_question(verified)
+                    notice = render_query_conclusion(verified) + "\n尚未形成可核验的修改预览。"
+                    return finish(notice, store=False, chat_notice=notice)
                 if invoice_write:
                     selection = next(iter(selections.values())) if len(selections) == 1 else None
                     if (not read_results and len(recent_keys) == 1 and natural and natural["kind"] == "clarification"
@@ -1979,7 +2015,7 @@ class Agent:
                                 result = execution.guard("propose_invoice_changes", proposal)
                                 if result is None:
                                     selection = selections.get(proposal["selection_id"])
-                                    if (selection is None and exact_edit
+                                    if (not scoped_edit and selection is None and exact_edit
                                             and set(proposal) <= {"selection_id", "field", "new_value", "mode",
                                                                  "excluded_invoice_ids", "target_year", "target_month"}
                                             and proposal["mode"] == "item" and not proposal["excluded_invoice_ids"]
@@ -1988,9 +2024,22 @@ class Agent:
                                         if execution.stop_reason:
                                             result = (read_results[-1][1] if read_results
                                                       else tool_result(execution.stop_reason))
+                                    if result is None and scoped_edit:
+                                        target = scoped_edit["write_scope"]
+                                        if not scoped_invoice_reads():
+                                            result = tool_result("AMBIGUOUS", error="请先核验查询分句指定的全部发票。")
+                                        elif not target:
+                                            result = tool_result("AMBIGUOUS", error="请明确要修改的发票编号及修改内容。")
+                                        elif (not selection or selection[0] != ((target["company_id"][0], target["invoice_no"][0]),)
+                                              or any(target[key] != [proposal[key]] for key in ("field", "new_value"))
+                                              or proposal["excluded_invoice_ids"] or proposal.get("rule_business_date")
+                                              or proposal.get("rule_cohort")):
+                                            result = tool_result("SCOPE_MISMATCH", error="提案与修改分句的唯一发票、字段或新值不一致。")
+                                        else:
+                                            proposal = {**proposal, "mode": "item"}
                                     if result is None:
                                         recovered = None
-                                        if selection and selection[2] == "get_invoice" and len(selection[0]) == 1:
+                                        if not scoped_edit and selection and selection[2] == "get_invoice" and len(selection[0]) == 1:
                                             recovered = recover_named_invoice_selection(current_request, proposal, selections)
                                             if recovered:
                                                 recovered_keys, recovered_scope = recovered
@@ -2017,7 +2066,8 @@ class Agent:
                                                 edit_periods = ((selection[1]["year"], selection[1]["month"]),)
                                             invoice_change, status, error = plan_invoice_change(
                                                 self, text, proposal, selection, authorized_periods=edit_periods,
-                                                literal_periods=literal_periods, read_results=read_results)
+                                                literal_periods=literal_periods, read_results=read_results,
+                                                scoped_edit=scoped_edit)
                                             result = tool_result(status, error=error)
                                             if recovered and status == "WAITING_CONFIRMATION":
                                                 selection_id = register_invoice_selection(selections, *selection)
@@ -2082,6 +2132,9 @@ class Agent:
                     read_results.append((fn.get('name'),result))
                 self.messages.append(message)
                 self.trace("tool_result", {"request": call, "result": result})
+            if (scoped_edit and not scoped_edit["write_scope"] and (verified := scoped_invoice_reads())
+                    and (not stop_result or stop_result["status"] == "AMBIGUOUS")):
+                return finish_scoped_edit_question(verified)
             if stop:
                 if ask_after_plan:
                     return ask_summary_period()
@@ -2104,7 +2157,10 @@ class Agent:
                     return finish(render_clarification({'missing_fields':missing_fields}), category='clarification',
                                   missing_fields=missing_fields)
                 if invoice_change is not None:
-                    return finish("发票清单已核验，等待人工确认。", store=False)
+                    notice = "发票清单已核验，等待人工确认。"
+                    if scoped_edit:
+                        notice = render_query_conclusion(scoped_invoice_reads()) + "\n" + notice
+                    return finish(notice, store=False, chat_notice=notice if scoped_edit else None)
                 if any(outcome is stop_result and name == "propose_invoice_changes" for name, outcome in read_results):
                     notice = (stop_result.get("error") or "无法核验本轮发票修改提案。") + " 本轮没有提交发票修改。"
                     return finish(notice, store=False, chat_notice=notice)

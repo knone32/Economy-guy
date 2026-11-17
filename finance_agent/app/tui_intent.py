@@ -6,6 +6,10 @@ from .responses import explicit_scope
 
 _COMPANY = r"(?:甲企业|乙企业|C\d+)"
 _INVOICE = r"F\d+"
+_EXPLICIT_MONTH = (r"\d{4}\s*(?:年\s*(?:的\s*)?(?:1[0-2]|0?[1-9]|十一|十二|[一二三四五六七八九十])\s*月"
+                   r"|[-/]\s*(?:1[0-2]|0?[1-9]))")
+_INVOICE_OWNER_MONTH = rf"(?:{_COMPANY}\s*(?:的\s*)?{_EXPLICIT_MONTH}|{_EXPLICIT_MONTH}\s*(?:的\s*)?{_COMPANY})"
+_NAMED_INVOICES = rf"{_INVOICE}(?:\s*(?:以及|[、和及与，,])\s*{_INVOICE})+"
 _ASSIGNMENT = r"修改为|设置为|改成|改为|设为"
 _JOINT_TARGET = rf"{_COMPANY}\s*(?:的\s*)?{_INVOICE}\s*(?:发票)?\s*(?:的\s*)?"
 _EDIT = re.compile(
@@ -29,7 +33,8 @@ _CANCEL = re.compile(r"^(?:算了(?:[，,]\s*)?)?(?:不修改了|不改了|取�
 
 def literal_value(text):
     text = text.strip()
-    if (text.startswith("“") and text.endswith("”")) or (text.startswith('"') and text.endswith('"')):
+    quotes = (("“", "”"), ('"', '"'), ("「", "」"), ("『", "』"))
+    if any(text.startswith(start) and text.endswith(end) for start, end in quotes):
         text = text[1:-1]
     return [text] if text.strip() and not _PLACEHOLDER.fullmatch(text) else []
 
@@ -99,11 +104,7 @@ def literal_named_invoice_edit(text):
     separator = r"\s*(?:的\s*)?" if leading else r"\s*[，,：:]\s*"
     if leading:
         text = text[leading.end():]
-    period = (r"\d{4}\s*(?:年\s*(?:的\s*)?(?:1[0-2]|0?[1-9]|十一|十二|[一二三四五六七八九十])\s*月"
-              r"|[-/]\s*(?:1[0-2]|0?[1-9]))")
-    owner = rf"(?:{_COMPANY}\s*(?:的\s*)?{period}|{period}\s*(?:的\s*)?{_COMPANY})"
-    numbers = rf"{_INVOICE}(?:\s*(?:以及|[、和及与，,])\s*{_INVOICE})+"
-    target = (rf"{owner}\s*(?:的\s*)?(?:发票\s*)?{numbers}"
+    target = (rf"{_INVOICE_OWNER_MONTH}\s*(?:的\s*)?(?:发票\s*)?{_NAMED_INVOICES}"
               r"(?:\s*(?:这\s*)?(?P<count>[1-9][0-9]?|[一二两三四五六七八九十])\s*张)?\s*(?:发票)?")
     match = re.fullmatch(
         rf"(?P<target>{target}){separator}"
@@ -321,7 +322,7 @@ def invoice_change_evidence(text, field, new_value, *, rule_field=None):
         return False
 
     literal = re.escape(new_value)
-    value = rf'(?:“{literal}”|‘{literal}’|"{literal}"|{literal})'
+    value = rf'(?:“{literal}”|‘{literal}’|"{literal}"|「{literal}」|『{literal}』|{literal})'
     for match in re.finditer(rf"{value}(?=$|[\s，,。；;！!])", text):
         clause = re.split(r"[，,。；;\n]", text[:match.start()])[-1]
         if re.search(r"不要|别|禁止|不许|无需|不必", clause):
@@ -341,6 +342,59 @@ def invoice_change_evidence(text, field, new_value, *, rule_field=None):
 def excluded_invoice_ids(text):
     return {invoice.upper() for match in _EXCLUDED.finditer(text)
             for invoice in re.findall(_INVOICE, match["before"] or match["after"], re.I)}
+
+
+def named_invoice_read_and_edit(text):
+    """Split a named detail read and a separate assignment to one of those invoices."""
+    text = text.strip().rstrip("。！!").strip()
+    read_start = r"(?:(?:请帮我|帮我|请|麻烦|先)\s*)*(?:查询|查看|查一下|查|看看|看一下|核对|核实)\s*"
+    edit_start = r"(?:(?:请帮我|帮我|请|麻烦|只|仅)\s*)*(?:把|将|修改|更正|更新)"
+    connect = r"然后(?:再)?|随后|接着|同时|再|并且|并"
+    masked = re.sub(r'“[^”]*”|「[^」]*」|『[^』]*』|"[^"]*"', lambda m: " " * len(m[0]), text)
+    boundary = re.search(rf"(?:[，,；;。]\s*(?:(?:{connect})\s*)?|\s*(?:{connect})\s*)"
+                         rf"(?=(?:{read_start}|{edit_start}))", masked)
+    if not boundary:
+        return None
+    first, second = text[:boundary.start()].strip(), text[boundary.end():].strip()
+    read, write = (first, second) if re.match(read_start, first) else (second, first)
+    if (not re.fullmatch(rf"{read_start}{_INVOICE_OWNER_MONTH}\s*(?:的\s*)?(?:发票\s*)?{_NAMED_INVOICES}"
+                         r"\s*(?:发票\s*)?(?:的\s*)?(?:用途|备注)", read, re.I)
+            or not re.match(edit_start, write)):
+        return None
+    read_scope = explicit_scope(read, include_update_aliases=True)
+    request = {"read": read, "read_scope": read_scope, "write": write, "write_scope": None}
+    command = re.sub(r"^(?:(?:请帮我|帮我|请|麻烦|只|仅)\s*)+", "", write)
+    match = _EDIT.match(command)
+    if not match or (match["verb"] or match["direct_verb"]) == "清空":
+        return request
+    field = match["field"] or match["direct_field"]
+    assignment = r"\s*" if match["verb"] else rf"\s*(?:{_ASSIGNMENT}|为|成)\s*"
+    tail = re.fullmatch(
+        assignment
+        + r'(“[^”\r\n]+”|"[^"\r\n]+"|「[^」\r\n]+」|『[^』\r\n]+』|[^，,；;。！？!?（）()\[\]【】\r\n“”"「」『』]+)'
+        + r'(?:\s*[，,；;]\s*(用途|备注)\s*(?:别动|不动|不要改|别改|不改|不修改|保持原样))?\s*',
+        command[match.end():])
+    if not tail or tail[2] == field:
+        return request
+    value = tail[1].strip()
+    if not value or (value[0] not in '“"「『' and re.search(
+            r"如果|若|假如|前提|仅限|排除|不含|别动|不动|不要改|保持原样|"
+            r"只(?:限|在|改)|(?:再|另|并)(?:查|改)", value)):
+        return request
+    values = literal_value(value)
+    target = (match["target"] or match["direct"] or "").strip()
+    if not values or not re.fullmatch(
+            rf"(?:(?:{_INVOICE_OWNER_MONTH}|{_COMPANY})\s*(?:的\s*)?)?(?:发票\s*)?{_INVOICE}\s*(?:发票)?\s*(?:的)?",
+            target, re.I):
+        return request
+    scope = explicit_scope(target, include_update_aliases=True)
+    if (not set(scope["invoice_no"]) <= set(read_scope["invoice_no"])
+            or any(key in scope and scope[key] != read_scope[key] for key in ("company_id", "periods"))):
+        return request
+    request["write_scope"] = {**read_scope, **scope,
+                              "field": [{"用途": "purpose", "备注": "remark"}[field]],
+                              "new_value": values}
+    return request
 
 
 def edit_turn(text, pending, *, guided=False):

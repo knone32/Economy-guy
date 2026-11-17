@@ -137,7 +137,7 @@ def recover_named_invoice_selection(text, proposal, selections):
 
 
 def plan_invoice_change(agent, source_request, proposal, selection, *, authorized_periods=(),
-                        literal_periods=(), read_results=()):
+                        literal_periods=(), read_results=(), scoped_edit=None):
     """Validate current-turn scope and literal edit constraints without preparing a draft."""
     if selection is None:
         return None, "AMBIGUOUS", "请先取得本轮可信发票集合。"
@@ -148,11 +148,12 @@ def plan_invoice_change(agent, source_request, proposal, selection, *, authorize
     company, = companies
     rule_selection = source == "check_missing_purpose"
     collection = source == "query_business_sql" or rule_selection
-    requested = explicit_scope(source_request, include_update_aliases=True)
+    edit_source = scoped_edit["write"] if scoped_edit else source_request
+    requested = scoped_edit["write_scope"] if scoped_edit else explicit_scope(source_request, include_update_aliases=True)
     if (requested.get("company_id") and requested["company_id"] != [company]
             or source == "query_business_sql" and tuple(scope["company_ids"]) != (company,)):
         return None, "SCOPE_MISMATCH", "候选集合与用户明确的企业不一致。"
-    excluded = excluded_invoice_ids(source_request)
+    excluded = excluded_invoice_ids(edit_source)
     invoice_nos = {invoice for _, invoice in keys}
     if rule_selection:
         invoice_nos -= excluded
@@ -202,7 +203,6 @@ def plan_invoice_change(agent, source_request, proposal, selection, *, authorize
     rule = None
     cohort = False
     subset_filters = ()
-    edit_source = source_request
     if rule_date:
         day = date.fromisoformat(rule_date)
         rule_period = (day.year, day.month)
