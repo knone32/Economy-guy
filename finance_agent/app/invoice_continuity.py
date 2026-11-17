@@ -41,4 +41,4 @@ class InvoiceQueryChain:
         missing = "company_id" if not company else "first_invoice_no" if position == "first" else "invoice_no"
         return {"request": self.request, "scope": {"company_id": [company]} if company else {},
                 "missing_fields": (missing,), "actor": actor, "workbook": str(workbook),
-                "invoice_followup": True}
+                "invoice_followup": self.first.invoice_no}

@@ -76,6 +76,7 @@ class QueryContinuityTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("F002", str(books[-1].renderable))
             self.assertEqual(app.agent.pending_intent["scope"], {"company_id": ["C001"]})
             self.assertEqual(app.agent.pending_intent["request"], REQUEST)
+            self.assertEqual(app.agent.pending_intent["invoice_followup"], "F002")
 
             model = Mock(side_effect=AssertionError("续查的企业应该来自可信追问状态"))
             app.agent.model = model
