@@ -133,7 +133,7 @@ def invoice_query_followup(text):
     numbers, companies = scope.get("invoice_no", ()), scope.get("company_id", ())
     if len(numbers) != 1 or len(companies) > 1 or invoice_intent_source(text):
         return None
-    clauses = re.split(r"\s*[，,；;。]\s*|\s*(?:然后|接着|再)\s*(?=查|看)", text, maxsplit=1)
+    clauses = re.split(r"\s*[，,；;。！!?？]\s*|\s*(?:然后|接着|再)\s*(?=查|看)", text, maxsplit=1)
     if len(clauses) != 2:
         return None
     first, rest = clauses
@@ -148,34 +148,69 @@ def invoice_query_followup(text):
     return {"company_id": companies[0] if companies else None, "invoice_no": numbers[0]}
 
 
-def invoice_followup_action(text, chain):
-    """Accept only a bounded reply, correction or cancellation tied to this chain."""
-    literal = text.strip().rstrip("。！!?？").strip()
-    omit = r"(?:先)?(?:不(?:用|必)?查(?:了)?|取消|撤掉|撤销)"
-    keep = r"(?:\s*[，,]\s*(?P<kept>第[一二])张(?:发票)?(?:照旧|不变|继续查))?"
-    whole = r"(?:这|本)(?:一)?轮(?:查询)?"
-    if re.fullmatch(rf"(?:算了(?:\s*[，,]\s*{omit})?|{omit}|"
-                    rf"{whole}(?:先|就)?{omit}(?:\s*[，,]\s*第[一二]张{omit})?|"
-                    rf"(?:取消|撤掉|撤销){whole})(?:吧)?", literal):
-        return "cancel", "all", {}
-    cancel = re.fullmatch(rf"(?:(?:只|仅)?(?:取消|撤掉|撤销)\s*(?P<before>第[一二])张(?:发票)?|"
-                          rf"(?P<after>第[一二])张(?:发票)?\s*{omit}){keep}", literal)
-    if cancel:
-        position = cancel["before"] or cancel["after"]
-        if position != cancel["kept"]:
-            return "cancel", ("first" if position == "第一" else "second"), {}
-        return None
+_CHAIN_ITEM = r"第\s*[一二12]\s*张|首张|前一张|后一张|另(?:外)?一张"
 
+
+def _chain_position(label):
+    return "first" if re.sub(r"\s+", "", label) in {"第一张", "第1张", "首张", "前一张"} else "second"
+
+
+def invoice_followup_action(text, chain):
+    """Resolve an explicit continuation before generic display-list references."""
+    literal = text.strip().rstrip("。！!?？").strip()
+    literal = re.sub(r"^(?:请帮我|帮我|麻烦|请)\s*", "", literal)
+    clauses = re.split(r"\s*[，,；;。！!?？]\s*", literal)
+    clauses = [clause for clause in clauses if clause]
+    kept = set()
+    actions = []
+    for clause in clauses:
+        keep = re.fullmatch(rf"({_CHAIN_ITEM})(?:发票)?\s*(?:照旧|不变|保持原样|继续查)", clause)
+        if keep:
+            kept.add(_chain_position(keep[1]))
+        else:
+            actions.append(clause)
+
+    retire = r"取消|撤掉|撤销"
+    omit = rf"(?:先|就)?(?:{retire}|不(?:用|必)?(?:再)?(?:查|看|等)(?:了)?)"
+    whole = r"(?:(?:这|本)(?:一)?轮|(?:两|二|2|这两)张(?:发票)?)(?:的)?(?:查询)?"
+    cancelled = set()
+    for clause in actions:
+        if re.fullmatch(rf"(?:算了|{omit}|{whole}\s*{omit}|(?:{retire})\s*{whole})(?:吧)?", clause):
+            cancelled.add("all")
+            continue
+        cancel = re.fullmatch(
+            rf"(?:(?:只|仅)?(?:{retire})\s*(?P<before>{_CHAIN_ITEM})(?:发票)?|"
+            rf"(?P<after>{_CHAIN_ITEM})(?:发票)?(?:的?\s*(?:查询|编号|票号))?\s*{omit})(?:吧)?", clause)
+        if not cancel:
+            break
+        cancelled.add(_chain_position(cancel["before"] or cancel["after"]))
+    else:
+        if cancelled:
+            if cancelled & kept or ("all" in cancelled and kept):
+                return "clarify", None, {}
+            position = "all" if "all" in cancelled or len(cancelled) == 2 else next(iter(cancelled))
+            return "cancel", position, {}
+
+    change = r"改查|改为|改成|更正为|应为|是|换成"
     correction = re.fullmatch(
-        rf"(第[一二])张(?:发票)?\s*(?:(?:的?编号\s*)?(?:改查|改为|改成|更正为|应为|是|换成)|"
-        rf"(?:我)?(?:刚才)?(?:报错了|说错了|写错了)\s*[，,]\s*(?:换成|改成|应为|是))\s*"
-        rf"((?:{_COMPANY}\s*(?:的\s*|/\s*)?)?{_INVOICE}){keep}", literal, re.IGNORECASE,
-    )
+        rf"(?:把|将)?\s*({_CHAIN_ITEM})(?:发票)?\s*(?:(?:的?编号\s*)?(?:{change})|"
+        rf"(?:我)?(?:刚才)?(?:报错了|说错了|写错了)，\s*(?:{change}))\s*"
+        rf"((?:{_COMPANY}\s*(?:的\s*|/\s*|编号\s*)?)?{_INVOICE})\s*(?:查一下|看一下|看看|吧)?",
+        "，".join(actions), re.IGNORECASE)
     if correction:
-        position, target, kept = correction.groups()
-        if position != kept:
-            return "read", ("first" if position == "第一" else "second"), invoice_followup_key(target)
-        return None
+        position = _chain_position(correction[1])
+        if position not in kept:
+            return "read", position, invoice_followup_key(correction[2])
+        return "clarify", None, {}
+
+    # Unclear control commands must not become a lookup of an ordinal in an unrelated list.
+    control = (
+        rf"^(?:(?:只|仅)?(?:{retire})\s*(?:{_CHAIN_ITEM}|{whole})|(?:把|将)\s*(?:{_CHAIN_ITEM})|"
+        rf"(?:{_CHAIN_ITEM}|{whole})(?:发票)?(?:的?\s*(?:查询|编号|票号))?\s*"
+        rf"(?:(?:我)?(?:刚才)?(?:报错|说错|写错)|改查|改为|改成|更正|应为|换成|{omit}))"
+    )
+    if kept or cancelled or any(re.match(control, clause) for clause in actions):
+        return "clarify", None, {}
 
     replacement = _CORRECTION.fullmatch(literal)
     if replacement and replacement["old"]:
@@ -189,7 +224,7 @@ def invoice_followup_action(text, chain):
     if position is not None:
         if re.fullmatch(rf"{_COMPANY}\s*(?:的\s*)?(?:/|编号(?:是|为)?)\s*{_INVOICE}", literal, re.I):
             return "read", position, invoice_followup_key(literal)
-        supplied = invoice_supplement(text, ("company_id", "invoice_no"))
+        supplied = invoice_supplement(literal, ("company_id", "invoice_no"))
         if supplied and ("invoice_no" in supplied or not chain.company_for(position)):
             return "read", position, {key: values[0] for key, values in supplied.items()}
     return None

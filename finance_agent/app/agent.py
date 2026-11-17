@@ -479,7 +479,7 @@ class Agent:
                     followup_sources = {key: "user_current" if key in supplied else "session_confirmed" for key in followup}
                     pending_from = chain.request
                     text = f"查 {company} 的 {number} 发票"
-            elif position == "all":
+            elif action == "cancel" and position == "all":
                 self.context.cancel_references(len(self.messages), self.trusted_events)
                 self.invoice_query_chain = None
         elif chain and reference_hint(text) and not explicit_scope(text).get("invoice_no"):
@@ -656,7 +656,7 @@ class Agent:
             and {"company_id", "year", "month"} <= (scope := outcome["evidence"].get("scope", {})).keys()
             and (scope["year"], scope["month"]) == (2026, 9)
         } if read_only and task_note_from_request else set()
-        hint = reference_hint(query_text)
+        hint = None if invoice_action or invoice_chain else reference_hint(query_text)
         exact_key = len(explicit.get("company_id", ())) == len(explicit.get("invoice_no", ())) == 1
         recent_semantics = (not (mixed or management or deferred or self.teaching or exact_key or invoice_action)
                             and (hint is None or (hint["ordinal"] is None and not hint["anchor_id"])))
@@ -690,7 +690,7 @@ class Agent:
                                                 independent_read=independent_read,
                                                 explicit=explicit, date_sources=date_sources,
                                                 unresolved_year=bool(missing_year_months - inferred.keys()) and not literal_periods)
-            if not probe_reference and not recent_semantics:
+            if hint is not None and not probe_reference and not recent_semantics:
                 reference = self.context.resolve(query_text, explicit=explicit)
         reference_context = None
         if reference and reference["ok"]:
@@ -1223,6 +1223,10 @@ class Agent:
             return finish_invoice_chain(chain)
         if invoice_action:
             action, position, supplied = invoice_action
+            if action == "clarify":
+                self.pending_intent = chain.pending(actor, self.db_path)
+                notice = "请明确是取消哪一张或整轮，还是更正哪一张，并给出新发票编号。"
+                return finish(notice, store=False, category="clarification", chat_notice=notice)
             if position == "all":
                 execution.stop("CANCELLED")
                 return finish("已取消本轮查询。", store=False, chat_notice="已取消本轮查询。")
@@ -1734,14 +1738,8 @@ class Agent:
                         self.messages.pop()
                         chain = self.invoice_query_chain = InvoiceQueryChain(
                             current_request, InvoiceRead(company, first_number, "SUCCESS"))
-                        second_numbers = [number for owner, number in invoice_reads
-                                          if owner == company and number != first_number]
-                        shown = [first_read]
-                        if len(second_numbers) == 1:
-                            number, = second_numbers
-                            chain.second = InvoiceRead(company, number, "SUCCESS")
-                            shown.append(invoice_reads[company, number])
-                        return finish_invoice_chain(chain, render_query_conclusion(shown), reads=shown)
+                        # A read of another invoice cannot fill a number the user has yet to supply.
+                        return finish_invoice_chain(chain, render_query_conclusion([first_read]), reads=[first_read])
                 wants_explanation = natural is not None and natural["kind"] == "explanation"
                 if natural is not None and not execution.schedule and invoice_detail_verified():
                     self.messages.pop()
