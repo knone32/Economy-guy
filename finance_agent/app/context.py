@@ -63,6 +63,7 @@ class ContextBuilder:
         self.references_blocked = False
         self.prior_query_tools = []
         self.recent_invoice_query = None
+        self.cancelled_invoice_request_id = None
         self.annual_focus = None
         self.display_ids = None
         self.displayed_sql_invoices = None
@@ -129,6 +130,15 @@ class ContextBuilder:
             self.sources.pop("invoice_no", None)
         return dict(self.scope) if explicit else {}
 
+    def cancel_references(self, message_index, events):
+        """End automatic invoice references while retaining trusted write receipts."""
+        self.displayed_sql_invoices = None
+        self.recent_invoice_query = None
+        if events and events[-1]["request_id"]:
+            self.cancelled_invoice_request_id = events[-1]["request_id"]
+        self.begin("", message_index, reset=True)
+        self.references_blocked = True
+
     def proof(self, read_workspace=None, *, annual_year=None, directory_scope=None, directory_sort=None):
         """不采信模型或旧SQL汇总的年月。"""
         from copy import deepcopy
@@ -171,7 +181,7 @@ class ContextBuilder:
                 and hint["ordinal"] is None and not hint["anchor_id"]):
             return None
         if self.references_blocked:
-            return {"ok":False,"status":"AMBIGUOUS","data":None,"evidence":{},"error":"旧引用未能安全失效，请明确目标"}
+            return {"ok":False,"status":"AMBIGUOUS","data":None,"evidence":{},"error":"旧引用已停用，请明确发票对象"}
         scope = dict(self.scope)
         if explicit is not None and "invoice_no" not in explicit:
             scope.pop("invoice_no", None)
@@ -287,7 +297,7 @@ class ContextBuilder:
         candidates = {}
         if self.recent_invoice_query:
             candidates["queried"] = self.recent_invoice_query
-        if events:
+        if events and events[-1]["request_id"] != self.cancelled_invoice_request_id:
             event = events[-1]
             receipt = event["receipt"]
             if receipt["status"] == "COMMITTED" and receipt["readback_verified"]:

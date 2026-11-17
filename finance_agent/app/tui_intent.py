@@ -127,6 +127,22 @@ def unresolved_invoice_field(text, scope, *, candidate=None, recent_reference=Fa
     return None
 
 
+def invoice_query_followup(text):
+    """Recognize an explicit detail read followed by a missing invoice number."""
+    match = re.fullmatch(
+        r"\s*(?:请\s*)?(?:查询|查看|查)\s*(C\d+)\s*(?:的\s*)?(F\d+)\s*(?:发票)?"
+        r"\s*[，,；;。]?\s*(?:然后\s*(?:再\s*)?|接着\s*(?:再\s*)?|再\s*)"
+        r"(?:查询|查看|查)\s*(?:(C\d+)\s*(?:的\s*)?)?另一张\s*发票\s*[。！？!?]?\s*",
+        text, re.IGNORECASE,
+    )
+    if not match:
+        return None
+    company, first, second_company = match.groups()
+    if second_company and second_company.upper() != company.upper():
+        return None
+    return {"company_id": company.upper(), "invoice_no": first.upper()}
+
+
 def invoice_supplement(text, missing):
     """A new request is never interpreted as a short literal supplement."""
     value = text.strip().rstrip("。！!").strip()
