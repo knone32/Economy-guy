@@ -59,13 +59,20 @@ def record_display(path, user_id, display_id, groups):
         connection.close()
 
 
-def invalidate_references(path, user_id):
-    """焦点更正/取消时使旧引用失效；不更改任务或已提交业务事实。"""
+def invalidate_references(path, user_id, *, invoice=None):
+    """Retire the affected anchors without reordering any displayed list."""
     connection = open_existing(path)
     try:
         with connection:
             if _available(connection):
-                connection.execute("UPDATE reference_anchors SET active=0 WHERE user_id=? AND active=1",(user_id,))
+                sql = "UPDATE reference_anchors SET active=0 WHERE user_id=? AND active=1"
+                params = [user_id]
+                if invoice:
+                    sql += """ AND company_id=? AND EXISTS (
+                        SELECT 1 FROM json_each(keys_json) AS item
+                        WHERE json_extract(item.value, '$.invoice_no')=?)"""
+                    params.extend((invoice["company_id"], invoice["invoice_no"]))
+                connection.execute(sql, params)
     finally:
         connection.close()
 

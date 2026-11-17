@@ -14,6 +14,7 @@ from app.agent import Agent, scripted_model
 from app.cli_chat import chat_loop
 from app.cli_workspaces import import_workspace
 from app.model_config import DEFAULT_TEMPLATE
+from app.references import reference_catalog
 from app.tui import AgentWorkspace, ChatLog
 from tests import test_tui_p0
 
@@ -189,7 +190,7 @@ class QueryContinuityTests(unittest.IsolatedAsyncioTestCase):
         first = agent.ask("F004")
         self.assertIn("F004", first)
         self.assertIn("第二张", first)
-        self.assertEqual(agent.pending_intent["invoice_followup"], "F004")
+        self.assertEqual(agent.invoice_query_chain.first.key, {"company_id": "C001", "invoice_no": "F004"})
         self.assertEqual(agent.pending_intent["request"], REQUEST)
         self.assertEqual(agent.pending_intent["scope"], {"company_id": ["C001"]})
 
@@ -199,11 +200,105 @@ class QueryContinuityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(agent.last_response["invoice_followup_read"]["status"], "NO_DATA")
         self.assertEqual(agent.last_response["execution"]["stop_reason"], "WAITING_USER")
         self.assertIn("未找到 F999", agent.last_response["chat_notice"])
-        self.assertEqual(agent.pending_intent["invoice_followup"], "F004")
+        self.assertEqual(agent.invoice_query_chain.first.key, {"company_id": "C001", "invoice_no": "F004"})
         agent.ask("第二张改查 F003")
         self.assertEqual(agent.last_response["invoice_followup_read"]["arguments"], SECOND)
         self.assertEqual(agent.last_response["invoice_followup_read"]["status"], "SUCCESS")
         self.assertIsNone(agent.pending_intent)
+        agent.model.assert_not_called()
+        self.assert_zero_audit()
+
+    def test_alias_queries_keep_the_second_read_in_the_same_company(self):
+        scenarios = (
+            ("乙企业的 F005 先帮我看一下用途，同一个企业我还有一张票也要查。", "C002", "F005", "F008"),
+            ("想先核实甲企业 F004 的用途，另外一张也在甲企业，号码我下一条发。", "C001", "F004", "F006"),
+        )
+        for request, company, first, second in scenarios:
+            with self.subTest(request=request):
+                target = {"company_id": company, "invoice_no": first}
+                agent = Agent("U001", self.path, scripted_model([tool("get_invoice", target), CLARIFY]), mode="mock")
+                self.assertIn("第二张", agent.ask(request))
+                self.assertEqual(agent.pending_intent["scope"], {"company_id": [company]})
+                agent.model = Mock(side_effect=AssertionError("待补查询直接鉴权"))
+                agent.ask(second)
+                self.assertEqual(agent.last_response["invoice_followup_read"]["arguments"],
+                                 {"company_id": company, "invoice_no": second})
+                self.assertIsNone(agent.pending_intent)
+                agent.model.assert_not_called()
+        agent = Agent("U001", self.path, scripted_model([tool("get_invoice", FIRST), FINAL]), mode="mock")
+        agent.ask("先查 C001 的 F002，另一张不用查了。")
+        self.assertIsNone(agent.pending_intent)
+        self.assertIsNone(agent.invoice_query_chain)
+        self.assert_zero_audit()
+
+    def test_joint_key_repairs_failed_first_and_retires_its_old_reference(self):
+        agent = Agent("U001", self.path, scripted_model([tool("get_invoice", FIRST), CLARIFY]), mode="mock")
+        agent.ask(REQUEST)
+        old_anchor, = reference_catalog(self.path, "U001")
+        agent.model = Mock(side_effect=AssertionError("不交给模型选择对象"))
+        self.assertIn("未找到 F999", agent.ask("第一张改查 C002/F999"))
+        self.assertIsNone(agent.context.recent_invoice_query)
+        self.assertEqual(reference_catalog(self.path, "U001"), [])
+        self.assertIn("编号", agent.ask(f"查看第 1 张发票 anchor:{old_anchor['anchor_id']}"))
+        self.assertIn("编号", agent.ask("查看刚才那张发票"))
+        self.assertEqual(agent.pending_intent["missing_fields"], ("first_invoice_no",))
+        self.assertIn("第二张", agent.ask("C001 的 F004"))
+        self.assertEqual(agent.last_response["invoice_followup_read"]["arguments"],
+                         {"company_id": "C001", "invoice_no": "F004"})
+        agent.ask("C001/F003")
+        self.assertEqual(agent.last_response["invoice_followup_read"]["arguments"], SECOND)
+        self.assertIsNone(agent.pending_intent)
+        agent.model.assert_not_called()
+        self.assert_zero_audit()
+
+    def test_second_nonliteral_correction_works_when_pending_and_completed(self):
+        for previous_number in ("F003", "F999"):
+            with self.subTest(previous_number=previous_number):
+                agent = Agent("U001", self.path, scripted_model([tool("get_invoice", FIRST), CLARIFY]), mode="mock")
+                agent.ask(REQUEST)
+                agent.model = Mock(side_effect=AssertionError("只重查被更正的一项"))
+                agent.ask(previous_number)
+                answer = agent.ask("第二张我刚才报错了，换成 F009，第一张照旧。")
+                self.assertIn("F009", answer)
+                self.assertIn("第一张", answer)
+                self.assertEqual(len(agent.last_response["tool_results"]), 1)
+                self.assertEqual(agent.last_response["invoice_followup_read"]["arguments"],
+                                 {"company_id": "C001", "invoice_no": "F009"})
+                self.assertIsNone(agent.pending_intent)
+                self.assertIn("第一张", agent.ask("第一张改查 F999"))
+                self.assertIn("F004", agent.ask("F004"))
+                self.assertIsNone(agent.pending_intent)
+                agent.model.assert_not_called()
+        self.assert_zero_audit()
+
+    def test_natural_query_cancellation_can_target_one_item_or_whole_round(self):
+        agent = Agent("U001", self.path, scripted_model([tool("get_invoice", FIRST), CLARIFY]), mode="mock")
+        agent.ask(REQUEST)
+        agent.model = Mock(side_effect=AssertionError("自然语言取消不调用模型"))
+        self.assertIn("第二张", agent.ask("只取消第一张，第二张照旧。"))
+        self.assertIsNone(agent.context.recent_invoice_query)
+        self.assertEqual(agent.pending_intent["missing_fields"], ("invoice_no",))
+        agent.ask("F003")
+        self.assertEqual(agent.context.recent_invoice_query, SECOND)
+        self.assertIn("取消", agent.ask("这轮先撤掉，第二张不用查了。"))
+        self.assertIsNone(agent.pending_intent)
+        self.assertIsNone(agent.context.recent_invoice_query)
+        self.assertIn("编号", agent.ask("前头那张的用途还能帮我看下吗？"))
+        agent.model.assert_not_called()
+        self.assert_zero_audit()
+
+    def test_cancel_only_second_retires_its_anchor_and_retains_first(self):
+        agent = Agent("U001", self.path, scripted_model([tool("get_invoice", FIRST), CLARIFY]), mode="mock")
+        agent.ask(REQUEST)
+        first_anchor, = reference_catalog(self.path, "U001")
+        agent.model = Mock(side_effect=AssertionError("单项取消与已展示引用均无需选择模型对象"))
+        agent.ask("甲企业编号 F003")
+        second_anchor, = reference_catalog(self.path, "U001")
+        self.assertNotEqual(second_anchor["anchor_id"], first_anchor["anchor_id"])
+        self.assertIn("保留第一张", agent.ask("取消第二张"))
+        self.assertEqual(reference_catalog(self.path, "U001"), [first_anchor])
+        self.assertIsNone(agent.pending_intent)
+        self.assertNotIn("F003", agent.ask(f"查看第 1 张发票 anchor:{second_anchor['anchor_id']}"))
         agent.model.assert_not_called()
         self.assert_zero_audit()
 

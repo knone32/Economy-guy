@@ -139,6 +139,23 @@ class ContextBuilder:
         self.begin("", message_index, reset=True)
         self.references_blocked = True
 
+    def retire_invoice_reference(self, invoice, message_index, events):
+        """Drop the replaced joint key while keeping separately displayed invoices."""
+        if self.recent_invoice_query == invoice:
+            self.recent_invoice_query = None
+        if events:
+            modified = self.recent_invoice_candidates(events).get("modified")
+            if modified and all(modified[key] == value for key, value in invoice.items()):
+                self.cancelled_invoice_request_id = modified["request_id"]
+        if all(self.scope.get(key) == [value] for key, value in invoice.items()):
+            self.scope.pop("invoice_no", None)
+            self.sources.pop("invoice_no", None)
+        self.history_start = message_index
+        try:
+            invalidate_references(self.db_path, self.user_id, invoice=invoice)
+        except sqlite3.Error:
+            self.references_blocked = True
+
     def proof(self, read_workspace=None, *, annual_year=None, directory_scope=None, directory_sort=None):
         """不采信模型或旧SQL汇总的年月。"""
         from copy import deepcopy
