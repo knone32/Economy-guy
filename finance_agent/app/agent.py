@@ -1736,8 +1736,10 @@ class Agent:
                     first_read = invoice_reads.get((company, first_number))
                     if first_read:
                         self.messages.pop()
+                        verified_scope = first_read[1]["evidence"]["scope"]
                         chain = self.invoice_query_chain = InvoiceQueryChain(
-                            current_request, InvoiceRead(company, first_number, "SUCCESS"))
+                            current_request, InvoiceRead(verified_scope["company_id"], verified_scope["invoice_no"],
+                                                         "SUCCESS"))
                         # A read of another invoice cannot fill a number the user has yet to supply.
                         return finish_invoice_chain(chain, render_query_conclusion([first_read]), reads=[first_read])
                 wants_explanation = natural is not None and natural["kind"] == "explanation"

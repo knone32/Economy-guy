@@ -133,17 +133,24 @@ def invoice_query_followup(text):
     numbers, companies = scope.get("invoice_no", ()), scope.get("company_id", ())
     if len(numbers) != 1 or len(companies) > 1 or invoice_intent_source(text):
         return None
-    clauses = re.split(r"\s*[，,；;。！!?？]\s*|\s*(?:然后|接着|再)\s*(?=查|看)", text, maxsplit=1)
-    if len(clauses) != 2:
+    read = r"查询|查看|核实|查|看"
+    # Keep the sequencing word with the following clause, where it can mark an additional read.
+    clauses = re.split(rf"\s*[，,；;。！!?？]\s*|\s*(?=(?:然后|接着|再)\s*(?:{read}))", text)
+    first = next((i for i, clause in enumerate(clauses)
+                  if re.search(rf"\b{re.escape(numbers[0])}\b", clause, re.I | re.ASCII)), None)
+    if first is None or not re.search(read, clauses[first]):
         return None
-    first, rest = clauses
-    if not re.search(r"查|看|核实", first) or not re.search(rf"\b{_INVOICE}\b", first, re.I | re.ASCII):
+
+    later = clauses[first + 1:]
+    more = rf"(?:还|再)(?:\s*(?:想|要|需要|有|也|请|帮我|顺便|多|{read})){{0,8}}\s*一张"
+    another = re.compile(rf"另(?:外)?一张|第二张|{more}")
+    rest = "，".join(later)
+    if not any(another.search(clause) for clause in later):
         return None
-    if not (re.search(r"另一张|另外一张|还有一张|第二张", rest)
-            and re.search(r"查|看|核实|(?:号码|编号|票号).{0,12}(?:发|给|补)", rest)):
+    if not re.search(rf"{read}|(?:号码|编号|票号).{{0,12}}(?:发|给|补)", rest):
         return None
     if (re.search(r"(?:不(?:要|用|必|再)?|别|无[需须])\s*(?:再|去|先)?\s*(?:查|看|核实)", text)
-            or re.search(r"不在|不同(?:一家|一?个)?(?:企业|公司)|别家", rest)):
+            or re.search(r"不在|不同(?:一家|一?个)?(?:企业|公司)|别家|另一家", rest)):
         return None
     return {"company_id": companies[0] if companies else None, "invoice_no": numbers[0]}
 

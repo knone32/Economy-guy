@@ -390,6 +390,55 @@ class QueryContinuityTests(unittest.IsolatedAsyncioTestCase):
         agent.model.assert_not_called()
         self.assert_zero_audit()
 
+    def test_additional_invoice_with_verb_before_quantity_preserves_verified_company(self):
+        prompts = (
+            ("劳驾看看甲企业 F004 的备注。同一家还要看一张，编号我再发。", CLARIFY),
+            ("看看甲企业 F004 的备注。同一家还有一张要看，编号我再发。", FINAL),
+            ("劳驾，看看甲企业 F004 的备注；同家公司再帮我查一张，票号稍后给你。", FINAL),
+            ("先核实甲企业 F004 的备注再看看一张同公司的，编号稍后给你。", CLARIFY),
+        )
+        first = {"company_id": "C001", "invoice_no": "F004"}
+        second = {"company_id": "C001", "invoice_no": "F006"}
+        for prompt, reply in prompts:
+            with self.subTest(prompt=prompt):
+                model = scripted_model([tool("get_invoice", first), reply])
+                agent = Agent("U001", self.path, model, mode="mock")
+                answer = agent.ask(prompt)
+                self.assertIn("F004", answer)
+                self.assertEqual(agent.last_response["execution"]["stop_reason"], "WAITING_USER")
+                self.assertIn("第二张发票的编号", agent.last_response["chat_notice"])
+                self.assertIsNotNone(agent.pending_intent)
+                self.assertEqual(agent.pending_intent["scope"], {"company_id": ["C001"]})
+                self.assertEqual(agent.invoice_query_chain.first.key, first)
+                name, result = agent.last_response["tool_results"][0]
+                self.assertEqual((name, result["status"], result["evidence"]["source"]),
+                                 ("get_invoice", "SUCCESS", "current_sqlite"))
+                agent.model = Mock(side_effect=AssertionError("待补企业从首张证据取得"))
+                agent.ask("F006", read_workspace=("C002", 2026, 9))
+                self.assertEqual(agent.last_response["invoice_followup_read"]["arguments"], second)
+                self.assertEqual(agent.last_response["invoice_followup_read"]["status"], "SUCCESS")
+                self.assertIsNone(agent.pending_intent)
+                agent.model.assert_not_called()
+        self.assert_zero_audit()
+
+    def test_additional_invoice_does_not_bind_unverified_or_unrequested_company(self):
+        first = {"company_id": "C001", "invoice_no": "F004"}
+        prompt = "看看甲企业 F004 的备注。同一家还要看一张，编号我再发。"
+        cases = (
+            ("U001", prompt, {"company_id": "C002", "invoice_no": "F004"}, "SCOPE_MISMATCH"),
+            ("U002", prompt.replace("甲企业", "乙企业"), {"company_id": "C002", "invoice_no": "F004"}, "DENIED"),
+            ("U001", prompt.replace("F004", "F999"), {"company_id": "C001", "invoice_no": "F999"}, "NO_DATA"),
+            ("U001", "看看甲企业 F004 的备注。", first, "SUCCESS"),
+            ("U001", prompt.replace("同一家", "另一家乙企业"), first, "SUCCESS"),
+        )
+        for user, request, target, status in cases:
+            with self.subTest(request=request, status=status):
+                agent = Agent(user, self.path, scripted_model([tool("get_invoice", target), CLARIFY]), mode="mock")
+                agent.ask(request)
+                self.assertEqual(agent.last_response["tool_results"][0][1]["status"], status)
+                self.assertIsNone(agent.invoice_query_chain)
+        self.assert_zero_audit()
+
     def test_first_read_alone_does_not_discard_clarification_for_second(self):
         for targets, expected in (([FIRST], "WAITING_USER"), ([FIRST, SECOND], "ANSWERED")):
             with self.subTest(targets=targets):
