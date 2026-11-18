@@ -321,7 +321,45 @@ def invoice_choice_reply(text):
     value = re.sub(r"^(?:就选|就|选)\s*", "", value)
     value = re.sub(r"\s*(?:(?:这|那)(?:一)?张(?:发票|票)?\s*)?(?:吧|就行)?$", "", value).strip()
     supplied = invoice_supplement(value, ("invoice_no",))
-    return supplied if supplied and supplied.get("invoice_no") else None
+    if supplied and supplied.get("invoice_no"):
+        return supplied
+    selected = re.fullmatch(
+        rf"(?:(?:这次|本次)\s*)?(?:(?:复核|修改)\s*)?(?:标记|对象|目标|票号)\s*"
+        rf"(?:落在|选择|选|是|为)\s*(?P<number>{_INVOICE})"
+        rf"(?:\s*[，,]\s*(?P<keep>{_INVOICE_GROUP})\s*(?:保持原样|别动|不改))?", value, re.I)
+    if not selected:
+        return None
+    number = selected["number"].upper()
+    kept = {invoice.upper() for invoice in re.findall(_INVOICE, selected["keep"] or "", re.I)}
+    return {"invoice_no": [number]} if number not in kept else None
+
+
+def _quoted_invoice_choice(text):
+    """Bind a literal label to one field while leaving the target unresolved."""
+    match = re.fullmatch(
+        rf"(?P<label>复核标签|备注内容|用途内容|新值)\s*(?P<value>{_ASSIGNED_VALUE})\s*"
+        r"只加到这(?:两|2)笔中的(?:一|1)笔\s*[，,]\s*(?:写进|填入)\s*(?P<field>用途|备注)栏",
+        text.strip().rstrip("。！!").strip())
+    if (not match or match["value"][0] not in '“"「『'
+            or not (values := literal_value(match["value"]))):
+        return None
+    if match["label"] in {"用途内容", "备注内容"} and not match["label"].startswith(match["field"]):
+        return None
+    return {"field": ["purpose" if match["field"] == "用途" else "remark"], "new_value": values}
+
+
+def _questioned_invoice_choice(text):
+    match = re.fullmatch(
+        rf"(?P<owner>{_INVOICE_OWNER_MONTH})\s*(?:的\s*)?(?P<numbers>{_NAMED_INVOICES})\s*[，,]\s*"
+        r"(?P<field>用途|备注)\s*各是什么\s*[？?]\s*(?P<assignment>.+)", text, re.I)
+    if not match or not (change := _quoted_invoice_choice(match["assignment"])):
+        return None
+    read = f'查看 {match["owner"]} 的 {match["numbers"]} 的{match["field"]}'
+    scope = explicit_scope(read, include_update_aliases=True)
+    if len(scope["invoice_no"]) != 2:
+        return None
+    return {"read": read, "read_scope": scope, "write": match["assignment"],
+            "write_scope": None, "pending_choice": change}
 
 
 def invoice_change_evidence(text, field, new_value, *, rule_field=None):
@@ -335,6 +373,9 @@ def invoice_change_evidence(text, field, new_value, *, rule_field=None):
         return False
     if label not in text and field != rule_field:
         return False
+    choice = _quoted_invoice_choice(text)
+    if choice:
+        return choice["field"] == [field] and choice["new_value"] == [new_value]
 
     literal = re.escape(new_value)
     value = rf'(?:“{literal}”|‘{literal}’|"{literal}"|「{literal}」|『{literal}』|{literal})'
@@ -386,7 +427,7 @@ def named_invoice_read_and_edit(text):
             r"(?:\s*[，,]\s*(?P<two>两张的\s*)?(?P<keep>用途|备注)\s*(?:都\s*)?保持原样)?",
             text, re.I)
         if not subject:
-            return None
+            return _questioned_invoice_choice(text)
         numbers = explicit_scope(subject["numbers"])["invoice_no"]
         if subject["two"] and len(numbers) != 2:
             return None

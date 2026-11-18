@@ -112,7 +112,9 @@ class NamedInvoiceSelectionTests(unittest.IsolatedAsyncioTestCase):
                 if app.agent:
                     app.agent.model = named_read_model(sql=LIVE_SQL)
                 await test_tui_p0.P0Test.send(self, app, pilot, LIVE_REQUEST + suffix)
-                await self.await_state(pilot, lambda: isinstance(app.screen, Approval))
+                await self.await_state(pilot, lambda: isinstance(app.screen, Approval)
+                                       and bool(app.screen.query("#approve"))
+                                       and bool(app.screen.query("#cancel")))
                 self.assertEqual(app.screen.title_text, title)
                 self.assertIn("全部匹配 2 张", app.screen.body)
                 self.assertEqual(snapshot(self.path), before)

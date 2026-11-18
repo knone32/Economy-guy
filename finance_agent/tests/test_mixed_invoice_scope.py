@@ -49,6 +49,19 @@ def b_paraphrase_model(excluded=("F005",), keys=("F005", "F010"), **options):
     return mixed_model(company="C001", keys=keys, target="F010", value=B_VALUE, excluded=excluded, **options)
 
 
+def question_model(company, numbers):
+    stages = iter(("read", "question"))
+
+    def model(_messages, _tools):
+        if next(stages, "question") == "read":
+            return tool_group("get_invoice", ({"company_id": company, "invoice_no": number} for number in numbers))
+        return {"role": "assistant", "content": json.dumps({
+            "kind": "clarification", "text": "备注要加在哪张发票上？", "missing_fields": ["invoice_no"]},
+            ensure_ascii=False)}
+
+    return model
+
+
 class MixedInvoiceScopeTests(unittest.IsolatedAsyncioTestCase):
     await_state = test_tui_p0.P0Test.await_state
 
@@ -134,6 +147,70 @@ class MixedInvoiceScopeTests(unittest.IsolatedAsyncioTestCase):
                 options.update(model_options)
                 agent = self.agent(mixed_model(**options))
                 agent.ask(change.get("request", request))
+                self.assertNotIn("invoice_change", agent.last_response)
+                self.assertFalse(agent.update_session.drafts)
+                self.assertEqual(snapshot(self.path), before)
+
+    def test_quoted_choice_retains_scope_value_and_accepts_an_explicit_target_reply(self):
+        before = snapshot(self.path)
+        cases = (
+            ("甲企业2026年8月的F017、F018，用途各是什么？"
+             "复核标签「凭证归集待核」只加到这两笔中的一笔，写进备注栏。",
+             "这次复核标记落在F018，F017保持原样。", "C001", ("F017", "F018"), 8,
+             "F018", "remark", "凭证归集待核"),
+            ("乙企业2026年9月的F001、F009，备注各是什么？"
+             "新值「团队采购」只加到这两笔中的一笔，填入用途栏。",
+             "本次修改目标选择F001，F009别动。", "C002", ("F001", "F009"), 9,
+             "F001", "purpose", "团队采购"),
+        )
+        for request, reply, company, numbers, month, target, field, value in cases:
+            with self.subTest(company=company, field=field):
+                agent = self.agent(question_model(company, numbers))
+                agent.ask(request)
+                self.assertEqual(agent.last_response["category"], "clarification")
+                self.assertNotIn("invoice_change", agent.last_response)
+                self.assertIsNotNone(agent.pending_intent)
+                agent.ask(reply)
+                change = agent.last_response["invoice_change"]
+                self.assertEqual((change["company_id"], change["year"], change["month"],
+                                  change["invoice_nos"], change["field"], change["new_value"]),
+                                 (company, 2026, month, (target,), field, value))
+                self.assertEqual(agent.last_response["execution"]["model_requests"], 0)
+                self.assertIsNone(agent.pending_intent)
+                (tool, outcome), = agent.last_response["tool_results"]
+                self.assertEqual((tool, outcome["status"], outcome["data"]["invoice_no"]),
+                                 ("get_invoice", "SUCCESS", target))
+                self.assertEqual(snapshot(self.path), before)
+
+    def test_quoted_choice_keeps_outside_selection_pending_and_cancels_without_changes(self):
+        request = ("甲企业2026年8月的F017、F018，用途各是什么？"
+                   "复核标签「凭证归集待核」只加到这两笔中的一笔，写进备注栏。")
+        before = snapshot(self.path)
+        agent = self.agent(question_model("C001", ("F017", "F018")))
+        agent.ask(request)
+        agent.ask("本次修改目标是F016。")
+        self.assertEqual(agent.last_response["category"], "clarification")
+        self.assertNotIn("invoice_change", agent.last_response)
+        self.assertIsNotNone(agent.pending_intent)
+        agent.ask("取消")
+        self.assertEqual(agent.last_response["execution"]["stop_reason"], "CANCELLED")
+        self.assertIsNone(agent.pending_intent)
+        self.assertEqual(snapshot(self.path), before)
+
+    def test_quoted_choice_does_not_drop_conditions_or_override_a_preserved_target(self):
+        base = ("甲企业2026年8月的F017、F018，用途各是什么？"
+                "复核标签「凭证归集待核」只加到这两笔中的一笔，写进备注栏。")
+        before = snapshot(self.path)
+        for request, reply in (
+            (base + "仅限金额超过1000元时修改。", "F018"),
+            (base.replace("复核标签", "用途内容"), "F018"),
+            (base, "这次复核标记落在F018，F018保持原样。"),
+            (base, "查询 F018 的销方"),
+        ):
+            with self.subTest(request=request, reply=reply):
+                agent = self.agent(question_model("C001", ("F017", "F018")))
+                agent.ask(request)
+                agent.ask(reply)
                 self.assertNotIn("invoice_change", agent.last_response)
                 self.assertFalse(agent.update_session.drafts)
                 self.assertEqual(snapshot(self.path), before)
