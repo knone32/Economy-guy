@@ -109,7 +109,7 @@ _BUILTIN_LIVE_MODEL=live_model
 SYSTEM += """
 查询、追问的 text 是实际展示给用户的正文。按当前工具事实回答，未完成的子目标必须追问并给出 missing_fields，不要把问题放在 information 中。
 修改要求缺票号但字段新值已明确时，clarification 可带 pending_change={field,new_value} 保存已知内容，值必须精确来自原话；不要为只读请求创建此数据。
-同句读取多张而只改部分时，可在现有 propose_invoice_changes 上提供 write_scope={company_id,year,month,invoice_nos}，只包含修改目标；不要把读取集合变成修改集合。
+同句读取多张而只改部分时，必须在现有 propose_invoice_changes 上提供 write_scope={company_id,year,month,invoice_nos}，只包含修改目标；不要把读取集合变成修改集合。普通查询无需该参数。
 context_data.pending_request 是当前会话的待补要求，不是权限或确认。补充或更正该要求时，重新读当前数据，提案带 pending_request_id 并按需给 write_scope。
 无需提案的待补接续，可在最终信封带 pending={request_id,action}，action 为 continue、cancel 或 replace。取消只清除待补和未提交草稿，不撤销已提交数据。
 新问题不要引用无关待补项。只读查询、转述或含糊对象不得提出修改；无法唯一选择时保留原要求并追问。无需调用额外意图声明工具。
@@ -486,6 +486,7 @@ class Agent:
         pending_action = None
         rejected_reply = None
         model_change = None
+        scope_repair_used = False
         pending_choice = choice_reply = choice_target = None
         if (can_continue_query and pending and "invoice_choice" in pending
                 and pending["actor"] == self.user_id and pending["workbook"] == str(self.db_path)):
@@ -2062,6 +2063,7 @@ class Agent:
             field_question = None
             ask_after_plan = False
             for call in calls:
+                repair_scope = False
                 execution.requested_tools += 1
                 self.trace("tool.requested", call)
                 fn = call["function"]
@@ -2257,6 +2259,17 @@ class Agent:
                                                 literal_periods=literal_periods, read_results=read_results,
                                                 scoped_edit=bound_edit or scoped_edit)
                                             result = tool_result(status, error=error)
+                                            if (status == "SCOPE_MISMATCH" and not scope_repair_used and len(calls) == 1
+                                                    and scoped_edit is None and bound_edit is None and selection
+                                                    and selection[2] == "get_invoice" and len(selection[0]) == 1
+                                                    and "write_scope" not in proposal
+                                                    and (numbers := set(explicit_scope(proposal_source).get("invoice_no", ())))
+                                                    and {key[1] for key in selection[0]} < numbers):
+                                                scope_repair_used = repair_scope = True
+                                                result = tool_result("INVALID_ARGUMENTS", evidence={
+                                                    "missing_fields": ["write_scope"], "repairable_scope": True},
+                                                    error="读取对象与修改对象需要分别声明。请按原话补充 write_scope，复用本轮选集；不扩大目标、不重复查询。")
+                                                self.trace("invoice.scope_repair_requested", {"selection_id": proposal["selection_id"]})
                                             if invoice_change and pending_id:
                                                 self.pending_intent = None
                                                 self.trace("pending.resolved", {"request_id": pending_id,
@@ -2308,7 +2321,10 @@ class Agent:
                         if fn.get('name') in {'manage_task','list_tasks'}:self.context.accept_task(result)
                         if fn.get("name") == "prepare_invoice_update":
                             self.coordinator.record_preparation(result)
-                        if result["status"] == "INVALID_ARGUMENTS":
+                        if repair_scope:
+                            # No draft was prepared. Only this bounded schema repair may continue.
+                            pass
+                        elif result["status"] == "INVALID_ARGUMENTS":
                             ask_after_plan = (summary_needs_period and fn["name"] == "set_schedule"
                                               and not read_results and not execution.schedule)
                             if not ask_after_plan:

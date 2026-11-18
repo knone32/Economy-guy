@@ -136,6 +136,25 @@ class ModelReplyScopeTests(unittest.TestCase):
         self.assertNotIn("invoice_change", agent.last_response)
         self.assertEqual(snapshot(self.path), self.before)
 
+    def test_missing_independent_scope_gets_one_model_protocol_repair(self):
+        steps = iter(("read", "omit_scope", "repair_scope"))
+        def model(messages, _tools):
+            step = next(steps)
+            if step == "read":
+                return tool_group("get_invoice", ({"company_id": "C001", "invoice_no": n} for n in ("F016", "F019")))
+            data = next(json.loads(m["content"])["data"] for m in reversed(messages)
+                        if m["role"] == "tool" and (json.loads(m["content"]).get("data") or {}).get("invoice_no") == "F019")
+            proposal = {"selection_id": data["selection_id"], "field": "remark", "new_value": "月结凭证装订待核对",
+                        "mode": "item", "excluded_invoice_ids": [], "target_year": 2026, "target_month": 8}
+            if step == "repair_scope":
+                proposal["write_scope"] = {"company_id": "C001", "year": 2026, "month": 8, "invoice_nos": ["F019"]}
+            return tool_group("propose_invoice_changes", (proposal,))
+        agent = self.agent(model)
+        agent.ask("F019与F016各自的用途请报一下；只处理备注，用途保溜原样；F019的备注请改成「月结凭证装订待核对」；这次核对甲企业2026年8月的记录。")
+        self.assertEqual(agent.last_response["execution"]["model_requests"], 3)
+        self.assertEqual(agent.last_response["invoice_change"]["invoice_nos"], ("F019",))
+        self.assertEqual(snapshot(self.path), self.before)
+
 
 class ModelReplyWorkbenchTests(unittest.IsolatedAsyncioTestCase):
     setUp = ModelReplyScopeTests.setUp
