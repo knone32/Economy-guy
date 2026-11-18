@@ -467,11 +467,21 @@ class Agent:
         confirmed_invoice_edit = None
         supplemental_year = None
         can_continue_query = not (allow_prepare or continue_edit or management or self.teaching)
-        pending_choice = choice_reply = None
+        pending_choice = choice_reply = choice_target = None
         if (can_continue_query and pending and "invoice_choice" in pending
                 and pending["actor"] == self.user_id and pending["workbook"] == str(self.db_path)):
             pending_choice = pending
             choice_reply = invoice_choice_reply(current_request)
+            if choice_reply and not choice_reply.get("cancel"):
+                scope = pending["scope"]
+                number, = choice_reply["invoice_no"]
+                if (number in scope["invoice_no"]
+                        and choice_reply.get("company_id", scope["company_id"]) == scope["company_id"]):
+                    choice_target = {**scope, **pending["invoice_choice"]["change"], "invoice_no": [number]}
+                    pending_from = pending["request"]
+                    followup_sources = dict.fromkeys(scope, "session_confirmed")
+                    followup_sources["invoice_no"] = "user_current"
+                    text = pending_from + "\n补充票号：" + current_request
             pending = None
         chain = self.invoice_query_chain if can_continue_query and self.context.db_path == self.db_path else None
         invoice_action = invoice_followup_action(text, chain) if chain else None
@@ -563,6 +573,13 @@ class Agent:
             turn_tools = [tool for tool in turn_tools if tool["function"]["name"] != "propose_invoice_changes"]
         mixed = allow_prepare and read_request is not None and not (management or self.teaching)
         scoped_edit = named_invoice_read_and_edit(current_request) if invoice_proposals else None
+        if choice_target and invoice_proposals:
+            company, = choice_target["company_id"]
+            number, = choice_target["invoice_no"]
+            (year, month), = choice_target["periods"]
+            scoped_edit = {"read": f"查 {company} {year}年{month}月 {number} 的用途和备注",
+                           "read_scope": choice_target, "write": pending_choice["invoice_choice"]["write"],
+                           "write_scope": choice_target}
         query_text = scoped_edit["read"] if scoped_edit else read_request if mixed else text
         text_request = text
         invoice_chain = invoice_query_followup(text_request) if read_only and not invoice_action else None
@@ -1243,7 +1260,7 @@ class Agent:
             return finish(answer, store=False, category=category, chat_notice=notice,
                           missing_fields=missing, verified_read=any(outcome["status"] == "SUCCESS" for _, outcome in reads))
 
-        def read_exact_edit_target(target=None, *, from_reference=False, from_choice=False):
+        def read_exact_edit_target(target=None, *, from_reference=False):
             """Reread the explicitly named or uniquely resolved joint key."""
             target = target or exact_edit
             if (not target or read_results or execution.schedule or self.user_id != actor
@@ -1255,14 +1272,9 @@ class Agent:
             raw = json.dumps(key)
             if execution.dispatch("get_invoice", raw):
                 return None
-            if from_choice:
-                sources = {**dict.fromkeys(expected, "session_confirmed"), "invoice_no": "user_current"}
-                proof = ScopeProof(actor, expected, sources)
-                selection_source = "get_invoice"
-            else:
-                source = "trusted_reference" if recent_edit or from_reference else "user_current"
-                proof = ScopeProof(actor, scope, dict.fromkeys(scope, source))
-                selection_source = edit_selection_source
+            source = "trusted_reference" if recent_edit or from_reference else "user_current"
+            proof = ScopeProof(actor, scope, dict.fromkeys(scope, source))
+            selection_source = edit_selection_source
             outcome = handle_tool("get_invoice", raw, actor, self.db_path,
                                   allowed_tools=self.allowed_tools, expected_scope=expected,
                                   provenance=proof, execution=execution)
@@ -1273,7 +1285,7 @@ class Agent:
                 return ((key["company_id"], key["invoice_no"]),), outcome["evidence"]["scope"], selection_source
             return None
 
-        def finish_scoped_edit_question(reads):
+        def finish_scoped_edit_question(reads, question):
             change = scoped_edit.get("pending_choice")
             if change:
                 scope = scoped_edit["read_scope"]
@@ -1282,8 +1294,8 @@ class Agent:
                     "actor": actor, "workbook": str(self.db_path),
                     "invoice_choice": {"write": scoped_edit["write"], "change": change, "trace_id": self.trace_id},
                 }
-                self.trace("invoice_choice.pending", {"scope": scope, "missing": "invoice_no"})
-            notice = (render_query_conclusion(reads) + "\n请明确要修改的发票编号，再确认该票的字段和新值。")
+                self.trace("invoice_choice.pending", {"scope": scope, "missing": "invoice_no", "source": "model_clarification"})
+            notice = render_query_conclusion(reads) + "\n" + question
             return finish(notice, store=False, category="clarification", chat_notice=notice)
 
         if blocked_edit:
@@ -1304,27 +1316,8 @@ class Agent:
                 choices = "、".join(scope["invoice_no"])
                 notice = f"请从本次已核验的发票 {choices} 中选择要修改的发票编号。"
                 return finish(notice, store=False, category="clarification", chat_notice=notice)
-            choice = pending_choice["invoice_choice"]
-            target = {**scope, **choice["change"], "invoice_no": [number]}
-            self.trace("invoice_choice.resolved", {"from_trace": choice["trace_id"], "scope": {
-                key: target[key] for key in ("company_id", "invoice_no", "periods")}})
-            selection = read_exact_edit_target(target, from_choice=True)
-            if not selection:
-                outcome = read_results[-1][1] if read_results else None
-                status = execution.stop_reason or (outcome["status"] if outcome else "ERROR")
-                execution.stop(status)
-                notice = render_tool_failure(status, "get_invoice", outcome)
-                return finish(notice, store=False, chat_notice=notice)
-            proposal = {key: target[key][0] for key in ("field", "new_value")}
-            proposal.update(mode="item", excluded_invoice_ids=[])
-            source = pending_choice["request"] + "\n补充票号：" + current_request
-            invoice_change, status, error = plan_invoice_change(
-                self, source, proposal, selection, authorized_periods=target["periods"],
-                literal_periods=target["periods"], read_results=read_results,
-                scoped_edit={"write": choice["write"], "write_scope": target})
-            execution.stop(status)
-            notice = "已重查指定发票，等待人工确认。" if invoice_change else error or render_tool_failure(status)
-            return finish(notice, store=False, chat_notice=notice)
+            self.trace("invoice_choice.resumed", {"from_trace": pending_choice["invoice_choice"]["trace_id"],
+                                                  "scope": {key: choice_target[key] for key in ("company_id", "invoice_no", "periods")}})
         if invoice_chain and not invoice_chain["company_id"]:
             chain = self.invoice_query_chain = InvoiceQueryChain(current_request, InvoiceRead(**invoice_chain))
             return finish_invoice_chain(chain)
@@ -1679,6 +1672,11 @@ class Agent:
                     "修改对象不明确时，保留查询结果并追问。可信范围如下："
                     + json.dumps({"read": scoped_edit["read_scope"], "write": scoped_edit["write_scope"]},
                                  ensure_ascii=False)})
+                if choice_target:
+                    context.append({"role": "system", "content":
+                        "用户在补充上一轮待选发票的编号。本轮必须重新调用 get_invoice，使用新 selection_id 提出 "
+                        "propose_invoice_changes；旧查询值与旧 selection_id 均不能替代本轮读取。"
+                        "无法确定或用户改成查询时，给出相应最终信封。不要声称已保存。"})
             if invoice_proposals and any(name in {"query_business_sql", "check_missing_purpose"} and outcome["status"] == "SUCCESS"
                                          and outcome["data"].get("selection_id") for name, outcome in read_results):
                 context.append({"role": "system", "content":
@@ -1750,8 +1748,9 @@ class Agent:
                 natural = parse_final(reply.get("content"))
                 if scoped_edit and (verified := scoped_invoice_reads()):
                     self.messages.pop()
-                    if not scoped_edit["write_scope"]:
-                        return finish_scoped_edit_question(verified)
+                    if (not scoped_edit["write_scope"] and natural and natural["kind"] == "clarification"
+                            and set(natural["missing_fields"]) == {"invoice_no"}):
+                        return finish_scoped_edit_question(verified, natural["text"])
                     notice = render_query_conclusion(verified) + "\n尚未形成可核验的修改预览。"
                     return finish(notice, store=False, chat_notice=notice)
                 if invoice_write:
@@ -2137,6 +2136,11 @@ class Agent:
                                                 literal_periods=literal_periods, read_results=read_results,
                                                 scoped_edit=scoped_edit)
                                             result = tool_result(status, error=error)
+                                            if invoice_change and choice_target:
+                                                self.trace("invoice_choice.resolved", {
+                                                    "from_trace": pending_choice["invoice_choice"]["trace_id"],
+                                                    "scope": {key: choice_target[key] for key in ("company_id", "invoice_no", "periods")},
+                                                    "source": "model_proposal", "selection_id": proposal["selection_id"]})
                                             if recovered and status == "WAITING_CONFIRMATION":
                                                 selection_id = register_invoice_selection(selections, *selection)
                                                 self.trace("invoice_selection.recovered",
@@ -2200,9 +2204,6 @@ class Agent:
                     read_results.append((fn.get('name'),result))
                 self.messages.append(message)
                 self.trace("tool_result", {"request": call, "result": result})
-            if (scoped_edit and not scoped_edit["write_scope"] and (verified := scoped_invoice_reads())
-                    and (not stop_result or stop_result["status"] == "AMBIGUOUS")):
-                return finish_scoped_edit_question(verified)
             if stop:
                 if ask_after_plan:
                     return ask_summary_period()

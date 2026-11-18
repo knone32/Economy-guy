@@ -23,6 +23,7 @@ VALUE = "培训待复核"
 B_PARAPHRASE = "麻烦先核对甲企业 2026-09 F005、F010 的用途，接着仅将 F010 的备注改为『期末打印单据待对照』，用途保持原样。"
 B_VALUE = "期末打印单据待对照"
 AMBIGUOUS_CHOICE = B_PARAPHRASE.replace("仅将 F010", "把其中一张")
+MODEL_QUESTION = "请明确要修改的发票编号，你希望选哪张？"
 
 
 def mixed_model(*, company="C002", keys=("F006", "F007"), target="F007", field="remark",
@@ -56,7 +57,7 @@ def question_model(company, numbers):
         if next(stages, "question") == "read":
             return tool_group("get_invoice", ({"company_id": company, "invoice_no": number} for number in numbers))
         return {"role": "assistant", "content": json.dumps({
-            "kind": "clarification", "text": "备注要加在哪张发票上？", "missing_fields": ["invoice_no"]},
+            "kind": "clarification", "text": MODEL_QUESTION, "missing_fields": ["invoice_no"]},
             ensure_ascii=False)}
 
     return model
@@ -170,14 +171,19 @@ class MixedInvoiceScopeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(agent.last_response["category"], "clarification")
                 self.assertNotIn("invoice_change", agent.last_response)
                 self.assertIsNotNone(agent.pending_intent)
+                self.assertIn(MODEL_QUESTION, agent.last_response["chat_notice"])
+                self.assertEqual(agent.last_response["execution"]["model_requests"], 2)
+                agent.model = mixed_model(company=company, keys=(target,), target=target, field=field,
+                                          value=value, month=month)
                 agent.ask(reply)
                 change = agent.last_response["invoice_change"]
                 self.assertEqual((change["company_id"], change["year"], change["month"],
                                   change["invoice_nos"], change["field"], change["new_value"]),
                                  (company, 2026, month, (target,), field, value))
-                self.assertEqual(agent.last_response["execution"]["model_requests"], 0)
+                self.assertEqual(agent.last_response["execution"]["model_requests"], 2)
                 self.assertIsNone(agent.pending_intent)
-                (tool, outcome), = agent.last_response["tool_results"]
+                (tool, outcome), = [(name, data) for name, data in agent.last_response["tool_results"]
+                                   if name == "get_invoice"]
                 self.assertEqual((tool, outcome["status"], outcome["data"]["invoice_no"]),
                                  ("get_invoice", "SUCCESS", target))
                 self.assertEqual(snapshot(self.path), before)
@@ -238,13 +244,13 @@ class MixedInvoiceScopeTests(unittest.IsolatedAsyncioTestCase):
 
     def test_missing_target_asks_for_invoice_after_both_reads(self):
         before = snapshot(self.path)
-        agent = self.agent(mixed_model(target="F006"))
+        agent = self.agent(question_model("C002", ("F006", "F007")))
         agent.ask(LIVE_REQUEST.replace("只把 F007", "只把其中一张"))
         response = agent.last_response
         self.assert_separated(response)
         self.assertEqual(response["category"], "clarification")
-        self.assertIn("请明确要修改", response["chat_notice"])
-        self.assertIn("发票编号", response["chat_notice"])
+        self.assertIn(MODEL_QUESTION, response["chat_notice"])
+        self.assertEqual(response["execution"]["model_requests"], 2)
         self.assertNotIn("invoice_change", response)
         self.assertFalse(agent.update_session.drafts)
         self.assertEqual(snapshot(self.path), before)
@@ -253,24 +259,26 @@ class MixedInvoiceScopeTests(unittest.IsolatedAsyncioTestCase):
         before = snapshot(self.path)
         for reply in ("F010", "发票号是 F010。", "就 F010 那张吧", "就 C001 的 F010 那张吧"):
             with self.subTest(reply=reply):
-                agent = self.agent(b_paraphrase_model())
+                agent = self.agent(question_model("C001", ("F005", "F010")))
                 agent.ask(AMBIGUOUS_CHOICE)
                 self.assertEqual(agent.last_response["category"], "clarification")
+                agent.model = mixed_model(company="C001", keys=("F010",), target="F010", value=B_VALUE)
                 agent.ask(reply)
                 change = agent.last_response["invoice_change"]
                 self.assertEqual((change["company_id"], change["year"], change["month"]), ("C001", 2026, 9))
                 self.assertEqual((change["invoice_nos"], change["field"], change["new_value"]),
                                  (("F010",), "remark", B_VALUE))
-                (tool, result), = agent.last_response["tool_results"]
+                (tool, result), = [(name, data) for name, data in agent.last_response["tool_results"]
+                                  if name == "get_invoice"]
                 self.assertEqual((tool, result["status"], result["data"]["invoice_no"]),
                                  ("get_invoice", "SUCCESS", "F010"))
-                self.assertEqual(agent.last_response["execution"]["model_requests"], 0)
+                self.assertEqual(agent.last_response["execution"]["model_requests"], 2)
                 self.assertIsNone(agent.pending_intent)
                 self.assertEqual(snapshot(self.path), before)
 
     def test_choice_outside_the_read_set_keeps_the_question_and_can_be_cancelled(self):
         before = snapshot(self.path)
-        agent = self.agent(b_paraphrase_model())
+        agent = self.agent(question_model("C001", ("F005", "F010")))
         agent.ask(AMBIGUOUS_CHOICE)
         agent.ask("F008")
         self.assertIn("F005", agent.last_response["chat_notice"])
@@ -287,8 +295,40 @@ class MixedInvoiceScopeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("invoice_change", agent.last_response)
         self.assertEqual(snapshot(self.path), before)
 
-    def test_a_new_query_does_not_resume_pending_invoice_edit(self):
+    def test_selected_ticket_does_not_preview_without_a_valid_model_proposal(self):
+        before = snapshot(self.path)
+
+        def unavailable(*_args):
+            raise RuntimeError("model unavailable")
+
+        for label, model in (
+            ("model unavailable", unavailable),
+            ("information without proposal", lambda *_: {
+                "role": "assistant", "content": json.dumps({"kind": "information", "text": "暂不提出修改"})}),
+            ("wrong field", mixed_model(company="C001", keys=("F010",), target="F010",
+                                        field="purpose", value=B_VALUE)),
+        ):
+            with self.subTest(label=label):
+                agent = self.agent(question_model("C001", ("F005", "F010")))
+                agent.ask(AMBIGUOUS_CHOICE)
+                agent.model = model
+                agent.ask("就 F010 那张吧")
+                self.assertGreater(agent.last_response["execution"]["model_requests"], 0)
+                self.assertNotIn("invoice_change", agent.last_response)
+                self.assertFalse(agent.update_session.drafts)
+                self.assertEqual(snapshot(self.path), before)
+
+    def test_a_guessed_model_target_does_not_create_a_harness_question(self):
+        before = snapshot(self.path)
         agent = self.agent(b_paraphrase_model())
+        agent.ask(AMBIGUOUS_CHOICE)
+        self.assertNotIn("invoice_change", agent.last_response)
+        self.assertIsNone(agent.pending_intent)
+        self.assertEqual(agent.last_response["execution"]["model_requests"], 2)
+        self.assertEqual(snapshot(self.path), before)
+
+    def test_a_new_query_does_not_resume_pending_invoice_edit(self):
+        agent = self.agent(question_model("C001", ("F005", "F010")))
         agent.ask(AMBIGUOUS_CHOICE)
         self.assertIsNotNone(agent.pending_intent)
         agent.model = lambda *_: {
@@ -298,14 +338,16 @@ class MixedInvoiceScopeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(agent.pending_intent)
 
     def test_choice_checks_current_permission_and_period(self):
-        read_only_agent = Agent("U002", self.path, b_paraphrase_model(), mode="mock")
+        read_only_agent = Agent("U002", self.path, question_model("C001", ("F005", "F010")), mode="mock")
         read_only_agent.ask(AMBIGUOUS_CHOICE)
+        read_only_agent.model = mixed_model(company="C001", keys=("F010",), target="F010", value=B_VALUE)
         read_only_agent.ask("F010")
         self.assertEqual(read_only_agent.last_response["execution"]["stop_reason"], "DENIED")
         self.assertNotIn("invoice_change", read_only_agent.last_response)
 
-        agent = self.agent(b_paraphrase_model())
+        agent = self.agent(question_model("C001", ("F005", "F010")))
         agent.ask(AMBIGUOUS_CHOICE)
+        agent.model = mixed_model(company="C001", keys=("F010",), target="F010", value=B_VALUE)
         with closing(open_existing(self.path)) as db:
             db.execute("UPDATE invoices SET invoice_date=? WHERE company_id=? AND invoice_no=?",
                        ("2026-10-01", "C001", "F010"))
@@ -318,7 +360,7 @@ class MixedInvoiceScopeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_workbench_choice_uses_fresh_value_then_cancels_without_changes(self):
         app = AgentWorkspace(self.path, DEFAULT_TEMPLATE, self.path.with_name("no-profiles.json"),
-                             model=b_paraphrase_model(), trace_path=self.path.with_name("choice.jsonl"),
+                             model=question_model("C001", ("F005", "F010")), trace_path=self.path.with_name("choice.jsonl"),
                              session_path=self.path.with_name("sessions.sqlite3"))
         app.mode = "mock"
         async with app.run_test(size=(150, 44)) as pilot:
@@ -334,6 +376,7 @@ class MixedInvoiceScopeTests(unittest.IsolatedAsyncioTestCase):
                 db.commit()
             before = snapshot(self.path)
             records = len(app.records)
+            app.agent.model = mixed_model(company="C001", keys=("F010",), target="F010", value=B_VALUE)
             await test_tui_p0.P0Test.send(self, app, pilot, "发票号是 F010")
             await self.await_state(pilot, lambda: isinstance(app.screen, Approval) or
                                    (len(app.records) > records and not app.busy))
@@ -369,7 +412,7 @@ class MixedInvoiceScopeTests(unittest.IsolatedAsyncioTestCase):
             ("unverified read excluded", B_PARAPHRASE, b_paraphrase_model(keys=("F010",)), "AMBIGUOUS"),
             ("added rule date", B_PARAPHRASE, b_paraphrase_model(rule_date="2026-09-01"), "SCOPE_MISMATCH"),
             ("conditional assignment", B_PARAPHRASE.replace("用途保持原样", "仅限金额超过 1000 元"),
-             b_paraphrase_model(), "WAITING_USER"),
+             b_paraphrase_model(), "AMBIGUOUS"),
         )
         for case, request, model, status in cases:
             with self.subTest(case=case):
@@ -438,7 +481,7 @@ class MixedInvoiceScopeTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("F006 的用途", chat_text())
             self.assertIn("F007 的用途", chat_text())
             records = len(app.records)
-            app.agent.model = mixed_model(target="F006")
+            app.agent.model = question_model("C002", ("F006", "F007"))
             await test_tui_p0.P0Test.send(self, app, pilot, LIVE_REQUEST.replace("只把 F007", "只把其中一张"))
             await self.await_state(pilot, lambda: isinstance(app.screen, Approval) or
                                    (len(app.records) > records and not app.busy))
