@@ -26,7 +26,7 @@ AMBIGUOUS_CHOICE = B_PARAPHRASE.replace("仅将 F010", "把其中一张")
 
 
 def mixed_model(*, company="C002", keys=("F006", "F007"), target="F007", field="remark",
-                value=VALUE, excluded=(), rule_date=None):
+                value=VALUE, excluded=(), rule_date=None, year=2026, month=9):
     calls = iter(("read", "proposal"))
 
     def model(messages, _tools):
@@ -36,7 +36,7 @@ def mixed_model(*, company="C002", keys=("F006", "F007"), target="F007", field="
         selected = next(data for data in reversed(evidence) if data and data.get("invoice_no") == target)
         proposal = {
             "selection_id": selected["selection_id"], "field": field, "new_value": value, "mode": "item",
-            "excluded_invoice_ids": list(excluded), "target_year": 2026, "target_month": 9,
+            "excluded_invoice_ids": list(excluded), "target_year": year, "target_month": month,
         }
         if rule_date is not None:
             proposal["rule_business_date"] = rule_date
@@ -87,6 +87,56 @@ class MixedInvoiceScopeTests(unittest.IsolatedAsyncioTestCase):
                           proposal["field"], proposal["new_value"]), ("C002", 2026, 9, ("F007",), "remark", VALUE))
         self.assertEqual(proposal["source_request"], LIVE_REQUEST)
         self.assertEqual(snapshot(self.path), before)
+
+    def test_subject_first_edit_keeps_the_following_query_scope_separate(self):
+        before = snapshot(self.path)
+        cases = (
+            ("乙企业2026年8月，F015的备注请写成「展会住宿凭证待归档」。"
+             "F012和F015的用途也报一下，两张的用途都保持原样。",
+             "C002", ("F012", "F015"), "F015", 8, "展会住宿凭证待归档"),
+            ("甲企业2026年9月，F003的备注改为「资料待核」。"
+             "F003、F004的用途也报一下，两张的用途都保持原样。",
+             "C001", ("F003", "F004"), "F003", 9, "资料待核"),
+        )
+        for request, company, numbers, target, month, value in cases:
+            with self.subTest(company=company, month=month, target=target):
+                agent = self.agent(mixed_model(company=company, keys=numbers, target=target,
+                                               month=month, value=value))
+                agent.ask(request)
+                response = agent.last_response
+                reads = [r for name, r in response["tool_results"] if name == "get_invoice"]
+                self.assertEqual({r["data"]["invoice_no"] for r in reads}, set(numbers))
+                self.assertTrue(all(r["status"] == "SUCCESS" for r in reads))
+                change = response["invoice_change"]
+                self.assertEqual((change["company_id"], change["month"], change["invoice_nos"],
+                                  change["field"], change["new_value"]),
+                                 (company, month, (target,), "remark", value))
+                self.assertEqual(change["source_request"], request)
+                self.assertEqual(snapshot(self.path), before)
+
+    def test_subject_first_edit_still_requires_the_right_target_field_and_all_reads(self):
+        request = ("乙企业2026年8月，F015的备注请写成「展会住宿凭证待归档」。"
+                   "F012和F015的用途也报一下，两张的用途都保持原样。")
+        before = snapshot(self.path)
+        cases = (
+            ("wrong target", {}, {"target": "F012"}),
+            ("wrong field", {}, {"field": "purpose"}),
+            ("wrong value", {}, {"value": "模型自己添加的内容"}),
+            ("incomplete reads", {}, {"keys": ("F015",)}),
+            ("wrong period", {}, {"month": 9}),
+            ("conflicting preserve", {"request": request.replace("用途都保持原样", "备注都保持原样")}, {}),
+            ("conditional request", {"request": request + "仅限金额超过1000元时修改。"}, {}),
+        )
+        for label, change, model_options in cases:
+            with self.subTest(label=label):
+                options = dict(company="C002", keys=("F012", "F015"), target="F015",
+                               value="展会住宿凭证待归档", month=8)
+                options.update(model_options)
+                agent = self.agent(mixed_model(**options))
+                agent.ask(change.get("request", request))
+                self.assertNotIn("invoice_change", agent.last_response)
+                self.assertFalse(agent.update_session.drafts)
+                self.assertEqual(snapshot(self.path), before)
 
     def test_alternate_wording_and_reversed_clauses_keep_the_same_scope(self):
         before = snapshot(self.path)

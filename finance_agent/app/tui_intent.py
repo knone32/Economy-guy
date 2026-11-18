@@ -11,6 +11,8 @@ _EXPLICIT_MONTH = (r"\d{4}\s*(?:年\s*(?:的\s*)?(?:1[0-2]|0?[1-9]|十一|十二
 _INVOICE_OWNER_MONTH = rf"(?:{_COMPANY}\s*(?:的\s*)?{_EXPLICIT_MONTH}|{_EXPLICIT_MONTH}\s*(?:的\s*)?{_COMPANY})"
 _NAMED_INVOICES = rf"{_INVOICE}(?:\s*(?:以及|[、和及与，,])\s*{_INVOICE})+"
 _ASSIGNMENT = r"修改为|设置为|改成|改为|设为"
+_ASSIGNED_VALUE = (r'“[^”\r\n]+”|"[^"\r\n]+"|「[^」\r\n]+」|『[^』\r\n]+』'
+                   r'|[^，,；;。！？!?（）()\[\]【】\r\n“”"「」『』]+')
 _JOINT_TARGET = rf"{_COMPANY}\s*(?:的\s*)?{_INVOICE}\s*(?:发票)?\s*(?:的\s*)?"
 _EDIT = re.compile(
     r"^(?:(?:请帮我|帮我|麻烦|请)\s*)?(?:(?:把|将)\s*(?P<target>[^。\n；;]*?)"
@@ -370,10 +372,28 @@ def named_invoice_read_and_edit(text):
     masked = re.sub(r'“[^”]*”|「[^」]*」|『[^』]*』|"[^"]*"', lambda m: " " * len(m[0]), text)
     boundary = re.search(rf"(?:[，,；;。]\s*(?:(?:{connect})\s*)?|\s*(?:{connect})\s*)"
                          rf"(?=(?:{read_start}|{edit_start}))", masked)
-    if not boundary:
-        return None
-    first, second = text[:boundary.start()].strip(), text[boundary.end():].strip()
-    read, write = (first, second) if re.match(read_start, first) else (second, first)
+    if boundary:
+        first, second = text[:boundary.start()].strip(), text[boundary.end():].strip()
+        read, write = (first, second) if re.match(read_start, first) else (second, first)
+    else:
+        # A shared owner and period may precede a subject-first assignment.
+        subject = re.fullmatch(
+            rf"(?P<owner>{_INVOICE_OWNER_MONTH})\s*[，,]\s*(?P<target>{_INVOICE})\s*的\s*"
+            rf"(?P<field>用途|备注)\s*(?:请\s*)?(?:{_ASSIGNMENT}|写成|写为|填成|填为)\s*"
+            rf"(?P<value>{_ASSIGNED_VALUE})\s*[。；;]\s*"
+            rf"(?P<numbers>{_NAMED_INVOICES})\s*的\s*(?P<read_field>用途|备注)\s*"
+            r"(?:也\s*)?(?:报一下|列出来|告诉我)"
+            r"(?:\s*[，,]\s*(?P<two>两张的\s*)?(?P<keep>用途|备注)\s*(?:都\s*)?保持原样)?",
+            text, re.I)
+        if not subject:
+            return None
+        numbers = explicit_scope(subject["numbers"])["invoice_no"]
+        if subject["two"] and len(numbers) != 2:
+            return None
+        read = f'查看 {subject["owner"]} 的 {subject["numbers"]} 的{subject["read_field"]}'
+        write = f'把 {subject["target"]} 的{subject["field"]}改成{subject["value"]}'
+        if subject["keep"]:
+            write += f'，{subject["keep"]}保持原样'
     if (not re.fullmatch(rf"{read_start}{_INVOICE_OWNER_MONTH}\s*(?:的\s*)?(?:发票\s*)?{_NAMED_INVOICES}"
                          r"\s*(?:发票\s*)?(?:的\s*)?(?:用途|备注)", read, re.I)
             or not re.match(edit_start, write)):
@@ -388,7 +408,7 @@ def named_invoice_read_and_edit(text):
     assignment = r"\s*" if match["verb"] else rf"\s*(?:{_ASSIGNMENT}|为|成)\s*"
     tail = re.fullmatch(
         assignment
-        + r'(“[^”\r\n]+”|"[^"\r\n]+"|「[^」\r\n]+」|『[^』\r\n]+』|[^，,；;。！？!?（）()\[\]【】\r\n“”"「」『』]+)'
+        + rf'({_ASSIGNED_VALUE})'
         + r'(?:\s*[，,；;]\s*(用途|备注)\s*(?:别动|不动|不要改|别改|不改|不修改|保持原样))?\s*',
         command[match.end():])
     if not tail or tail[2] == field:
