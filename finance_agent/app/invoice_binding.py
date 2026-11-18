@@ -2,7 +2,7 @@
 import re
 
 from .responses import explicit_scope
-from .tui_intent import excluded_invoice_ids
+from .tui_intent import excluded_invoice_ids, invoice_value_source
 
 
 WRITE_SCOPE_SCHEMA = {
@@ -45,7 +45,9 @@ def bind_write_scope(source_request, proposal, selection):
     if (declared_exclusions & numbers
             or not declared_exclusions <= set(named.get("invoice_no", ()))):
         raise ValueError("排除对象与用户来源或修改范围不一致")
-    return {"write": source_request, "excluded": declared_exclusions,
+    field_evidence = ({"field": [proposal["field"]], "new_value": [proposal["new_value"]]}
+                      if invoice_value_source(source_request, proposal["field"], proposal["new_value"]) else None)
+    return {"write": source_request, "excluded": declared_exclusions, "field_evidence": field_evidence,
             "write_scope": {"company_id": [company], "year": [scope["year"]],
                             "month": [scope["month"]], "periods": [(scope["year"], scope["month"])],
                             "invoice_no": sorted(numbers)}}

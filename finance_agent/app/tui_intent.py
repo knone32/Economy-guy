@@ -381,6 +381,24 @@ def invoice_change_boundary(text, field, new_value, *, rule_field=None):
                for match in re.finditer(value, text))
 
 
+def invoice_value_source(text, field, new_value):
+    """Bind a value to a literal field in its clause without an action-verb vocabulary."""
+    if not invoice_change_boundary(text, field, new_value):
+        return False
+    quotes = tuple(_QUOTED_TEXT.finditer(text))
+    masked = _QUOTED_TEXT.sub(lambda match: " " * len(match[0]), text)
+    boundaries = [-1, *(m.start() for m in re.finditer(r"[，,。；;\n]", masked)), len(masked)]
+    for match in re.finditer(re.escape(new_value), text):
+        if any(q.start() <= match.start() and match.end() <= q.end() and q[0][1:-1] != new_value for q in quotes):
+            continue
+        start = max(position for position in boundaries if position < match.start()) + 1
+        end = min(position for position in boundaries if position >= match.end())
+        clause = (masked[start:match.start()] + " " * len(new_value) + masked[match.end():end])
+        if _FIELD_NAMES[field] in clause:
+            return True
+    return False
+
+
 def invoice_change_evidence(text, field, new_value, *, rule_field=None):
     """Legacy positive-action evidence; structured continuation reuses only its boundaries."""
     if not invoice_change_boundary(text, field, new_value, rule_field=rule_field):

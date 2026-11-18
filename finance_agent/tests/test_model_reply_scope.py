@@ -150,7 +150,7 @@ class ModelReplyScopeTests(unittest.TestCase):
                 proposal["write_scope"] = {"company_id": "C001", "year": 2026, "month": 8, "invoice_nos": ["F019"]}
             return tool_group("propose_invoice_changes", (proposal,))
         agent = self.agent(model)
-        agent.ask("F019与F016各自的用途请报一下；只处理备注，用途保溜原样；F019的备注请改成「月结凭证装订待核对」；这次核对甲企业2026年8月的记录。")
+        agent.ask("查询F016、F019目前的用途；账期2026年8月，对应甲企业；两张的用途保溜原样；只把F019的备注更新为「月结凭证装订待核对」。")
         self.assertEqual(agent.last_response["execution"]["model_requests"], 3)
         self.assertEqual(agent.last_response["invoice_change"]["invoice_nos"], ("F019",))
         self.assertEqual(snapshot(self.path), self.before)

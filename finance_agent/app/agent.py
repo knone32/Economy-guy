@@ -2192,7 +2192,7 @@ class Agent:
                                             bound_edit = bind_write_scope(proposal_source, proposal, selection)
                                             if pending_id and proposal["new_value"] in active_pending["request"]:
                                                 bound_edit["write"] = active_pending["request"]
-                                                bound_edit["field_evidence"] = active_pending.get("change")
+                                                bound_edit["field_evidence"] = active_pending.get("change") or bound_edit.get("field_evidence")
                                             proposal = {**proposal, "excluded_invoice_ids": sorted(bound_edit["excluded"])}
                                             choices = active_pending["scope"].get("invoice_no", ()) if pending_id else ()
                                             if choices and not set(bound_edit["write_scope"]["invoice_no"]) <= set(choices):
