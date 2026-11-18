@@ -20,6 +20,7 @@ from contextlib import closing
 from copy import deepcopy
 from .provenance import ANNUAL, MONTHLY, ScopeProof, is_annual_query, validate_scope
 from .business_sql import BusinessSQLError
+from .invoice_binding import WRITE_SCOPE_SCHEMA, validate_write_scope
 
 YEAR = {"company_id": "string", "year": "integer"}
 MONTH = {**YEAR, "month": "integer"}
@@ -27,7 +28,7 @@ DIRECTORY_SORT_FIELDS = {"sort_by": ("date", "amount"), "sort_order": ("asc", "d
 OPTIONAL_FIELDS = {
     "list_invoice_directory": DIRECTORY_SORT_FIELDS.keys(),
     "check_missing_purpose": {"rule_business_date"},
-    "propose_invoice_changes": {"rule_business_date", "target_year", "target_month", "rule_cohort"},
+    "propose_invoice_changes": {"rule_business_date", "target_year", "target_month", "rule_cohort", "write_scope", "pending_request_id"},
 }
 REGISTRY = {
     "query_business_sql": (None, {"sql": "string"}),
@@ -51,7 +52,7 @@ REGISTRY = {
     "propose_invoice_changes": (None, {"selection_id":"string", "field":"string", "new_value":"string",
                                        "mode":"string", "excluded_invoice_ids":"array",
                                        "rule_business_date":"string", "target_year":"integer",
-                                       "target_month":"integer", "rule_cohort":"boolean"}),
+                                       "target_month":"integer", "rule_cohort":"boolean", "write_scope":"object", "pending_request_id":"string"}),
     "add": (None, {"a": "integer", "b": "integer"}),
     "list_tasks": (None, {"company_id":"string"}),
     "manage_task": (None, {"company_id":"string","action":"string","task_id":"string","year":"integer","month":"integer","note":"string"}),
@@ -108,6 +109,8 @@ PARAMETERS = {"sql":"单条 SELECT 或只读 WITH 查询。严格遵守运行时
               "source":"近期发票的可信来源，不能自行填企业、发票号或审计编号。",
               "selection_id":"本轮真实查询结果返回的 selection_id，不能猜测或复用历史引用。",
               "mode":"item 逐张确认，batch 整批确认。",
+              "write_scope":"可选。查询与修改对象不同时明确独立修改范围；不能扩大用户范围或代替本轮 selection_id。",
+              "pending_request_id":"可选。仅延续 context_data 中指定的待补请求时提供，不是修改或提交授权。",
               "rule_business_date":"可选。YYYY-MM-DD 参考规则日期，须在本轮可信范围内。提案时应与选集所用参考日期一致。",
               "target_year":"可选。要修改的发票年份，与 target_month 一起提供。",
               "target_month":"可选。要修改的发票月份，不能填参考规则月份代替目标月份。",
@@ -139,6 +142,7 @@ for tool in TOOLS:
         fields["field"]["enum"] = ["purpose", "remark"]
         fields["mode"]["enum"] = ["item", "batch"]
         fields["excluded_invoice_ids"]["items"] = {"type": "string"}
+        fields["write_scope"] = {**WRITE_SCOPE_SCHEMA, "description": PARAMETERS["write_scope"]}
     if tool["function"]["name"] == "manage_task":
         tool["function"]["parameters"]["properties"]["action"]["enum"] = ["create","show","update","correct","wait","pause","resume","complete","cancel"]
     if tool["function"]["name"] == "manage_display_preference":
@@ -179,7 +183,7 @@ def validate_arguments(name, raw_arguments, partial=False, *, directory_sort=Non
         raise ValueError("缺失或多余参数")
     for key,value in args.items():
         kind = fields[key]
-        if type(value) is not {"integer":int,"string":str,"array":list,"boolean":bool}[kind]:
+        if type(value) is not {"integer":int,"string":str,"array":list,"boolean":bool,"object":dict}[kind]:
             raise ValueError("参数类型错误："+key)
         if kind=="string" and key not in {"new_value","task_id","note","key","value","anchor_id"} and not value.strip():
             raise ValueError("参数不能为空："+key)
@@ -191,6 +195,8 @@ def validate_arguments(name, raw_arguments, partial=False, *, directory_sort=Non
             for invoice in args["excluded_invoice_ids"]):
         raise ValueError("排除对象必须为发票编号")
     if name == "propose_invoice_changes" and not partial:
+        if "write_scope" in args:
+            validate_write_scope(args["write_scope"])
         dates = {"target_year", "target_month"} & args.keys()
         if len(dates) == 1 or ("rule_business_date" in args and not dates):
             raise ValueError("请提供完整目标年月")

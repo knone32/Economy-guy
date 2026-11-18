@@ -4,7 +4,7 @@ from pathlib import Path
 import unittest
 
 BUSINESS = {"database", "finance", "importer", "permissions", "queries", "rules", "updates", "stage2_schema", "stage3_schema", "tasks", "preferences", "persistence", "references"}
-RUNTIME = {"agent", "tool_registry", "write_coordination", "trace", "responses", "context", "scheduler"}
+RUNTIME = {"agent", "tool_registry", "write_coordination", "trace", "responses", "context", "scheduler", "invoice_binding"}
 
 
 def forbidden_imports(source):

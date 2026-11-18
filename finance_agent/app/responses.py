@@ -10,6 +10,49 @@ from .queries import INVOICE_FIELD_LABELS, _money
 _EXPLANATION_MARKER = re.compile(r"\[\[([A-Za-z][\w.-]*)\]\]")
 
 
+def reply_evidence_conflict(text, results, user_text):
+    """Reject unbound numeric/identifier literals; this is not a semantic classifier."""
+    token = re.compile(r"(?<![A-Za-z0-9_])(?:[CFR]\d+|v?\d+(?:,\d{3})*(?:\.\d+)?)(?![A-Za-z0-9_])", re.I)
+    def literals(value):
+        output = set()
+        for item in token.findall(str(value)):
+            output.add(item.upper() if item[0].upper() in {"C", "F", "R"}
+                       else str(Decimal(item.lstrip('vV').replace(',', '')).normalize()))
+        return output
+    known = literals(user_text)
+    def collect(value, key=""):
+        if isinstance(value, dict):
+            for name, item in value.items():
+                if name not in {"sql", "selection_id", "request_id"}:
+                    collect(item, name)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                collect(item, key)
+        elif value is not None:
+            known.update(literals(value))
+            if key.endswith("_cents") and isinstance(value, (int, float)):
+                known.update(literals(Decimal(str(value)) / 100))
+    for name, result in results:
+        if result.get("status") not in {"SUCCESS", "NO_DATA"}:
+            continue
+        evidence = result.get("evidence", {})
+        if evidence.get("source") != "current_sqlite":
+            continue
+        if name == "query_business_sql":
+            if evidence.get("query_scope", {}).get("scope") is None:
+                return "unverified_query_scope"
+            expected = literals(user_text)
+            for condition in evidence.get("query_scope", {}).get("filters", ()):
+                if any(v[0].isalpha() and v not in expected for v in literals(condition)):
+                    return "unbound_query_filter"
+        collect(result.get("data"))
+        collect(evidence.get("scope"))
+        collect(evidence.get("rule"))
+        if result["status"] == "NO_DATA":
+            known.update(literals(0))
+    return "unbound_reply_literals" if literals(text) - known else None
+
+
 def parse_final(content):
     """只接收信息/追问信封，不接受模型提供操作成功状态。"""
     try:
@@ -20,8 +63,20 @@ def parse_final(content):
     if type(value) is not dict or type(value.get("kind")) is not str or value["kind"] not in {"general", "information", "clarification", "explanation"}:
         return None
     fields = {"kind", "text", "missing_fields"} if value["kind"] == "clarification" else {"kind", "text"}
-    if set(value) != fields or type(value.get("text")) is not str or not value["text"].strip():
+    if not fields <= set(value) or not set(value) <= fields | {"pending", "pending_change"} or type(value.get("text")) is not str or not value["text"].strip():
         return None
+    if "pending_change" in value:
+        change = value["pending_change"]
+        if (value["kind"] != "clarification" or type(change) is not dict or set(change) != {"field", "new_value"}
+                or type(change["field"]) is not str or change["field"] not in {"purpose", "remark"}
+                or type(change["new_value"]) is not str or not change["new_value"].strip()):
+            return None
+    if "pending" in value:
+        pending = value["pending"]
+        if (type(pending) is not dict or set(pending) != {"request_id", "action"}
+                or type(pending["request_id"]) is not str or not pending["request_id"].strip()
+                or type(pending["action"]) is not str or pending["action"] not in {"continue", "cancel", "replace"}):
+            return None
     markers = set(_EXPLANATION_MARKER.findall(value["text"]))
     if markers and (value["kind"] != "explanation" or markers - {"result", "boundary"}):
         return None

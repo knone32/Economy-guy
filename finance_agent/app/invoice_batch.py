@@ -8,7 +8,7 @@ import sqlite3
 from .permissions import check_permission
 from .queries import get_invoice, list_invoices
 from .rules import missing_required_purpose, resolve_rule
-from .tui_intent import excluded_invoice_ids, invoice_change_evidence, literal_named_invoice_edit
+from .tui_intent import excluded_invoice_ids, invoice_change_boundary, invoice_change_evidence, literal_named_invoice_edit
 from .responses import explicit_scope
 from .stage2_schema import open_existing
 from .trace import redact
@@ -153,7 +153,7 @@ def plan_invoice_change(agent, source_request, proposal, selection, *, authorize
     if (requested.get("company_id") and requested["company_id"] != [company]
             or source == "query_business_sql" and tuple(scope["company_ids"]) != (company,)):
         return None, "SCOPE_MISMATCH", "候选集合与用户明确的企业不一致。"
-    excluded = excluded_invoice_ids(edit_source)
+    excluded = scoped_edit.get("excluded", excluded_invoice_ids(edit_source)) if scoped_edit else excluded_invoice_ids(edit_source)
     invoice_nos = {invoice for _, invoice in keys}
     if rule_selection:
         invoice_nos -= excluded
@@ -246,8 +246,14 @@ def plan_invoice_change(agent, source_request, proposal, selection, *, authorize
         # The proposal flag describes intent. It cannot authorize an unexplained subset.
         cohort = rule_selection or not (named or subset_filters)
 
-    if not invoice_change_evidence(edit_source, proposal["field"], proposal["new_value"],
-                                   rule_field="purpose" if rule else None):
+    field_evidence = scoped_edit.get("field_evidence") if scoped_edit else None
+    continued_field = (field_evidence and field_evidence.get("field") == [proposal["field"]]
+                       and field_evidence.get("new_value") == [proposal["new_value"]]
+                       and (not rule or proposal["field"] == "purpose")
+                       and invoice_change_boundary(edit_source, proposal["field"], proposal["new_value"],
+                                                   rule_field="purpose" if rule else None))
+    if not continued_field and not invoice_change_evidence(edit_source, proposal["field"], proposal["new_value"],
+                                                          rule_field="purpose" if rule else None):
         return None, "AMBIGUOUS", "请明确允许修改的字段及来自用户原话的新值。"
 
     try:

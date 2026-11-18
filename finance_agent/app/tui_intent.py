@@ -362,8 +362,8 @@ def _questioned_invoice_choice(text):
             "write_scope": None, "pending_choice": change}
 
 
-def invoice_change_evidence(text, field, new_value, *, rule_field=None):
-    """Require a literal value and reject clear read-only, hypothetical or forbidden requests."""
+def invoice_change_boundary(text, field, new_value, *, rule_field=None):
+    """Existing literal/negative checks, independent of positive action sentence forms."""
     if not new_value.strip() or _HYPOTHETICAL.match(text) or text.rstrip().endswith(("?", "？")):
         return False
     label = _FIELD_NAMES[field]
@@ -373,6 +373,19 @@ def invoice_change_evidence(text, field, new_value, *, rule_field=None):
         return False
     if label not in text and field != rule_field:
         return False
+    quotes = tuple(_QUOTED_TEXT.finditer(text))
+    literal = re.escape(new_value)
+    value = rf'(?:“{literal}”|‘{literal}’|"{literal}"|「{literal}」|『{literal}』|{literal})(?=$|[\s，,。；;！!])'
+    return any(not any(q.start() <= match.start() and match.end() <= q.end()
+                       and q[0][1:-1] != new_value for q in quotes)
+               for match in re.finditer(value, text))
+
+
+def invoice_change_evidence(text, field, new_value, *, rule_field=None):
+    """Legacy positive-action evidence; structured continuation reuses only its boundaries."""
+    if not invoice_change_boundary(text, field, new_value, rule_field=rule_field):
+        return False
+    label = _FIELD_NAMES[field]
     choice = _quoted_invoice_choice(text)
     if choice:
         return choice["field"] == [field] and choice["new_value"] == [new_value]

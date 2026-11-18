@@ -1408,9 +1408,9 @@ class AgentWorkspace(ConversationUI, App):
         coverage = response.get("goal_coverage")
         operation = response["operation_receipt"]
         unchanged = not receipt and not batch and operation["status"] == "CURRENT_VALUE_MATCHES"
-        notice = response["chat_notice"]
+        notice = response.get("assistant_text") or response["chat_notice"]
         if notice:
-            for tool, result in results:
+            for tool, result in (() if response.get("assistant_text") is not None else results):
                 if result["status"] not in {"SUCCESS", "NO_DATA"} or result["evidence"].get("source") != "current_sqlite":
                     continue
                 data = result["data"]
@@ -1427,6 +1427,10 @@ class AgentWorkspace(ConversationUI, App):
                 notice = render_query_conclusion(results)
             if notice:
                 self.chat_message("Agent", notice)
+        if (response.get("assistant_text") and response.get("system_notice") != notice
+                and any(name in {"query_business_sql", "get_finance_summary", "get_annual_finance_summary",
+                                 "count_invoice_fields"} for name, _ in results)):
+            self.chat_message("核验结果", response["system_notice"])
         detail = response["fulfillment"]["detail"]
         if detail:
             shown = set((notice or "").splitlines())

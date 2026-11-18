@@ -439,8 +439,8 @@ class QueryContinuityTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNone(agent.invoice_query_chain)
         self.assert_zero_audit()
 
-    def test_first_read_alone_does_not_discard_clarification_for_second(self):
-        for targets, expected in (([FIRST], "WAITING_USER"), ([FIRST, SECOND], "ANSWERED")):
+    def test_model_clarification_is_not_discarded_after_invoice_reads(self):
+        for targets, expected in (([FIRST], "WAITING_USER"), ([FIRST, SECOND], "WAITING_USER")):
             with self.subTest(targets=targets):
                 calls = [tool("get_invoice", target, f"invoice-{i}") for i, target in enumerate(targets)]
                 agent = Agent("U001", self.path, scripted_model([*calls, CLARIFY]), mode="mock")
@@ -449,7 +449,7 @@ class QueryContinuityTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual([outcome["data"]["invoice_no"] for _, outcome in response["tool_results"]],
                                  [target["invoice_no"] for target in targets])
                 self.assertEqual(response["execution"]["stop_reason"], expected)
-                self.assertEqual("发票编号" in (response["chat_notice"] or ""), len(targets) == 1)
+                self.assertIn("发票编号", response["assistant_text"])
         self.assert_zero_audit()
 
     def test_followup_rechecks_current_read_permission(self):

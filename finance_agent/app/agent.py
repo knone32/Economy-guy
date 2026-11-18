@@ -15,10 +15,11 @@ from .business_sql import BusinessSQL, BusinessSQLError, TABLES as SQL_TABLES
 from .invoice_continuity import InvoiceQueryChain, InvoiceRead
 from .tui_intent import (invoice_choice_reply, invoice_followup_action, invoice_intent_source,
                          invoice_query_followup, invoice_supplement,
-                         literal_single_invoice_edit, named_invoice_read_and_edit, unresolved_invoice_field)
+                         invoice_change_boundary, literal_single_invoice_edit, named_invoice_read_and_edit, unresolved_invoice_field)
 from .invoice_batch import plan_invoice_change, recover_named_invoice_selection
+from .invoice_binding import bind_write_scope
 from .responses import (DIRECTORY_INLINE_LIMIT, directory_complete, directory_count_only, directory_display_pages, explicit_scope,
-                        parse_final, render_information, render_query_conclusion, render_clarification, render_summary_basis,
+                        parse_final, reply_evidence_conflict, render_information, render_query_conclusion, render_clarification, render_summary_basis,
                         render_explanation_evidence, render_grounded_explanation, render_invoice_comparison, render_reference_error, render_stopped,
                         render_task_scope_negotiation, render_tool_failure, QUERY_GOALS, query_goal,
                         verified_query_goal, render_goal_coverage, render_bank_income_comparison, render_hypothetical_purpose_rules, scope_mismatch)
@@ -104,6 +105,15 @@ def live_model(messages, tools):
 
 
 _BUILTIN_LIVE_MODEL=live_model
+
+SYSTEM += """
+查询、追问的 text 是实际展示给用户的正文。按当前工具事实回答，未完成的子目标必须追问并给出 missing_fields，不要把问题放在 information 中。
+修改要求缺票号但字段新值已明确时，clarification 可带 pending_change={field,new_value} 保存已知内容，值必须精确来自原话；不要为只读请求创建此数据。
+同句读取多张而只改部分时，可在现有 propose_invoice_changes 上提供 write_scope={company_id,year,month,invoice_nos}，只包含修改目标；不要把读取集合变成修改集合。
+context_data.pending_request 是当前会话的待补要求，不是权限或确认。补充或更正该要求时，重新读当前数据，提案带 pending_request_id 并按需给 write_scope。
+无需提案的待补接续，可在最终信封带 pending={request_id,action}，action 为 continue、cancel 或 replace。取消只清除待补和未提交草稿，不撤销已提交数据。
+新问题不要引用无关待补项。只读查询、转述或含糊对象不得提出修改；无法唯一选择时保留原要求并追问。无需调用额外意图声明工具。
+"""
 
 
 class Agent:
@@ -467,6 +477,15 @@ class Agent:
         confirmed_invoice_edit = None
         supplemental_year = None
         can_continue_query = not (allow_prepare or continue_edit or management or self.teaching)
+        active_pending = (pending if can_continue_query and pending and pending.get("model_managed")
+                          and pending["actor"] == self.user_id and pending["workbook"] == str(self.db_path) else None)
+        if active_pending:
+            # Keep data while the model decides continuation; never inherit a draft or approval.
+            self.pending_intent, pending = active_pending, None
+        model_text = None
+        pending_action = None
+        rejected_reply = None
+        model_change = None
         pending_choice = choice_reply = choice_target = None
         if (can_continue_query and pending and "invoice_choice" in pending
                 and pending["actor"] == self.user_id and pending["workbook"] == str(self.db_path)):
@@ -1005,17 +1024,23 @@ class Agent:
                         page_issue = "未能补齐第 2 页。" + render_tool_failure(result["status"], name, result)
 
             scope_fields = {"company_id", "year", "month"} & set(missing_fields)
-            pending_fields = missing_fields if invoice_write else scope_fields
-            if read_only and category == "clarification" and pending_fields and self.pending_intent is None:
-                pending_scope = explicit_scope(text_request, include_update_aliases=True)
+            pending_fields = missing_fields if model_text is not None or invoice_write else scope_fields
+            if (read_only and category == "clarification" and pending_fields
+                    and (self.pending_intent is None or pending_action in {"continue", "replace"})):
+                request = (active_pending["request"] + "\n" + current_request
+                           if active_pending and pending_action == "continue" else text_request)
+                pending_scope = explicit_scope(request, include_update_aliases=True)
                 if "year" in pending_fields and missing_year_months - inferred.keys():
                     # The year already present may belong to a different, complete period.
                     pending_scope.pop("year", None)
                     pending_scope.pop("periods", None)
                     pending_scope["month"] = sorted(missing_year_months - inferred.keys())
-                self.pending_intent = {"request": text_request, "scope": pending_scope,
+                self.pending_intent = {"request": request, "scope": pending_scope,
                                        "missing_fields": tuple(pending_fields), "actor": self.user_id,
-                                       "workbook": str(self.db_path)}
+                                       "workbook": str(self.db_path), "request_id": self.trace_id,
+                                       "model_managed": model_text is not None}
+                if model_change:
+                    self.pending_intent["change"] = {key: [value] for key, value in model_change.items()}
             if comparison and category == "database_query":
                 current = next((result["data"] for name, result in read_results
                                 if name == "get_invoice" and result["status"] == "SUCCESS"
@@ -1236,6 +1261,24 @@ class Agent:
                 text += "\n" + closure
                 self.last_response["text"] = text
             self.last_response['api_counts']=api
+            self.last_response["assistant_text"] = None
+            self.last_response["system_notice"] = self.last_response.get("chat_notice")
+            if rejected_reply:
+                self.last_response["model_reply_status"] = "REJECTED"
+                notice = "模型正文未通过证据核验；以下仅为工具已核实结果。"
+                text = notice + "\n" + text
+                self.last_response["text"] = text
+                self.last_response["chat_notice"] = notice + "\n" + (self.last_response["chat_notice"] or "")
+                self.last_response["system_notice"] = self.last_response["chat_notice"]
+            if (model_text is not None and category in {"database_query", "clarification", "general_unverified"}
+                    and execution.stop_reason in {"ANSWERED", "COMPLETED", "WAITING_USER", "CANCELLED"}):
+                text = model_text
+                notice = self.last_response["system_notice"]
+                compatible = "\n".join(dict.fromkeys(filter(None, (model_text, notice))))
+                self.last_response.update(assistant_text=model_text, text=compatible, chat_notice=compatible)
+                text = compatible
+                self.trace("reply.displayed", {"source": "model", "assistant_text": model_text,
+                                               "system_notice": self.last_response["system_notice"]})
             if store:
                 self.messages.append({"role": "assistant", "name":"harness_output", "content": text})
             self.trace("turn.finished", {"answer": text, "tools_attempted": execution.actual_tools, "write_receipt": self.write_receipt,
@@ -1285,13 +1328,15 @@ class Agent:
             return None
 
         def finish_scoped_edit_question(reads, question):
-            change = scoped_edit.get("pending_choice")
+            change = ({key: [value] for key, value in model_change.items()} if model_change
+                      else scoped_edit.get("pending_choice"))
             if change:
                 scope = scoped_edit["read_scope"]
                 self.pending_intent = {
                     "request": current_request, "scope": dict(scope), "missing_fields": ("invoice_no",),
                     "actor": actor, "workbook": str(self.db_path),
-                    "invoice_choice": {"write": scoped_edit["write"], "change": change, "trace_id": self.trace_id},
+                    "request_id": self.trace_id, "model_managed": True,
+                    "change": change,
                 }
                 self.trace("invoice_choice.pending", {"scope": scope, "missing": "invoice_no", "source": "model_clarification"})
             notice = render_query_conclusion(reads) + "\n" + question
@@ -1605,6 +1650,7 @@ class Agent:
             confirmed_fields.update(("year", "month"))
         scope_reminder_sent = False
         for index in range(self.max_requests):
+            model_text = model_change = rejected_reply = None
             try:
                 facts = previous_facts
                 if read_only and read_results:
@@ -1627,6 +1673,11 @@ class Agent:
                 return finish('协议安全停止：'+str(error)+'；未执行新的业务操作。')
             if not execution.start_request():
                 break
+            if active_pending:
+                context.append({"role": "user", "name": "context_data", "content": json.dumps({
+                    "pending_request": {key: active_pending[key] for key in
+                                        ("request_id", "request", "scope", "missing_fields", "change")
+                                        if key in active_pending}}, ensure_ascii=False)})
             if confirmed_invoice_edit is not None:
                 context.append({"role": "system", "content":
                     "用户已澄清这一笔修改的字段。重新读取该发票并提交提案给工作台确认。"
@@ -1746,14 +1797,45 @@ class Agent:
                         return finish(render_clarification(missing["evidence"]), store=False,
                                       category="clarification")
                 natural = parse_final(reply.get("content"))
-                if scoped_edit and (verified := scoped_invoice_reads()):
+                if natural is not None and natural["kind"] in {"information", "explanation"} and read_results:
+                    conflict = reply_evidence_conflict(natural["text"], read_results, current_request)
+                    if conflict:
+                        self.trace("reply.rejected", {"reason": conflict, "source": "model"})
+                        rejected_reply = conflict
+                        natural = None
+                if natural is not None:
+                    model_text = natural["text"]
+                    model_change = natural.get("pending_change")
+                    if model_change:
+                        source = active_pending["request"] + "\n" + current_request if active_pending else current_request
+                        if not invoice_change_boundary(source, model_change["field"], model_change["new_value"]):
+                            model_text = model_change = None
+                            execution.stop("INVALID_RESPONSE")
+                            return finish("待补修改内容缺少有效原文来源，请明确字段和新值。", store=False)
+                    transition = natural.get("pending")
+                    if transition:
+                        if not active_pending or transition["request_id"] != active_pending["request_id"]:
+                            model_text = None
+                            execution.stop("INVALID_RESPONSE")
+                            return finish("待补请求引用已失效，请重新明确当前要求。", store=False)
+                        pending_action = transition["action"]
+                        if pending_action == "cancel":
+                            self.cancel_update()
+                            execution.stop("CANCELLED")
+                            return finish(model_text, store=False, category="clarification")
+                        if pending_action == "replace":
+                            self.pending_intent = None
+                    elif active_pending and natural["kind"] != "clarification":
+                        self.pending_intent = None
+                if scoped_edit and (verified := scoped_invoice_reads()) and (
+                        natural is None or (natural["kind"] == "clarification" and not scoped_edit["write_scope"])):
                     self.messages.pop()
                     if (not scoped_edit["write_scope"] and natural and natural["kind"] == "clarification"
                             and set(natural["missing_fields"]) == {"invoice_no"}):
                         return finish_scoped_edit_question(verified, natural["text"])
                     notice = render_query_conclusion(verified) + "\n尚未形成可核验的修改预览。"
                     return finish(notice, store=False, chat_notice=notice)
-                if invoice_write:
+                if invoice_write and natural is None:
                     selection = next(iter(selections.values())) if len(selections) == 1 else None
                     if (not read_results and len(recent_keys) == 1 and natural and natural["kind"] == "clarification"
                             and set(natural["missing_fields"]) == {"new_value"}):
@@ -1924,7 +2006,7 @@ class Agent:
                     self.messages.pop()
                     self.trace("error", {"category": "invalid_final_envelope"})
                     execution.stop("EVIDENCE_RETURNED")
-                    notice = render_query_conclusion(read_results)
+                    notice = render_query_conclusion(read_results, include_source=True)
                     if not (invoice_detail_verified()
                             or simple_directory and self.context.previous_directory(read_results)):
                         notice += "\n还无法核实是否回答了全部问题。"
@@ -1943,10 +2025,10 @@ class Agent:
                 self.coordinator.pending = None
                 if natural["kind"] == "clarification":
                     fields = natural["missing_fields"]
-                    if simple_directory and self.context.previous_directory(read_results):
+                    if model_text is None and simple_directory and self.context.previous_directory(read_results):
                         self.messages.pop()
                         return finish(render_information(read_results), store=False, category="database_query")
-                    if numbered_invoice_request and set(fields) == {"invoice_no"}:
+                    if model_text is None and numbered_invoice_request and set(fields) == {"invoice_no"}:
                         company_id, = explicit["company_id"]
                         requested_keys = {(company_id, number) for number in explicit["invoice_no"]}
                         if requested_keys <= invoice_reads.keys():
@@ -1958,7 +2040,7 @@ class Agent:
                     company = (read_workspace or self.context.scope).get("company_id", [])
                     if "business_object" in fields and annual_year and len(company) == 1:
                         natural["missing_fields"] = [f for f in fields if f not in {"company_id", "year", "month"}]
-                    question = render_clarification(natural)
+                    question = natural["text"]
                     if invoice_reads:
                         matched = list(invoice_reads.values())
                         return finish(render_information(matched) + "\n" + question, store=False,
@@ -2040,6 +2122,18 @@ class Agent:
                                     # This read uses the explicit edit key, independently of the query period.
                                     tool_scope = {key: [target[key][0]] for key in ("company_id", "invoice_no")}
                                     tool_proof = ScopeProof(session.user_id, tool_scope, dict.fromkeys(tool_scope, "user_current"))
+                        if active_pending and fn.get("name") == "get_invoice":
+                            try:
+                                pending_read = validate_arguments("get_invoice", fn.get("arguments"))
+                            except (TypeError, ValueError):
+                                pending_read = {}
+                            prior_scope = active_pending["scope"]
+                            same_scope = all(not explicit.get(key) or explicit[key] == prior_scope.get(key)
+                                             for key in ("company_id", "year", "month", "periods"))
+                            if (same_scope and pending_read.get("company_id") in prior_scope.get("company_id", ())
+                                    and pending_read.get("invoice_no") in prior_scope.get("invoice_no", ())):
+                                tool_scope = {**tool_scope, **prior_scope}
+                                tool_proof = ScopeProof(actor, tool_scope, dict.fromkeys(tool_scope, "session_confirmed"))
                         if recent_tool_scope and fn.get("name") == "get_invoice":
                             tool_scope = {**expected_scope, **recent_tool_scope}
                             tool_proof = ScopeProof(actor, recent_tool_scope,
@@ -2075,6 +2169,34 @@ class Agent:
                                 result = execution.guard("propose_invoice_changes", proposal)
                                 if result is None:
                                     selection = selections.get(proposal["selection_id"])
+                                    proposal_source = current_request
+                                    bound_edit = None
+                                    pending_id = proposal.get("pending_request_id")
+                                    if pending_id:
+                                        if not active_pending or pending_id != active_pending["request_id"]:
+                                            result = tool_result("AMBIGUOUS", error="待补请求引用已失效，请重新明确修改要求。")
+                                        else:
+                                            proposal_source = active_pending["request"] + "\n" + current_request
+                                    if (result is None and pending_id and "write_scope" not in proposal and selection
+                                            and selection[2] == "get_invoice" and len(selection[0]) == 1
+                                            and proposal["mode"] == "item"):
+                                        key, = selection[0]
+                                        scope = selection[1]
+                                        proposal = {**proposal, "write_scope": {
+                                            "company_id": key[0], "year": scope["year"], "month": scope["month"],
+                                            "invoice_nos": [key[1]]}}
+                                    if result is None and "write_scope" in proposal:
+                                        try:
+                                            bound_edit = bind_write_scope(proposal_source, proposal, selection)
+                                            if pending_id and proposal["new_value"] in active_pending["request"]:
+                                                bound_edit["write"] = active_pending["request"]
+                                                bound_edit["field_evidence"] = active_pending.get("change")
+                                            proposal = {**proposal, "excluded_invoice_ids": sorted(bound_edit["excluded"])}
+                                            choices = active_pending["scope"].get("invoice_no", ()) if pending_id else ()
+                                            if choices and not set(bound_edit["write_scope"]["invoice_no"]) <= set(choices):
+                                                raise ValueError("修改目标不在原待补候选中，请先澄清。")
+                                        except ValueError as error:
+                                            result = tool_result("SCOPE_MISMATCH", error=str(error))
                                     if (not scoped_edit and selection is None and exact_edit
                                             and set(proposal) <= {"selection_id", "field", "new_value", "mode",
                                                                  "excluded_invoice_ids", "target_year", "target_month"}
@@ -2105,7 +2227,7 @@ class Agent:
                                                 proposal = {**proposal, "mode": "item", "excluded_invoice_ids": []}
                                     if result is None:
                                         recovered = None
-                                        if not scoped_edit and selection and selection[2] == "get_invoice" and len(selection[0]) == 1:
+                                        if not scoped_edit and bound_edit is None and selection and selection[2] == "get_invoice" and len(selection[0]) == 1:
                                             recovered = recover_named_invoice_selection(current_request, proposal, selections)
                                             if recovered:
                                                 recovered_keys, recovered_scope = recovered
@@ -2131,10 +2253,14 @@ class Agent:
                                             if not edit_periods and selection and selection[2] == "resolve_recent_invoice":
                                                 edit_periods = ((selection[1]["year"], selection[1]["month"]),)
                                             invoice_change, status, error = plan_invoice_change(
-                                                self, text, proposal, selection, authorized_periods=edit_periods,
+                                                self, proposal_source if bound_edit else text, proposal, selection, authorized_periods=edit_periods,
                                                 literal_periods=literal_periods, read_results=read_results,
-                                                scoped_edit=scoped_edit)
+                                                scoped_edit=bound_edit or scoped_edit)
                                             result = tool_result(status, error=error)
+                                            if invoice_change and pending_id:
+                                                self.pending_intent = None
+                                                self.trace("pending.resolved", {"request_id": pending_id,
+                                                           "selection_id": proposal["selection_id"], "source": "model_proposal"})
                                             if invoice_change and choice_target:
                                                 self.trace("invoice_choice.resolved", {
                                                     "from_trace": pending_choice["invoice_choice"]["trace_id"],
