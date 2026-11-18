@@ -480,7 +480,6 @@ class Agent:
                     choice_target = {**scope, **pending["invoice_choice"]["change"], "invoice_no": [number]}
                     pending_from = pending["request"]
                     followup_sources = dict.fromkeys(scope, "session_confirmed")
-                    followup_sources["invoice_no"] = "user_current"
                     text = pending_from + "\n补充票号：" + current_request
             pending = None
         chain = self.invoice_query_chain if can_continue_query and self.context.db_path == self.db_path else None
@@ -575,10 +574,10 @@ class Agent:
         scoped_edit = named_invoice_read_and_edit(current_request) if invoice_proposals else None
         if choice_target and invoice_proposals:
             company, = choice_target["company_id"]
-            number, = choice_target["invoice_no"]
+            numbers = "、".join(pending_choice["scope"]["invoice_no"])
             (year, month), = choice_target["periods"]
-            scoped_edit = {"read": f"查 {company} {year}年{month}月 {number} 的用途和备注",
-                           "read_scope": choice_target, "write": pending_choice["invoice_choice"]["write"],
+            scoped_edit = {"read": f"查 {company} {year}年{month}月 {numbers} 的用途和备注",
+                           "read_scope": pending_choice["scope"], "write": pending_choice["invoice_choice"]["write"],
                            "write_scope": choice_target}
         query_text = scoped_edit["read"] if scoped_edit else read_request if mixed else text
         text_request = text
@@ -816,7 +815,7 @@ class Agent:
         def scoped_invoice_reads():
             if not scoped_edit:
                 return []
-            scope = scoped_edit["read_scope"]
+            scope = choice_target or scoped_edit["read_scope"]
             company, = scope["company_id"]
             (year, month), = scope["periods"]
             reads = verified_invoice_reads()
@@ -1666,8 +1665,9 @@ class Agent:
                     + json.dumps(sql_context, ensure_ascii=False))})
             if scoped_edit:
                 context.append({"role": "system", "content":
-                    "本轮查询和修改对象独立。先逐张用 get_invoice 核验查询分句的所有票。"
-                    "仅使用修改分句唯一指定票的本轮 selection_id 提案，字段和新值以该分句为准。"
+                    ("上一轮的候选票可在本轮重新读取；至少用 get_invoice 重查当前选择的修改目标。" if choice_target
+                     else "本轮查询和修改对象独立。先逐张用 get_invoice 核验查询分句的所有票。")
+                    + "仅使用修改分句唯一指定票的本轮 selection_id 提案，字段和新值以该分句为准。"
                     "只查询的票本来就不在修改范围内，excluded_invoice_ids 留空。"
                     "修改对象不明确时，保留查询结果并追问。可信范围如下："
                     + json.dumps({"read": scoped_edit["read_scope"], "write": scoped_edit["write_scope"]},
@@ -2094,8 +2094,7 @@ class Agent:
                                         else:
                                             target_company, = target["company_id"]
                                             target_number, = target["invoice_no"]
-                                            read_only_numbers = {outcome["data"]["invoice_no"]
-                                                                 for _, outcome in scoped_reads} - {target_number}
+                                            read_only_numbers = set(scoped_edit["read_scope"]["invoice_no"]) - {target_number}
                                             excluded = {invoice.upper() for invoice in proposal["excluded_invoice_ids"]}
                                             if (not selection or selection[0] != ((target_company, target_number),)
                                                     or any(target[key] != [proposal[key]] for key in ("field", "new_value"))

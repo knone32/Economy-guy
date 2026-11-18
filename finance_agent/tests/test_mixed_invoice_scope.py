@@ -307,6 +307,8 @@ class MixedInvoiceScopeTests(unittest.IsolatedAsyncioTestCase):
                 "role": "assistant", "content": json.dumps({"kind": "information", "text": "暂不提出修改"})}),
             ("wrong field", mixed_model(company="C001", keys=("F010",), target="F010",
                                         field="purpose", value=B_VALUE)),
+            ("wrong target", mixed_model(company="C001", keys=("F005", "F010"), target="F005",
+                                         value=B_VALUE)),
         ):
             with self.subTest(label=label):
                 agent = self.agent(question_model("C001", ("F005", "F010")))
@@ -324,6 +326,20 @@ class MixedInvoiceScopeTests(unittest.IsolatedAsyncioTestCase):
         agent.ask(AMBIGUOUS_CHOICE)
         self.assertNotIn("invoice_change", agent.last_response)
         self.assertIsNone(agent.pending_intent)
+        self.assertEqual(agent.last_response["execution"]["model_requests"], 2)
+        self.assertEqual(snapshot(self.path), before)
+
+    def test_model_can_reread_candidates_but_only_propose_the_selected_invoice(self):
+        before = snapshot(self.path)
+        agent = self.agent(question_model("C001", ("F005", "F010")))
+        agent.ask(AMBIGUOUS_CHOICE)
+        agent.model = b_paraphrase_model()
+        agent.ask("就 F010 那张吧")
+        change = agent.last_response["invoice_change"]
+        self.assertEqual((change["company_id"], change["invoice_nos"], change["field"], change["new_value"]),
+                         ("C001", ("F010",), "remark", B_VALUE))
+        reads = [outcome for name, outcome in agent.last_response["tool_results"] if name == "get_invoice"]
+        self.assertEqual({outcome["data"]["invoice_no"] for outcome in reads}, {"F005", "F010"})
         self.assertEqual(agent.last_response["execution"]["model_requests"], 2)
         self.assertEqual(snapshot(self.path), before)
 
