@@ -375,7 +375,7 @@ def invoice_change_boundary(text, field, new_value, *, rule_field=None):
         return False
     quotes = tuple(_QUOTED_TEXT.finditer(text))
     literal = re.escape(new_value)
-    value = rf'(?:“{literal}”|‘{literal}’|"{literal}"|「{literal}」|『{literal}』|{literal})(?=$|[\s，,。；;！!])'
+    value = rf'(?:“{literal}”|‘{literal}’|"{literal}"|「{literal}」|『{literal}』|{literal}(?=$|[\s，,。；;！!]))'
     return any(not any(q.start() <= match.start() and match.end() <= q.end()
                        and q[0][1:-1] != new_value for q in quotes)
                for match in re.finditer(value, text))
