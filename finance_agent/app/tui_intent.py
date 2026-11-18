@@ -65,6 +65,7 @@ _EXCLUDED = re.compile(
 _FIELD_NAMES = {"purpose": "用途", "remark": "备注"}
 _HYPOTHETICAL = re.compile(r"^\s*(?:如果|假如|假设|例如|怎样|如何|能否|能不能)")
 _NEGATED_EDIT = re.compile(r"不|别|禁止|无需")
+_QUOTED_TEXT = re.compile(r'“[^”\r\n]*”|‘[^’\r\n]*’|「[^」\r\n]*」|『[^』\r\n]*』|"[^"\r\n]*"')
 
 
 _EDIT_ACTION = r"[改填补设写换]"
@@ -72,8 +73,9 @@ _EDIT_ACTION = r"[改填补设写换]"
 
 def invoice_intent_source(text):
     """Only explicit edit language may leave a read-only continuation clue."""
+    action_text = _QUOTED_TEXT.sub("值", text)
     return (not _HYPOTHETICAL.match(text) and re.search(r"发票|(?<![A-Za-z0-9])F\d+|这张|那张|(?:把|将)\s*[它他]", text, re.I)
-            and re.search(rf"{_EDIT_ACTION}[^，,。；;\n]{{0,2}}[为成]\s*\S|改一下|^\s*修改|(?:用途|备注)\s*修改\s*[。！!]?$", text))
+            and re.search(rf"{_EDIT_ACTION}[^，,。；;\n]{{0,2}}[为成]\s*\S|改一下|^\s*修改|(?:用途|备注)\s*修改\s*[。！!]?$", action_text))
 
 
 def literal_single_invoice_edit(text, *, reference=None, allow_deictic=False):
@@ -334,7 +336,11 @@ def invoice_change_evidence(text, field, new_value, *, rule_field=None):
 
     literal = re.escape(new_value)
     value = rf'(?:“{literal}”|‘{literal}’|"{literal}"|「{literal}」|『{literal}』|{literal})'
+    quotes = tuple(_QUOTED_TEXT.finditer(text))
     for match in re.finditer(rf"{value}(?=$|[\s，,。；;！!])", text):
+        if any(quote.start() <= match.start() and match.end() <= quote.end()
+               and quote[0][1:-1] != new_value for quote in quotes):
+            continue
         clause = re.split(r"[，,。；;\n]", text[:match.start()])[-1]
         if re.search(r"不要|别|禁止|不许|无需|不必", clause):
             continue
