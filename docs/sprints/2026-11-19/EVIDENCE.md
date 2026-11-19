@@ -88,3 +88,11 @@
 - root独立终审evidence-stage4/ROOT-FINAL-BUSINESS-AUDIT.json跨新连接SQL/快照/seed同、audit0、46封条无变、3连续官方请求31644tokens一致。ROOT-INTERFACE-AUDIT.json直接从原trace核唯一extra company_id/无缺required、fresh selection为本轮真实get_invoice返回；新5253与旧ae源哈希及旧round3 39文件相同。旧全保护同时见C FINAL-VERIFICATION。
 - 新独立预算evidence-stage4/BUDGET-CLOSED.json封3/31644，剩5/88356不续用，无guard/未知usage，旧三账不动。C辅助评分写盘路径笔误HARNESS-NOTES透明记录，独立判断及DB核验先于continue，未重放或改标准。
 - 当前结果与工程决策RESULT-stage4.md、NEXT-DECISION-stage4.md：高层动作入口局部有效，但当前双模式接口仍参数协议失败；停止候选晋级。证据不支持大规模改核心，先定清业务参数与执行引用责任；不自动第五轮相同实验或写入链，不合main/推送。
+
+## 架构职责纠偏（用户明确新授权）
+
+- 决策ARCHITECTURE-DECISION.md逐项A/B比较和四类首错，不推断整架构错误。主会话直接business-ownership实施；A仅独立窄审来源/权限，C冻结后独立验收，不并行重复扫仓。
+- 实施97d6ccef279eab2e817df6ba2cf73f8c88a15829已集成c9b8948398e4e194e0e02bf226ac3d8158db43f6；新增一致单票change_invoice业务入口，Runtime拥有pending/来源继承/fresh证据/内部proof并调用原plan/预览底座。旧批量规则完整合同保留、S4 request分支退休，不静默删多余字段。runtime读取独立trace不是modelcall。
+- 程序evidence-business/final-checks.log35/35；旧request线协议retired-wire-contract.log7项2fail2error保留。首导入NameError与preview测试callback参数错误均保留first-contract/core-after-import日志，修正后实际原preview函数取消无写；若干相对日志路径错未执行测试，不计通过。所有脚本测试不计NLU。
+- A窄审发现重复trusted known仍要求当前原话重证，机制修为状态来源继承（包含空值），当前字段/明确字面冲突拒；不匹配新请求源的自由企业/票/字段新值仍拒。现actor/book、fresh日期、实际ACL、原正式preview/确认链未见直接绕过；不宣称任意NL语义已证。
+- 冻结frozen-runtime-business c9b8948，business-acceptance/FREEZE.json锁正式source/依赖/profile/fixture/driver，随后才C两新目标→独立SQLite→表达seal。新独立授权12/180000/max2048，旧四账全关不动；C只reject，实际人工确认方可后续写审计回读。

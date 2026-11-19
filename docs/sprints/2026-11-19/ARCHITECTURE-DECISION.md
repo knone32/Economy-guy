@@ -29,3 +29,13 @@ D：S4A request→合法pending成功；补目标fresh正确，propose多company
 权限/企业隔离/当前actor/book/原文field-value来源/明确对象/正式preview/人工确认/事务/审计/幂等/回读不得变；模型没有提交入口。冲突先拒或追问，不按问句添词表。
 
 当前起点业务SHA5253deea95fbc8090fb4253d6f5ffce8318f7fb3，控制f1a97b0，独立business-ownership主会话直接实现，尚未冻结/无新Live。预算用户新授权12请求/180000total/输出2048，旧封账不动。先公开Trace机制及必要正反例，再冻结、C两个独立新表达；只有真preview通过且真人实际操作确认才能验写，不允许自动批准。若再次出现职责冲突先停定位，不自动全仓重构或大型下一轮。
+
+## 实施后冻结状态
+
+已实现B：change_invoice只有company_id/invoice_no/year/month/field/new_value，一套业务参数在两轮保持一致，未知项省略。Runtime状态保存业务来源；后续仅票号或重复known均可，实际fresh读生成执行证据，服务端BoundIntent只从验证后数据建立，再用原plan和Workbench预览。内部读取以business.invoice_read标记，不伪造成模型ToolCall。旧propose保留完整批量/规则合同；第四阶段action=request已明确退休，避免两个不完整办理入口竞争。非法参数仍拒，不删键。
+
+独立窄审确认known重复曾要求当前重证，现改为继承已验证字段/值来源，当前字段或明确字面内容冲突拒；初始字段/值来源不凭任意读取建立。唯一字段与字面值不要求同分句，多字段仍保留已有来源角色校验。未证明任意未加引号的自然语言更正都被理解，须Live评分。
+
+程序验证：evidence-business/final-checks.log相关35/35，含新完整业务API正式preview取消无写、冲突来源/ACL/日期、原事实与复杂SQL选集正常/缺票保护。旧request 7检查2fail2error原样保留retired-wire-contract.log，不计新能力通过。首次导入NameError、测试callback签名错误及相对日志路径错误保留既有日志/记录，均非Live。无全仓审计/全量刷题。
+
+冻结候选c9b8948398e4e194e0e02bf226ac3d8158db43f6（实施97d6cce），独立frozen-runtime-business；business-acceptance/FREEZE.json锁source/profile/依赖/driver。C此后才生成两新目标/SQLite真值/表达。当前尚未证明Live预览，两场仅reject，真人确认后写入另阶段，不自动批准。比较SQL范围/末交付旧问题C未在本切片实施，不宣称四类问题全部解决。
