@@ -39,3 +39,11 @@ D：S4A request→合法pending成功；补目标fresh正确，propose多company
 程序验证：evidence-business/final-checks.log相关35/35，含新完整业务API正式preview取消无写、冲突来源/ACL/日期、原事实与复杂SQL选集正常/缺票保护。旧request 7检查2fail2error原样保留retired-wire-contract.log，不计新能力通过。首次导入NameError、测试callback签名错误及相对日志路径错误保留既有日志/记录，均非Live。无全仓审计/全量刷题。
 
 冻结候选c9b8948398e4e194e0e02bf226ac3d8158db43f6（实施97d6cce），独立frozen-runtime-business；business-acceptance/FREEZE.json锁source/profile/依赖/driver。C此后才生成两新目标/SQLite真值/表达。当前尚未证明Live预览，两场仅reject，真人确认后写入另阶段，不自动批准。比较SQL范围/末交付旧问题C未在本切片实施，不宣称四类问题全部解决。
+
+## C阶段与用户明确人工核验续接
+
+C两场已封存business-acceptance/MANIFEST.json64文件。第一场2轮真实模型业务动作→Runtime待补/fresh读取→正式Approval与SQLite匹配，record后仅reject，场景PASS。第二场2轮业务及Prepare正确，但Approval.on_mount #cancel NoMatches，原turn-2结果/actual body未保存，UI交付FAIL/最终STATE未测；不能从正确Prepare推preview成功，也不将未完成归NLU。独立root跨库SQL/seed/快照相同、audit0，C4请求32848tokens/无未知用量，原分不改。
+
+UI调度零API探针未复现，根因未定为产品或runner，未修改候选、未重跑第二挑战。用户随后明确授权“继续人工预览核验”，不计原挑战补分；business-human独立目录继承本轮C四请求前缀继续同12/180000总限，不动C封条。真实原生Workbench固定同c9源码，只增加挂载后只读记录器/预算守卫，没有Pilot/自动approve；登录/输入/确认由用户本人。只有实际预览独立核对正确后才可由用户决定确认。当前人工窗口已启动PID30188，尚未新增API或业务写入。
+
+computer-use技能禁止自动终端及认证对话框，故不使用UI自动输入登录或请求；该限制已链接告知用户，由真人操作，不将自动测试视为批准。所有原始server draft/实际挂载preview记录、用户输入Trace及真实DB/audit供核验。未完成之前不宣称整体门禁已过或提交成功。

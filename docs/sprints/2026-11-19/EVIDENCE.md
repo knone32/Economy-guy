@@ -96,3 +96,6 @@
 - 程序evidence-business/final-checks.log35/35；旧request线协议retired-wire-contract.log7项2fail2error保留。首导入NameError与preview测试callback参数错误均保留first-contract/core-after-import日志，修正后实际原preview函数取消无写；若干相对日志路径错未执行测试，不计通过。所有脚本测试不计NLU。
 - A窄审发现重复trusted known仍要求当前原话重证，机制修为状态来源继承（包含空值），当前字段/明确字面冲突拒；不匹配新请求源的自由企业/票/字段新值仍拒。现actor/book、fresh日期、实际ACL、原正式preview/确认链未见直接绕过；不宣称任意NL语义已证。
 - 冻结frozen-runtime-business c9b8948，business-acceptance/FREEZE.json锁正式source/依赖/profile/fixture/driver，随后才C两新目标→独立SQLite→表达seal。新独立授权12/180000/max2048，旧四账全关不动；C只reject，实际人工确认方可后续写审计回读。
+- C阶段business-acceptance/REPORT/SCORES/FAILURES/FINAL-VERIFICATION/MANIFEST64文件封存，首场正式preview通过，第二场模型/Runtime/Prepare正确但实际UI Approval.on_mount #cancel NoMatches（产品或runner根因未定），不计第二preview成功，不重跑。root evidence-business/ROOT-C-AUDIT.json跨新连接SQL/DB/snapshot/seed一致、业务/audit无写、4官方连续请求32848tokens与64封条相同；4输入实际均执行，不将STATE未测当输入未测。
+- UI-SCHEDULING-PROBE.json/log零模型调度探针未复现，不能据此宣称仅验收器bug。未改产品或C driver/分数。用户后续明确授权“继续人工预览核验”，与旧C挑战分开记。
+- business-human/授权+SESSION/LAUNCH固定同c9源、官方虚构新账簿、C4/32848不可变预算前缀，同本轮12/180000总限。manual_workbench.py真正app.run，无Pilot/自动approve；原Approval挂载后仅只读记录body/draft。PID30188窗口已启动，输入/登录/确认由用户本人（computer-use技能禁止自动终端/认证已告知）。原C封条/账本不修改。

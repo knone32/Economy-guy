@@ -1,9 +1,10 @@
 # 当前状态（仅主会话更新）
 
-- ARCH-2：主会话直接实现职责方案B并冻结，C两个独立新表达首次Live中。原四类证据与A/B比较/不可变安全边界见ARCHITECTURE-DECISION.md。
-- 最终业务候选c9b8948398e4e194e0e02bf226ac3d8158db43f6，frozen-runtime-business；实现97d6cce已集成。历史5253/ae/2430/0638/8d冻结、失败和四账本全保留，不合main/推送/生产操作。
-- 一致单票change_invoice：模型仅已知业务槽，不传action/selection/pending_id/mode/权限；Runtime所有pending/来源继承/fresh读取/内部引用/原plan/预览，旧复杂集合规则完整提案保留，旧action=request明确退休。Runtime-owned单票pending不再展示旧内部RPC/状态ID，不接受模型最终JSON改其生命周期。未知或授权参数拒，不删。
-- 相关程序35/35，新真实preview程序正例+源冲突/ACL/未确认无写+原事实/SQL选集保护。旧request接口7项2fail2error保留不算通过；无Mock自然语言成绩。
-- 独立窄审A已证known重复值重证问题，修为继承原可信来源，字段/明确字面冲突拒；预览再次程序通过。所有来源字面机制只使用既有标识/字段角色，不新增问句词表。
-- 本轮用户已新授权12请求/180000total/输出2048，business-acceptance/AUTHORIZATION.json。C仅两个新场景各最多2输入、只reject；真preview通过才准在用户实际操作确认下验证隔离账簿提交审计回读，模型/测试器不能批准。旧关闭账本不续花。
-- 下一步C首执/SQLite独立真值/实际UI验收，失败先判断职责边界不边看题边补。源码评分期间固定；无关能力不展开。C阶段封条原件保留，若人工阶段继续，另目录继承本轮用量前缀同总限，不改C封条。
+- ARCH-3 C首执已封存，用户明确续接真实原生人工预览核验中，不改C分数、不补跑、不模拟批准。实际目标是完成真实业务，不因UI故障立刻加协议补丁。
+- 冻结c9b8948398e4e194e0e02bf226ac3d8158db43f6，frozen-runtime-business，源不变；integration仅控制文档。历史各SHA/失败/四旧账不动，无合main/推送/生产操作。
+- 架构选择B一致单票业务参数、Runtime拥有来源继承/pending/fresh/执行引用，原批量规则/权限/事务确认复用；旧request/propose双模式退休。比较和四类证据见ARCHITECTURE-DECISION.md。
+- 程序35相关过，旧request 7项2fail2error保留；均非NLU。C两场4输入首执：3输入五维全过；第一场正式合法preview PASS，第二场Runtime事实/Prepare正确但Approval.on_mount #cancel NoMatches，UI交付FAIL/最终STATE未测，不能改判通过。C64文件封条及root SQL/DB/snapshot/audit0一致，4请求32848tokens。
+- UI异常根因未定产品或runner；零API调度probe未复现，保留证据，不修改冻结或选择性重试。用户另明确“继续人工预览核验”，原成绩保持，不算新题补分。
+- business-human实际原生窗口PID30188已启动，固定c9代码/虚构fixture/共享本轮预算。复制C只读4/32848前缀后独立写ledger（同12/180000总限，剩8/147152），当前尚0新增人工API。没有Pilot/自动点击或approve；只有实际用户操作按钮才可确认。
+- 技能禁止自动Terminal/登录，用户需在工作台登录U001、shared-flash、自行输入修改目标；出现实际预览先停，root从只读mounted preview及SQLite核对后再通知用户决定确认。已发异步进度问题待答，不把聊天回复当系统确认。
+- 下一步：观察用户实际预览/核对来源、old/new、企业票字段、无写→真人确认后核事务audit/readback→保持证据/结论。未观测不能宣称提交/持久化已证；若用户不能操作则明确人工阶段未验证，不能自动批准。
