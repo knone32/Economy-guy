@@ -50,3 +50,6 @@
 - 第二轮集成：B共享39f45及交付1b0f330、A意图9b7a35已分别cherry-pick，当前e68e12f43ff1c58e19c400f25c37a715dfb7c34f，尚未冻结。evidence-round2/ROOT-JOINT-CORE.log独立43/43仅程序契约；A/REPORT.md和B/REPORT.md含首红、最终相关检查及局限，均API0。
 - root集成负例发现字段来源误拼：evidence-round2/ROOT-FIELD-INHERITANCE-BEFORE.json与probe_field_inheritance.py保留pending旧remark+当前purpose新值却产生remark草稿，audit0；A处理兼容桥冲突，修正前不冻结。
 - 实际验收runner零API检查：evidence-round2/RESTART-RUNNER-CHECK.json，不同Python PID、同chat、索引[1,2]、无错误；仅基础设施，非真实业务/自然语言验收。原两进程probe及日志均保留。
+- 冻结前追加修正：A 0ab51d883b8e0ac4fd98fc9a3ef43551e0ca2e00与87c2ca1baff8f4479ecedac84b11b74d79fb4eb3由root集成为3ddda59/f0d918c；显式pending字段同样不允许跨字段来源拼值，预算收尾不越当前block。A/field-bundle-before/after/final.log、source-budget-before/final.log保留首红及正反结果。B/budget-cross-before.json独立证实原extensions=1缺口；无新问句词表/正则。
+- root最终程序61/61：evidence-round2/ROOT-FINAL-CONTRACT.log，20意图状态契约、原核心事实/预算/架构、权限、确认失效、提交回执、未知提交、审计回滚、幂等相关。仍不是Live理解成绩，不将更宽既有错误改为PASS。
+- root字段首红独立复验：evidence-round2/ROOT-FIELD-INHERITANCE-AFTER.json及probe_field_inheritance_after.py，错误remark草稿拒绝、invoice_change null、audit0，BEFORE原件未覆盖。此后冻结并由C独立新题，不边评分边修。
