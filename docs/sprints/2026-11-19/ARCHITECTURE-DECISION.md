@@ -47,3 +47,5 @@ C两场已封存business-acceptance/MANIFEST.json64文件。第一场2轮真实�
 UI调度零API探针未复现，根因未定为产品或runner，未修改候选、未重跑第二挑战。用户随后明确授权“继续人工预览核验”，不计原挑战补分；business-human独立目录继承本轮C四请求前缀继续同12/180000总限，不动C封条。真实原生Workbench固定同c9源码，只增加挂载后只读记录器/预算守卫，没有Pilot/自动approve；登录/输入/确认由用户本人。只有实际预览独立核对正确后才可由用户决定确认。当前人工窗口已启动PID30188，尚未新增API或业务写入。
 
 computer-use技能禁止自动终端及认证对话框，故不使用UI自动输入登录或请求；该限制已链接告知用户，由真人操作，不将自动测试视为批准。所有原始server draft/实际挂载preview记录、用户输入Trace及真实DB/audit供核验。未完成之前不宣称整体门禁已过或提交成功。
+
+人工阶段启动更正：初始PID30188只是进程成功，未验证可见窗口；MainWindowHandle0、无SessionStore、无新增API，不能将其报告为已打开真实窗口。验证命令行/预算/空会话后仅停止自己的空闲进程，所有fixture/日志保留。新增START-HERE.cmd由用户桌面双击直接启动；manual_workbench只在明确idle restart且业务表未变/无已登录会话/无新增API时允许复用初始fixture，不重放已执行业务。当前等待用户操作，人工预览/确认/提交均未观察。RESULT-business.md和NEXT-DECISION-business.md为真实当前结论，不是完整链已通过。

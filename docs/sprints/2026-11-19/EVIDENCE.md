@@ -99,3 +99,4 @@
 - C阶段business-acceptance/REPORT/SCORES/FAILURES/FINAL-VERIFICATION/MANIFEST64文件封存，首场正式preview通过，第二场模型/Runtime/Prepare正确但实际UI Approval.on_mount #cancel NoMatches（产品或runner根因未定），不计第二preview成功，不重跑。root evidence-business/ROOT-C-AUDIT.json跨新连接SQL/DB/snapshot/seed一致、业务/audit无写、4官方连续请求32848tokens与64封条相同；4输入实际均执行，不将STATE未测当输入未测。
 - UI-SCHEDULING-PROBE.json/log零模型调度探针未复现，不能据此宣称仅验收器bug。未改产品或C driver/分数。用户后续明确授权“继续人工预览核验”，与旧C挑战分开记。
 - business-human/授权+SESSION/LAUNCH固定同c9源、官方虚构新账簿、C4/32848不可变预算前缀，同本轮12/180000总限。manual_workbench.py真正app.run，无Pilot/自动approve；原Approval挂载后仅只读记录body/draft。PID30188窗口已启动，输入/登录/确认由用户本人（computer-use技能禁止自动终端/认证已告知）。原C封条/账本不修改。
+- 人工启动更正：无可见窗口/无登录/无新增API的自有空闲PID30188已停止，SESSION-attempt1与before-attempt1及IDLE-RESTART-ALLOWED保留；START-HERE.cmd供用户真实桌面直接双击。人工当前仍0新增，未发生preview/确认/提交。RESULT-business.md与NEXT-DECISION-business.md、BUDGET-STATE.json记录等待真人状态，开放的是同一次12/180000授权，不关闭后又重置。
