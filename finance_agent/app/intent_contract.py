@@ -24,6 +24,11 @@ READ_TOOLS = frozenset({'get_invoice','query_business_sql','get_finance_summary'
     'list_annual_blank_purpose','invoice_total','bank_income_total','bank_expense_total','summary'})
 
 
+def _field_origins(plain):
+    """Conservative controlled-slot conflict gate, not an action classifier."""
+    return {field for field, labels in FIELD_LABELS.items() if any(label in plain for label in labels)}
+
+
 class IntentContractError(ValueError):
     def __init__(self, message, *, status='AMBIGUOUS', slot=None):
         super().__init__(message)
@@ -108,6 +113,7 @@ def validate(raw, *, actor, book, request, turn_id, pending=None, anchor=None):
         raise IntentContractError('意图候选每个参数必须有对应来源。', status='INVALID_ARGUMENTS')
     named = request_scope(request, include_update_aliases=True)
     plain = _QUOTED_DATA.sub(' ', request)
+    current_fields = _field_origins(plain)
     for slot, value in target.items():
         source = sources[slot]
         if (type(source) is not dict or type(source.get('kind')) is not str
@@ -140,6 +146,9 @@ def validate(raw, *, actor, book, request, turn_id, pending=None, anchor=None):
                 raise IntentContractError('候选参数不是已知待补内容。', slot=slot)
             if slot in SCOPE_KEYS and named.get(slot) and value not in named[slot]:
                 raise IntentContractError('待补内容与本轮更正冲突。', status='SCOPE_MISMATCH', slot=slot)
+            if slot == 'field' and current_fields and current_fields != {value}:
+                raise IntentContractError('本轮字段来源不唯一或与旧字段不同，不能借旧字段绑定当前新值。',
+                                          status='SCOPE_MISMATCH', slot=slot)
         elif kind == 'anchor':
             if (set(source) != {'kind'} or slot not in SCOPE_KEYS or not isinstance(anchor, ScopeProof)
                     or anchor.actor != actor or anchor.sources.get(slot) not in SOURCES
@@ -184,7 +193,7 @@ def infer_proposal(proposal, selection, *, pending, actor, book, request, turn_i
               'field':proposal['field'],'new_value':proposal['new_value']}
     named = request_scope(request, include_update_aliases=True)
     plain = _QUOTED_DATA.sub(' ', request)
-    current_fields = {field for field, labels in FIELD_LABELS.items() if any(label in plain for label in labels)}
+    current_fields = _field_origins(plain)
     if current_fields and current_fields != {proposal['field']}:
         # The optional compatibility bridge cannot assign a new current value
         # to an old field when this request names another/ambiguous field.

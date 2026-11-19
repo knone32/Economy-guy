@@ -375,6 +375,49 @@ class ModelIntentTests(unittest.TestCase):
         self.assertEqual(agent.pending_intent['change']['field'],['purpose'])
         self.assertEqual(self.rows()[1],0)
 
+    def test_explicit_intent_cannot_inherit_a_field_conflicting_with_current_field_source(self):
+        agent=self.pending_agent(prior_field='remark',prior_value='原文字',complete=False)
+        pending_id=agent.pending_intent['request_id']
+        target={'company_id':'C002','year':2026,'month':9,'invoice_no':'F008','field':'remark','new_value':'新用途'}
+        sources={k:{'kind':'pending'} for k in ('company_id','year','month','field')}
+        sources.update(invoice_no={'kind':'current','text':'F008'},new_value={'kind':'current','text':'新用途'})
+        intent={'action':'amend','pending_request_id':pending_id,'target':target,'sources':sources}
+        phase=0
+        def model(messages,tools):
+            nonlocal phase
+            phase+=1
+            if phase==1:
+                return call('get_invoice',{'company_id':'C002','invoice_no':'F008'},
+                            content=json.dumps({'intent':intent},ensure_ascii=False))
+            read=next(json.loads(m['content']) for m in reversed(messages) if m['role']=='tool')
+            return call('propose_invoice_changes',{'selection_id':read['data']['selection_id'],
+                'field':'remark','new_value':'新用途','mode':'item','excluded_invoice_ids':[],
+                'pending_request_id':pending_id})
+        agent.model=model
+        agent.ask('选F008，这次明确改用途为“新用途”，只做草稿。')
+        self.assertIsNone(agent.last_response.get('invoice_change'))
+        self.assertEqual(agent.pending_intent['change']['new_value'],['原文字'])
+        self.assertEqual(self.rows()[1],0)
+
+    def test_budget_close_cannot_renew_a_fully_used_request_block(self):
+        phase=0
+        def model(messages,tools):
+            nonlocal phase
+            phase+=1
+            if phase==1:
+                return call('query_business_sql',{'sql':'SELECT invoice_no FROM invoices ORDER BY invoice_no LIMIT 1'},ident='first-sql')
+            if phase==2:
+                return call('query_business_sql',{'sql':'SELECT invoice_no FROM invoices ORDER BY invoice_no DESC LIMIT 1'},ident='second-sql')
+            if phase==3:
+                raise BudgetExceeded('token_reservation',remaining_tokens=45005,reserved_tokens=52734)
+            return final()
+        agent=Agent('U001',self.book,model,mode='mock',trace_path=self.book.with_suffix('.jsonl'))
+        answer=agent.ask('甲企业2026年9月，核对两种不同筛选得到的票号。')
+        self.assertEqual(phase,3)
+        self.assertEqual(agent.last_response['execution']['extensions'],0)
+        self.assertEqual(agent.last_response['execution']['block_limit'],3)
+        self.assertIn('预算受限',answer)
+
     def test_current_span_read_candidate_can_normalize_without_new_wordlist(self):
         intent = {'action':'read','target':{'company_id':'C002','year':2026,'month':9},
             'sources':{'company_id':{'kind':'current','text':'乙这本账'},

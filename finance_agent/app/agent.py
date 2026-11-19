@@ -1923,7 +1923,8 @@ class Agent:
                                    and r.get('evidence',{}).get('source') == 'current_sqlite'
                                    for _,r in read_results)
                 if (error.reason == 'token_reservation' and error.before_http and actual_reads
-                        and not budget_close_used and execution.model_requests < execution.policy.max_requests
+                        and not budget_close_used
+                        and execution.model_requests < min(execution.block_limit, execution.policy.max_requests)
                         and index + 1 < self.max_requests):
                     budget_close_used = budget_close_active = True
                     self.trace('budget.close_requested', {'tools_allowed':False,'adds_budget':False,
