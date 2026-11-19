@@ -1,0 +1,15 @@
+# 证据索引
+
+所有相对路径以 C:/Users/Lenovo/Documents/ChatGPT/economyguy 为根。原始 Trace/SQLite/密钥不得提交；以下只索引既存证据，历史结果不算新候选当前通过。
+
+- 基线：github-main-publish-20261119，HEAD 8d70924a9871a0f44ec5149fb68ccf7531706546；E:/beside HEAD 3111bd7f84e249590f77482874f98e51561f46a5；两者本轮初查均干净。实际已运行进程加载版本仍未知，新验收用明确启动路径。
+- 既存综合调查：baseline-audit-20261119-8d70924/AUDIT-REPORT.md；A/CAPABILITY-MATRIX.json；B/FAILURE-CHAINS.json（若存在以实际路径为准，不重复全面扫描）。
+- 公开业务矩阵：BUSINESS-INTENT-MATRIX.md；历史 D02/D03/D05/D08/D10 相关报告由 A 定向定位。
+- R1/U06 原始 Live：route1-targeted-repair-20261119/revision3/live/fixed/U06/trace.jsonl，首次date排序偏离，后正确SQL被UNKNOWN证据拒收。
+- R2/R3 原脚本控制：route1-targeted-repair-20261119/revision3/guard-controls/；只证明程序错误放行，不是真实NLU成绩。
+- 上轮完整结论：reliability-v2-20261119/REPORT.md；A/REPORT.md、A/DIFF-REVIEW.md、B/REPORT.md、C/REPORT.md、C/SCORES.json、C/FINAL-AUDIT.json。
+- 上轮候选：4a718b94050136f1ad508e0544fbe25f29b89e7f，公开核心23/23；全量722项163失败27错误；同环境基线714项187失败27错误；不重跑无关全量，失败差异见B/full-diff.json。
+- 上轮真实新题：19物理请求/153070 total_tokens；12输入完整6、正确追问/拒绝2、失败4。全部已公开成为回归，不能作本轮隐藏题重复计分。
+- 最新公开失败：G1b输出顺序丢失；G3第3轮正确终止答复被抹；G4第1轮冲突范围模型误合并（安全阻断）；G5a引用中的唯一票号被可信来源移除。原始calls/最终回复/数据库见上轮C/live对应目录。
+- 上轮真值记录勘误：C/ORACLE-RECORDING-ERRATUM.md、ROOT-LIVE-AUDIT.json；G1原查询记录因字典引用混入银行列，独立SQL值一致，封存原件/成绩未改。本轮须避免共享可变对象污染独立真值记录。
+- 本轮环境、测试、修改、冻结和Live证据：待主会话按阶段追加到本索引；新产物保存 model-first-20261119/evidence/，不混改历史目录。
