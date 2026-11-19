@@ -61,11 +61,10 @@ def transition(previous, event, *, actor, book, current_id, current_request,
     if action in {'create', 'replace'} and not patch:
         raise PendingTransitionError('explicit_candidate_scope_required')
     # Retain unambiguous user-sourced owner/date slots on initial creation;
-    # identities still require a declared candidate set, never the read set.
+    # An unresolved invoice stays unbound. Mentions and read results are not
+    # selected candidates; a later explicit target still needs a fresh read.
     scope = dict(prior) if previous else {k: deepcopy(v) for k, v in current_scope.items()
         if k != 'invoice_no' and len(v) == 1}
-    if action == 'create' and current_scope.get('invoice_no') and 'invoice_no' not in patch:
-        raise PendingTransitionError('explicit_invoice_candidates_required')
     for key, values in patch.items():
         if type(values) is not list or not values:
             raise PendingTransitionError('scope_slots_require_nonempty_lists')
