@@ -27,14 +27,14 @@ YEAR = {"company_id": "string", "year": "integer"}
 MONTH = {**YEAR, "month": "integer"}
 DIRECTORY_SORT_FIELDS = {"sort_by": ("date", "amount", "invoice_no"), "sort_order": ("asc", "desc")}
 OPTIONAL_FIELDS = {
-    "change_invoice": {"company_id", "invoice_no", "year", "month", "field", "new_value"},
+    "change_invoice": {"company_id", "invoice_no", "year", "month", "field", "new_value", "relation", "value_ref"},
     "list_bank_transactions": {"direction"},
     "list_invoice_directory": DIRECTORY_SORT_FIELDS.keys(),
     "check_missing_purpose": {"rule_business_date"},
     "propose_invoice_changes": {"rule_business_date", "target_year", "target_month", "rule_cohort", "write_scope", "pending_request_id"},
 }
 REGISTRY = {
-    "change_invoice": (None, {"company_id":"string", "invoice_no":"string", "year":"integer", "month":"integer", "field":"string", "new_value":"string"}),
+    "change_invoice": (None, {"company_id":"string", "invoice_no":"string", "year":"integer", "month":"integer", "field":"string", "new_value":"string", "relation":"string", "value_ref":"string"}),
     "query_business_sql": (None, {"sql": "string"}),
     "list_invoices": (queries.list_invoices, MONTH),
     "list_invoice_directory": (queries.invoice_directory, {**MONTH, "page": "integer", "sort_by": "string", "sort_order": "string"}),
@@ -101,7 +101,9 @@ DESCRIPTIONS = {
     "resolve_recent_invoice":"只读解析用户本轮语义明确指向的近期发票来源，并重新鉴权读取当前值。modified 指已核验的实际提交，queried 指已核验的详情查询。来源不明先追问。",
     "set_schedule":"仅真正多步依赖时提出本轮粗计划；不是长期任务或授权。再次调用为一次显式重规划，不创造进展或预算。简单查询直接调用业务工具。",
 }
-PARAMETERS = {"sql":"单条 SELECT 或只读 WITH 查询。严格遵守运行时给出的企业、账期与投影字段。",
+PARAMETERS = {"relation":"本次要求与上一办理的业务关系，不是权限或内部状态。",
+              "value_ref":"本次填写内容的语义来源，由系统验证实际出处。",
+              "sql":"单条 SELECT 或只读 WITH 查询。严格遵守运行时给出的企业、账期与投影字段。",
               "company_id":"企业编号，例如C001；不能凭空猜测。", "year":"明确的业务年份。",
               "month":"业务月份，1到12。", "page":"目录页码，从1开始。",
               "selector":"要统计的发票字段条件。",
@@ -147,7 +149,13 @@ for tool in TOOLS:
     if tool["function"]["name"] == "prepare_invoice_update":
         tool["function"]["parameters"]["properties"]["field"]["enum"] = ["purpose", "remark"]
     if tool["function"]["name"] == "change_invoice":
+        tool['function']['description'] += ' 更正字段/内容由模型判断，系统不按标点关联；撤销重定义用relation=replace，关系未确定用clarify。沿用同字段值直接省略new_value；显式提供历史内容或换字段沿用旧值须value_ref=previous。'
         tool['function']['parameters']['properties']['field']['enum'] = ['purpose', 'remark']
+        tool['function']['parameters']['properties']['new_value']['description'] = '当前用户原话中的确切内容；沿用同字段有效待补值时省略。显式提供历史内容或换字段沿用旧值须value_ref=previous。清空须value_ref=clear。不能从读取结果或转述自行形成修改。'
+        tool['function']['parameters']['properties']['relation'].update(enum=['update','replace','clarify'],
+            description='业务关系：默认update补充/更正当前办理；replace明确撤销旧要求并重新定义（未知新内容可省略）；clarify表示多组字段/内容或替换关系未确定，先追问。不是权限或生命周期状态。')
+        tool['function']['parameters']['properties']['value_ref'].update(enum=['auto','previous','clear'],
+            description='默认auto核当前原文，未传new_value才继承同字段有效待补值；previous明确沿用上一有效填写内容，可用于换字段；clear明确请求清空。只声明业务语义，系统核来源并预览，不能授权提交。')
     if tool["function"]["name"] == "propose_invoice_changes":
         fields = tool["function"]["parameters"]["properties"]
         fields["field"]["enum"] = ["purpose", "remark"]

@@ -126,7 +126,8 @@ SYSTEM += """
 单张发票修改只用change_invoice表达业务动作及已知参数。对象未知也应主动调用，由系统保存已知信息并明确追问；后续补充或更正仍用相同参数，可只补invoice_no。系统继承可信业务状态、校验权限、fresh读取并组织正式预览，模型不用传selection_id、pending_id、action、mode、确认、生命周期事件，也不需要先查后转述。
 只读查询不建立修改事项。含糊对象不能猜选；业务参数不是授权，只有正式界面可接受用户确认。不能从正文自称保存推导状态。新值精确照录用户原话；缺项省略，不能填猜测值。不能把读取集合变修改集合。
 propose_invoice_changes保留给批量/规则/复杂选集及兼容调用；其selection引用只属于该高级选集接口。单张业务不得在两种接口之间切换。
-当前单票办理的known和missing_fields是系统已核验业务数据，不是模型要维护的状态机。不要在最终JSON另写pending/pending_change或amend意图。终止当前未提交事项可用turn_action=stop，不撤销历史事务。
+当前单票办理的known是系统保存的来源可追溯业务候选，不代表已执行或已授权；missing_fields由系统计算，不是模型要维护的状态机。不要在最终JSON另写pending/pending_change或amend意图。终止当前未提交事项可用turn_action=stop，不撤销历史事务。
+更正关系由你判断：change_invoice默认relation=update补充当前办理；用户撤销旧要求重新定义时用replace，未确定字段和内容的对应关系时用clarify，不代选。field只表示当前要修改的字段，保留不动的字段不传。新内容照录当前原话；沿用上一有效内容可省略new_value，同字段由系统继承；换字段沿用旧内容或显式重传历史值须value_ref=previous。明确清空用value_ref=clear；字段变更不自动串用旧值。系统验证原文/有效待补来源，不以标点、词序判断语义；这些动作均不授予写入许可。
 查询最终JSON使用kind/text/answer，answer只引用本轮有指标/范围/单位的事实或已支持的compare/subtract。未知事实不能声称已验证，未完成不能声称完成。
 只读规范化可继续使用intent={action:"read",target:{company_id,year,month,invoice_no?},sources:{各槽:{kind:"current",text:原话}}}，仅供读取，不成为写许可。已有可信参数无需额外声明。
 """
@@ -2460,13 +2461,22 @@ class Agent:
                                     result, next_pending, planned, runtime_reads = execute_invoice_action(
                                         self, business_args, active_pending, current_request)
                                     read_results.extend(runtime_reads)
-                                    if result['status'] in {'WAITING_USER','WAITING_CONFIRMATION'}:
+                                    if (result['status'] in {'WAITING_USER','WAITING_CONFIRMATION'}
+                                            or result.get('evidence',{}).get('business_state_updated')):
                                         self.pending_intent = active_pending = next_pending
                                         explicit_pending_applied = True
                                         invoice_change = planned
                                         self.trace('business.state', {'pending':next_pending,'preview':bool(planned)})
                             except (TypeError,ValueError):
-                                result = tool_result('INVALID_ARGUMENTS', error='单票业务参数无效；内部引用和授权参数不属于此接口。')
+                                from .business_sources import suspend
+                                if self.user_id == actor:
+                                    self.pending_intent = active_pending = suspend(active_pending,current_request,
+                                        self.trace_id,actor=actor,book=self.db_path,reason='invalid_business_request')
+                                    explicit_pending_applied = True
+                                result = tool_result('INVALID_ARGUMENTS',
+                                    error='这次修改要求尚未核实，请明确目标、修改字段和新内容；尚未提交。',
+                                    evidence={'source':'harness_business_action',
+                                        'user_message':'这次修改要求尚未核实，请明确目标、修改字段和新内容；之前候选暂不继续，尚未提交。'})
                         elif fn.get("name") == "propose_invoice_changes":
                             try:
                                 proposal = validate_arguments("propose_invoice_changes", fn.get("arguments"))
@@ -2675,6 +2685,11 @@ class Agent:
                 self.messages.append(message)
                 self.trace("tool_result", {"request": call, "result": result})
             if stop:
+                if (stop_result and stop_result.get('evidence',{}).get('source') == 'harness_business_action'
+                        and stop_result['evidence'].get('user_message')):
+                    notice = stop_result['evidence']['user_message']
+                    return finish(notice,category='clarification',chat_notice=notice,
+                        missing_fields=stop_result['evidence'].get('missing_fields',()))
                 if ask_after_plan:
                     return ask_summary_period()
                 if (read_only and reference_context is None and read_results and

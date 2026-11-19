@@ -140,6 +140,9 @@ def request_change(args, previous, *, actor, book, current_id, current_request,
     Model supplies business slots only. Runtime owns identity, request ID and
     missing slots. Invoice mentions/read sets never become target candidates.
     """
+    if business_continuation:
+        from .business_sources import bind_request
+        return bind_request(args,previous,actor=actor,book=book,current_id=current_id,current_request=current_request)
     from contextlib import closing
     from .responses import request_scope, _QUOTED_DATA
     from .intent_contract import FIELD_LABELS, _field_origins

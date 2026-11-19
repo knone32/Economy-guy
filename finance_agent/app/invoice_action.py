@@ -35,32 +35,48 @@ def change_invoice(agent, args, previous, request):
         candidate = request_change(internal_args, previous, actor=agent.user_id, book=agent.db_path,
             current_id=agent.trace_id, current_request=request, business_continuation=True)
     except PendingTransitionError as error:
-        return tool_result(getattr(error, 'status', 'SCOPE_MISMATCH'), error=str(error)), previous, None, []
+        return tool_result(getattr(error, 'status', 'SCOPE_MISMATCH'), error=str(error), evidence={
+            'source':'harness_business_action','user_message':str(error),
+            'reason':getattr(error,'reason','source_or_identity'),
+            'business_state_updated':getattr(error,'state_updated',False),
+            'business_authorization':False}), getattr(error,'pending_state',previous), None, []
     candidate['business_action'] = 'single_invoice'
+    def stopped(status, message, reads=()):
+        # Binding a replacement takes effect even if fresh reading/planning
+        # later fails. Never return the superseded previous change.
+        return tool_result(status,error=message,evidence={
+            'source':'harness_business_action','user_message':message,
+            'business_state_updated':True,'business_authorization':False}), candidate, None, list(reads)
     known = public_state(candidate)['known']
     if any(key not in known for key in BUSINESS_KEYS):
+        question = ('请明确要修改的字段和对应内容，或确认是否替换上一要求；原要求暂不继续。'
+                    if candidate.get('blocked_reason') == 'ambiguous_business_choice' else None)
         return tool_result('WAITING_USER', data=public_state(candidate), evidence={
             'source':'harness_business_action', 'missing_fields':list(candidate['missing_fields']),
-            'business_authorization':False}), candidate, None, []
+            'user_message':question, 'business_authorization':False}), candidate, None, []
     if not agent.workbook_available():
-        return tool_result('ERROR', error='账簿身份已变化，未生成预览。'), previous, None, []
+        return stopped('ERROR','账簿身份已变化，未生成预览。')
     company, number = known['company_id'], known['invoice_no']
     try:
         with closing(open_existing(agent.db_path, readonly=True)) as db:
             row = get_invoice(db, agent.user_id, company, number)
     except (PermissionError, ValueError) as error:
-        return tool_result('DENIED', error=str(error)), previous, None, []
+        return stopped('DENIED','当前无法核验这张发票的访问权限，未生成预览。')
     except (OSError, sqlite3.Error):
-        return tool_result('ERROR', error='无法读取当前账簿，未生成预览。'), previous, None, []
+        return stopped('ERROR','无法读取当前账簿，未生成预览。')
     if row is None:
-        return tool_result('NO_DATA', error='明确指定的发票不存在，未选择替代对象。'), previous, None, []
+        candidate['scope'].pop('invoice_no',None)
+        candidate['missing_fields'] = ('invoice_no',)
+        return stopped('NO_DATA','明确指定的发票不存在，请核对票号；未选择替代对象。')
     day = date.fromisoformat(row['invoice_date'])
     scope = {'company_id':company, 'invoice_no':number, 'year':day.year, 'month':day.month}
     read = tool_result('SUCCESS', data=row, evidence={'source':'current_sqlite', 'scope':scope})
     agent.trace('business.invoice_read', {'arguments':{'company_id':company,'invoice_no':number}, 'result':read})
     reads = [('get_invoice', read)]
     if (day.year, day.month) != (known['year'], known['month']):
-        return tool_result('SCOPE_MISMATCH', error='实际发票账期与可信办理要求不一致。'), previous, None, reads
+        candidate['scope'].pop('invoice_no',None)
+        candidate['missing_fields'] = ('invoice_no',)
+        return stopped('SCOPE_MISMATCH','实际发票账期与本次办理要求不一致，请重新核对目标票号。',reads)
     # This witness is constructed by trusted runtime after request_change has
     # validated every supplied/inherited slot. It is never model-supplied data.
     witness = BoundIntent('amend', agent.user_id, str(agent.db_path), agent.trace_id,
@@ -80,4 +96,4 @@ def change_invoice(agent, args, previous, request):
     if planned:
         agent.trace('business.invoice_preview_candidate', {'candidate':planned})
         return result, None, planned, reads
-    return result, previous, None, reads
+    return stopped(status,error or '当前办理未能形成预览，请补充核对要求。',reads)

@@ -106,3 +106,11 @@
 - evidence-business/ROOT-LIVE2-AUDIT.json独立新连接SQL/各表快照/seed一致、业务/audit无写，66封条/官方ledger连续/9请求75122tokens一致；初次审计因新manifest键source_sha不叫candidate_sha而报元数据KeyError，修reader兼容后完成，不改原件。
 - ROOT-LIVE2-RESPONSIBILITY.json与replay_source_boundary.py零API原参数/原请求/pending重放：validate_arguments合法、invoice_change_boundary True、invoice_value_source False、pending_transition.py:211精确拒。源码未改、没改句/删键/模拟放行；是源层重复解析语义的职责残留，不能加词表/标点例外刷分。
 - 新增5/42274，累计同预算9/75122，剩3/104878，BUDGET-STATE.json开放但不自动新调用。旧C64文件/前4条及旧全封账不变。人工TESTING-LEASE保留禁止旧4前缀启动；未通知用户操作/未启动窗口/未模拟批准。RESULT-live2.md记录实际结果，不改写RESULT-business旧阶段。
+
+## 来源语义与待补一致性修复进行中
+- 原始证据继续引用evidence-business/ROOT-LIVE2-RESPONSIBILITY.json、business-live2原始Trace/FAILURES及66文件封条；不改原件。
+- 新工作树source-semantics从857309e建立；source-first.log/source-after-import.log保留初次工具描述KeyError导入失败，非Live。
+- 新付费调用0；程序与Live分开计证据，待正式路径验证后补索引。
+- 新证据evidence-source/PUBLIC-PATH.json、public-trace.jsonl、replay_public.py：重放原Live已公开工具参数，独立SQL查C002/F006，真实Prepare预览拒绝，各业务/运行表前后相同，原66文件封条复核相同。此为冻结前程序，不计NLU。
+- evidence-source/FINAL-CHECKS.log必要37项通过；FINAL-STATE-CHECK.log最终13项（含正式Workbench预览挂载/拒绝）通过。LEGACY-CHECKS.log旧8项6通过/1fail/1error保留。EXECUTION-NOTES.md记录导入描述错误、意外测试收集及日志覆盖缺失，不冒称完整证据。
+- 未新增自然语言正则/关键词/问句特判，来源模块为数据出处与状态约束。旧高级路径语言门禁未在本轮解除。新任务付费调用0，不续用旧剩余额度。

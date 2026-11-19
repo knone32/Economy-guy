@@ -1,10 +1,9 @@
 # 当前状态（仅主会话更新）
 
-- ARCH-5 用户要求的新Live与接口职责测验已完成；暂不发人工通知、不再API，不修改产品。产品SHA c9b8948398e4e194e0e02bf226ac3d8158db43f6固定，所有旧候选/失败/账本保留，无main合并/推送。
-- business-live2两新场景4输入均首执：连续办理FAIL（更正来源拒绝＋补票级联），只读语义对照PASS；全层2/4（合法待补/正确查询）。模型可观察业务槽正确，Schema参数合法；Runtime源层“同一原文业务分句”拒绝remark/季度交接待核，旧pending仍purpose/生产资料领用。后续source缺失是级联。
-- root原输入/原参数/原pending只读重放ROOT-LIVE2-RESPONSIBILITY：参数validate合法，invoice_change_boundary True，invoice_value_source False；pending_transition.py:211精确SCOPE_MISMATCH。字段和值都来自原话，分句位置形式成为第二NLU控制器；UI错误又误导核企业/账期。属于职责残留，不继续加句式/Schema补丁。
-- 预览/批准/提交0，所有DB业务/audit无写、无重大越权/错误事实/虚假成功放行。新runner Live没触达Mount，不能宣称旧NoMatches解决；只有零API就绪probe证据。接口职责程序14/14不算NLU。
-- C正式封business-live2 REPORT/SCORES/FAILURES/FINAL-VERIFICATION/MANIFEST66文件，root ROOT-LIVE2-AUDIT独立SQL/DB/snapshot/seed/封条/连续官方ledger/tokens一致。root审计初次manifest键名差异报错仅元数据未跑业务，改兼容source_sha读取后完成，未改C原件/分数。
-- 同一新架构授权12请求/180000tokens：本次新增5/42274，总9/75122，余3/104878，不追加/重置。旧C4/32848字节与ledger前4条保留，旧所有已闭账不动。
-- 人工尚无登录/输入/API/预览/确认。TESTING-LEASE更新为测试已结束但人工未放行，防旧human4/32848前缀启动分叉；以后人工必须先主控同步最新business-live2 ledger9/75122再解除租约，不自动开窗口或通知。用户当前只要求先测试。
-- 恢复：MISSION/STATE/EVIDENCE/ARCHITECTURE-DECISION，最新RESULT-live2.md，business-live2/FAILURES.json，evidence-business/ROOT-LIVE2-RESPONSIBILITY.json。候选不晋级；保持源码，不启动新的大型修复或其他功能。
+- 来源语义/待补一致性候选完成正式程序验证，正在冻结；独立分支sprint/2026-11-19-source-semantics，工作树source-semantics，原产品c9/控制857309e保留。完整冻结SHA以外部evidence-source/FREEZE.json和integration最新STATE为准，不合main/不推送。
+- 模型表达字段/替换/引用业务语义；Runtime追溯当前原文和有效同actor/book单票pending，管理superseded/on_hold、范围配对/ACL、fresh读取/预览。来源/后续读取失败均不恢复已撤销旧值；UI传具体安全失败原因。
+- 最终13项来源/状态/正式Workbench挂载拒绝验证通过；此前37必要契约通过，最后小修仅相关13项复验。公开3轮原参数已到正式预览，独立SQL及所有表快照一致，未提交/audit0。程序不等于NLU。
+- 旧8项6通过/1fail/1error保留，未改答案。无引用却显式重复历史值的旧调用会澄清（P1兼容性）；拒绝更正后保留旧值的旧断言与新目标冲突。不能宣称旧回归全绿。
+- 当前无严重越权/数据库写入回归证据；语义错配仍可能来自模型，来源存在不保证正确理解。高级旧路径语言门禁仍在，不宣称全仓修复。
+- 所有历史候选/Trace/预算封账保持。新任务付费0，无新授权，不用旧余额。人工租约仍不放行，无确认/提交。
+- 下一步：冻结候选/证据哈希；可在新预算下做少量冻结后Live，但模型采用新接口尚未证明且兼容性需评估，候选不晋级main，不扩展其他能力。
