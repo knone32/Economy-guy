@@ -28,4 +28,8 @@
 - 新验收运行与题/真值/分项评分/预算将只记录model-first-20261119/acceptance。root本轮尚不读新题；C不参与开发，仍共享存储所以不是严格隐藏盲测。
 - 可运行入口辅助：model-first-20261119/RUN-CANDIDATE.ps1 固定frozen-runtime源码、现有Python/deps、独立manual-runtime虚构数据库，绝不指向正式业务库；仅现有Textual工作台，无新GUI。LAUNCHER-CHECK.json记录CLI help和脚本解析通过，未实际启动手工UI/未发API，不能当真人启动验收。
 - C首轮已暂停待终审：acceptance/budget.json 14请求/124400tokens；权限拒绝文案与当前权限/成功读取矛盾触发保守停测。原始题/真值/Trace不改。一个多轮case首轮后stdin EOF，后3轮未测，保留原记录，不择优重跑；末提交case停止未测。最终五项与分类以C报告及root复核为准。
+- C首轮已结案：acceptance/REPORT.md、SCORES.json、FAILURES.json、FINAL-VERIFICATION.json、ARTIFACT-MANIFEST.json；8首执4合格4P1、4未测，实际preview/commit均0。所有题现为公开回归，不能再隐藏计分。
+- root独立重算与冻结复核：evidence/ROOT-ROUND1-AUDIT.json，oracle全部raw_sql_records新连接重算完全一致，tracked不变，14条账本连续/tokens124400一致。普通sandbox只读连接无权，已在同受审上下文完成；零模型/不改原题与成绩。
+- 迭代2限定建议：evidence/A/ITERATION2-REVIEW.md；实际diff复核待A交付；evidence/B/iteration2-core-final.log 30/30、iteration2-dependent.log 7/7为B报告待root集成核实。
+- 第二候选验收预登记/全局余额：acceptance-v2/PROTOCOL.md、evidence/ITERATION2-BUDGET-PLAN.json；2类最多4新输入，不增加授权。v2启动case必须PTY（root零API探针isatty=true）；旧14条ledger原样复制前缀，后续15起编号，全冲刺24/240000硬限。
 - 本轮环境、测试、修改、冻结和Live证据：主会话按阶段追加；新产物保存 model-first-20261119/evidence/，不混改历史目录。
