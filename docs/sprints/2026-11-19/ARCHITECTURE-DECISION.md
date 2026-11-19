@@ -49,3 +49,11 @@ UI调度零API探针未复现，根因未定为产品或runner，未修改候选
 computer-use技能禁止自动终端及认证对话框，故不使用UI自动输入登录或请求；该限制已链接告知用户，由真人操作，不将自动测试视为批准。所有原始server draft/实际挂载preview记录、用户输入Trace及真实DB/audit供核验。未完成之前不宣称整体门禁已过或提交成功。
 
 人工阶段启动更正：初始PID30188只是进程成功，未验证可见窗口；MainWindowHandle0、无SessionStore、无新增API，不能将其报告为已打开真实窗口。验证命令行/预算/空会话后仅停止自己的空闲进程，所有fixture/日志保留。新增START-HERE.cmd由用户桌面双击直接启动；manual_workbench只在明确idle restart且业务表未变/无已登录会话/无新增API时允许复用初始fixture，不重放已执行业务。当前等待用户操作，人工预览/确认/提交均未观察。RESULT-business.md和NEXT-DECISION-business.md为真实当前结论，不是完整链已通过。
+
+## 用户续接：先做新Live与接口职责测验
+
+用户明确要求暂不发人工通知，先再做一轮Live和接口职责测验。仍同c9产品冻结，不改源码；当前同一授权12/180000已用4/32848，未重置/加授权。人工未登录无新API，TESTING-LEASE防与测验并发读取旧前缀。business-live2从5追加，旧C和旧四账全部原样保留。
+
+新runner仅等待真实Approval Mount完成、两按钮存在且cancel聚焦后才保存/拒绝，依据本地Textual1.0实际代码顺序；零模型ready probe通过。这不是宣称原NoMatches仅runner或已修产品UI；原错误仍未定根因，旧分不改。C在新runner元数据冻结后才生成新目标/SQLite真值/表达：一场3轮实质更正后补目标预览，一场1轮相近词汇但真实只查询语义对照，最多4输入，不择优重跑。
+
+职责程序检查当前冻结8业务+4权限+2原选集保护=14/14（INTERFACE-CHECK.log），不计NLU。观测重点为业务参数/Runtime状态/来源及fresh职责，不是单纯通过数字。任务进行中，不自动调用approve/Commit或开启新修复。

@@ -100,3 +100,5 @@
 - UI-SCHEDULING-PROBE.json/log零模型调度探针未复现，不能据此宣称仅验收器bug。未改产品或C driver/分数。用户后续明确授权“继续人工预览核验”，与旧C挑战分开记。
 - business-human/授权+SESSION/LAUNCH固定同c9源、官方虚构新账簿、C4/32848不可变预算前缀，同本轮12/180000总限。manual_workbench.py真正app.run，无Pilot/自动approve；原Approval挂载后仅只读记录body/draft。PID30188窗口已启动，输入/登录/确认由用户本人（computer-use技能禁止自动终端/认证已告知）。原C封条/账本不修改。
 - 人工启动更正：无可见窗口/无登录/无新增API的自有空闲PID30188已停止，SESSION-attempt1与before-attempt1及IDLE-RESTART-ALLOWED保留；START-HERE.cmd供用户真实桌面直接双击。人工当前仍0新增，未发生preview/确认/提交。RESULT-business.md与NEXT-DECISION-business.md、BUDGET-STATE.json记录等待真人状态，开放的是同一次12/180000授权，不关闭后又重置。
+- 用户新请求先做Live和接口职责测验、暂不人工通知：business-live2新runner/source配置FREEZE、PROTOCOL已预登记2场最多4输入，C此后才独立出题/SQL真值/表达seal。产品仍c9，旧C两题和UI错误/64封条不改。
+- 新runner只加实际Mount/按钮/cancel焦点就绪后记录/reject，readiness零API检查RUNNER-CHECK.json通过，非UI原问题根因证明；INTERFACE-CHECK.log冻结源14/14仅机制。人工TESTING-LEASE避免预算并发，新账本含原C4/32848前缀从5追加，仍总12/180000，不加授权不重置。

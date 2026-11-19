@@ -1,13 +1,8 @@
 # 当前状态（仅主会话更新）
 
-- ARCH-3 C首执已封存，用户明确续接真实原生人工预览核验中，不改C分数、不补跑、不模拟批准。实际目标是完成真实业务，不因UI故障立刻加协议补丁。
-- 冻结c9b8948398e4e194e0e02bf226ac3d8158db43f6，frozen-runtime-business，源不变；integration仅控制文档。历史各SHA/失败/四旧账不动，无合main/推送/生产操作。
-- 架构选择B一致单票业务参数、Runtime拥有来源继承/pending/fresh/执行引用，原批量规则/权限/事务确认复用；旧request/propose双模式退休。比较和四类证据见ARCHITECTURE-DECISION.md。
-- 程序35相关过，旧request 7项2fail2error保留；均非NLU。C两场4输入首执：3输入五维全过；第一场正式合法preview PASS，第二场Runtime事实/Prepare正确但Approval.on_mount #cancel NoMatches，UI交付FAIL/最终STATE未测，不能改判通过。C64文件封条及root SQL/DB/snapshot/audit0一致，4请求32848tokens。
-- UI异常根因未定产品或runner；零API调度probe未复现，保留证据，不修改冻结或选择性重试。用户另明确“继续人工预览核验”，原成绩保持，不算新题补分。
-- business-human原生辅助PID30188初次仅进程启动，未确认可见窗口；后因无登录/无新增API已验证并停止，保留全部现场。START-HERE.cmd待真人从桌面双击启动，固定c9代码/虚构fixture/共享本轮预算。复制C只读4/32848前缀后独立写ledger（同12/180000总限，剩8/147152），当前尚0新增人工API。没有Pilot/自动点击或approve；只有实际用户操作按钮才可确认。
-- 技能禁止自动Terminal/登录，用户需在工作台登录U001、shared-flash、自行输入修改目标；出现实际预览先停，root从只读mounted preview及SQLite核对后再通知用户决定确认。已发异步进度问题待答，不把聊天回复当系统确认。
-- 下一步：观察用户实际预览/核对来源、old/new、企业票字段、无写→真人确认后核事务audit/readback→保持证据/结论。未观测不能宣称提交/持久化已证；若用户不能操作则明确人工阶段未验证，不能自动批准。
-
-- 当前明确等待真人启动/登录/输入。尚未出现preview-*.json、登录会话或新增人工API。SOURCE仍c9冻结，预算4/32848（剩8/147152）保持开放待同任务操作，不自动批准/续费。结果RESULT-business.md和接续NEXT-DECISION-business.md已保存，不能把此等待状态宣称完成。
-
+- ARCH-4 用户明确先不发人工通知，先做新Live与接口职责测验；人工阶段排后且无活动会话/API。不是新产品开发，不改变c9候选或原C第二场失败。
+- 冻结源c9b8948398e4e194e0e02bf226ac3d8158db43f6、frozen-runtime-business干净。所有历史SHA/失败/账本保留，无合main/推送/生产数据。
+- business-live2复制原C4/32848不可变用量前缀，从5追加；仍同12物理请求/180000tokens/max2048新架构授权，剩最多8/147152，不额外消费已封旧四账。TESTING-LEASE已封人工启动，防预算并发/前缀分叉。
+- 新runner等待Approval is_mounted+cancel/approve存在且cancel焦点后才记录/reject；本地Textual真实Mount设置顺序核对、RUNNER-CHECK零API通过。不宣称已确定或修复原UI NoMatches，旧分/driver不改。
+- 当前冻结接口职责14/14脚本检查通过，仅契约，不计NLU。C在本次FREEZE后独立生成两新场景/SQLite双连接真值/自然表达seal：3轮实际更正/待补/补票预览，1轮同词不同意图只查询。最多4输入，重大安全失败即停，普通失败保留后按预封序列完成，无抽替换题/择优重跑。
+- 等C正式首执/五维评分/原调用及状态/UI/DB封存，主会话零API独立审。产品不边看题边修，人工不自动批准。人工后续若恢复必须继承本次最新ledger，不能再从4旧前缀开始。
