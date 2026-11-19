@@ -9,7 +9,7 @@ import sqlite3
 from time import monotonic
 
 from .permissions import check_permission
-from .provenance import SOURCES, ScopeProof
+from .provenance import SOURCES, READ_SOURCES, ScopeProof
 from .queries import _money
 from .stage2_schema import open_existing
 from .sql_evidence import describe as describe_sql
@@ -223,7 +223,7 @@ def _scope(proof, actor):
     def trusted(key):
         if key in workspace:
             return workspace[key]
-        return proof.values.get(key, ()) if proof.sources.get(key) in SOURCES else ()
+        return proof.values.get(key, ()) if proof.sources.get(key) in READ_SOURCES else ()
 
     companies = tuple(sorted(set(trusted("company_id"))))
     periods = tuple(sorted(set(trusted("periods"))))

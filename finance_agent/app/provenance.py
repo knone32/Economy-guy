@@ -3,6 +3,11 @@ from dataclasses import dataclass, replace
 from copy import deepcopy
 
 SOURCES={'user_current','session_confirmed','trusted_reference','current_sqlite'}
+READ_SOURCES = SOURCES | {'model_read_candidate'}
+READ_ONLY_TOOLS = {'get_invoice','query_business_sql','get_finance_summary','get_annual_finance_summary',
+    'list_invoices','list_invoice_directory','list_bank_transactions','list_annual_bank_income',
+    'count_invoice_fields','check_missing_purpose','get_applicable_rules','list_rule_versions',
+    'list_annual_blank_purpose','invoice_total','bank_income_total','bank_expense_total','summary'}
 MONTHLY={'get_finance_summary','summary','list_invoices','list_bank_transactions',
          'invoice_total','bank_income_total','bank_expense_total','check_missing_purpose','get_applicable_rules','count_invoice_fields'}
 
@@ -62,7 +67,7 @@ def validate_scope(proof,user_id,name,args,partial=False):
         return None
     if not isinstance(proof,ScopeProof) or proof.actor!=user_id:
         return {'status':'DENIED','error':'可信范围身份不一致','evidence':{}}
-    accepted_sources = SOURCES
+    accepted_sources = READ_SOURCES if name in READ_ONLY_TOOLS else SOURCES
     directory = name == 'list_invoice_directory'
     if directory and proof.directory_scope is not None:
         company, year, month = proof.directory_scope
@@ -93,7 +98,7 @@ def validate_scope(proof,user_id,name,args,partial=False):
             'company_id': proof.read_workspace['company_id']}
         proof = ScopeProof(proof.actor, {**proof.values, **workspace},
                            {**proof.sources, **dict.fromkeys(workspace, "workspace_read")})
-        accepted_sources = SOURCES | {"workspace_read"}
+        accepted_sources = accepted_sources | {"workspace_read"}
     required=['company_id']
     if name in MONTHLY or filtered or (name=='manage_task' and args.get('action') in {'create','correct'}):required+=['year','month']
     if name in {'get_invoice','prepare_invoice_update'}:required+=['invoice_no']

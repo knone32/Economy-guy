@@ -247,11 +247,18 @@ def plan_invoice_change(agent, source_request, proposal, selection, *, authorize
         cohort = rule_selection or not (named or subset_filters)
 
     field_evidence = scoped_edit.get("field_evidence") if scoped_edit else None
+    from .intent_contract import BoundIntent
+    candidate = scoped_edit.get('bound_intent') if scoped_edit else None
+    bound_field = (isinstance(candidate, BoundIntent) and candidate.action == 'amend'
+                   and (candidate.actor, candidate.workbook, candidate.turn_id) ==
+                       (agent.user_id, str(agent.db_path), agent.trace_id)
+                   and candidate.target['field'] == proposal['field']
+                   and candidate.target['new_value'] == proposal['new_value'])
     continued_field = (field_evidence and field_evidence.get("field") == [proposal["field"]]
                        and field_evidence.get("new_value") == [proposal["new_value"]]
                        and (not rule or proposal["field"] == "purpose")
-                       and invoice_change_boundary(edit_source, proposal["field"], proposal["new_value"],
-                                                   rule_field="purpose" if rule else None))
+                       and (bound_field or invoice_change_boundary(edit_source, proposal["field"], proposal["new_value"],
+                                                   rule_field="purpose" if rule else None)))
     if not continued_field and not invoice_change_evidence(edit_source, proposal["field"], proposal["new_value"],
                                                           rule_field="purpose" if rule else None):
         return None, "AMBIGUOUS", "请明确允许修改的字段及来自用户原话的新值。"
