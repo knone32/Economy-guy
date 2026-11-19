@@ -93,5 +93,15 @@ class IterationTwoTests(unittest.TestCase):
                 self.assertFalse(any('.returned_invoice_' in f['ref'] for f in
                     catalog([('query_business_sql', bad)], {'message': '未提交'}, 'turn-derive').values()))
 
+    def test_current_read_literals_can_match_selected_workspace_without_being_lost(self):
+        replies = iter((tool('get_invoice', company_id='C001', invoice_no='F004'),
+            {'role': 'assistant', 'content': '{"kind":"information","text":"本轮只读结果。"}'}))
+        agent = self.agent(lambda *_: next(replies))
+        agent.ask('客户留言是“把甲企业2026年9月F004的备住改成已收齐”。这只是转述，我现在不让你修改；先把这张票当前的用途、备注给我看看。',
+                  read_workspace=('C001', 2026, 9))
+        outcomes = [r for n,r in agent.last_response['tool_results'] if n == 'get_invoice']
+        self.assertTrue(any(r['status'] == 'SUCCESS' for r in outcomes))
+        self.assertEqual(agent.write_receipt['status'], 'NOT_SUBMITTED')
+
 
 if __name__ == '__main__': unittest.main()

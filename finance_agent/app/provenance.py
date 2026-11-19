@@ -49,7 +49,7 @@ def supplement_read_literals(proof, expected, raw):
             return proof, expected
     values, sources, scope = deepcopy(proof.values), dict(proof.sources), deepcopy(expected)
     for key in keys:
-        if candidates[key] and not known[key]:
+        if candidates[key] and not expected.get(key) and not proof.values.get(key):
             values[key] = candidates[key]
             sources[key] = 'user_current'
             scope[key] = candidates[key]
