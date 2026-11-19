@@ -22,4 +22,6 @@
 - B可审阅提交：1f035545fb6e5b1568788149d353eb2b08f22f34，7文件369新增/8删除；只在execution分支，root待复核集成。核心26/26、相关77项与基线差异目前为B报告，精确日志待落盘核实；不是Live证据。
 - B与A发现初稿范围扩大：model-first-20261119/evidence/A/diff-scope-baseline.json、diff-scope-candidate.json，及B/read-scope-before.log保留首个FAIL；修复提交c3a3bb79a08504f467453e5b9b12d65d6c771da0，B/core-after-scope-fix.log为27核心通过。尚未整合/冻结/Live，不抹掉初稿失败。
 - B相关程序原始证据：model-first-20261119/evidence/B/REPORT.md、results.json、related-final.log、related-baseline.log、related-diff.json。77项候选9fail3error vs基线6fail3error，新增3旧模型原文显示断言仍为失败，未删改旧测试。
+- 限定复核完成：evidence/A/DIFF-REVIEW.md，scope从基线拒绝→初稿误放→修正拒绝三份探针保留；独立引用正例1/1。B最终core-after-scope-fix.log 27/27，source-dependent-final.log 6/6。
+- 主会话已cherry-pick为4df8369与1e1e977d33310a9e5f278fcbb1a9d080472842a1，finance_agent与B最终无diff；evidence/ROOT-INTEGRATION-CHECKS.log独立33/33，通过架构、证据、来源、只读/写区分、未确认预览/三轮待补等相关检查。不是Live成绩。
 - 本轮环境、测试、修改、冻结和Live证据：主会话按阶段追加；新产物保存 model-first-20261119/evidence/，不混改历史目录。
