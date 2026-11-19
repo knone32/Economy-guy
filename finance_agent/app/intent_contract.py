@@ -184,6 +184,13 @@ def infer_proposal(proposal, selection, *, pending, actor, book, request, turn_i
               'field':proposal['field'],'new_value':proposal['new_value']}
     named = request_scope(request, include_update_aliases=True)
     plain = _QUOTED_DATA.sub(' ', request)
+    current_fields = {field for field, labels in FIELD_LABELS.items() if any(label in plain for label in labels)}
+    if current_fields and current_fields != {proposal['field']}:
+        # The optional compatibility bridge cannot assign a new current value
+        # to an old field when this request names another/ambiguous field.
+        # Keep the original validator (or require an explicit source candidate)
+        # rather than fabricate a cross-turn field/value bundle.
+        return None
     sources = {}
     for slot, value in target.items():
         if slot in SCOPE_KEYS and value in named.get(slot, ()):

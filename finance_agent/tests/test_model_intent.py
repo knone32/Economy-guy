@@ -34,7 +34,8 @@ class ModelIntentTests(unittest.TestCase):
         with closing(sqlite3.connect(self.book)) as db:
             return db.execute("SELECT purpose FROM invoices WHERE company_id='C002' AND invoice_no='F008'").fetchone()[0], db.execute('SELECT count(*) FROM invoice_audit').fetchone()[0]
 
-    def pending_agent(self, *, proposal_patch=None, source_text=None, complete=True):
+    def pending_agent(self, *, proposal_patch=None, source_text=None, complete=True,
+                      prior_field='purpose', prior_value='采购对账备查', first_request=None):
         stage = 0
         agent = None
         def model(messages, tools):
@@ -46,7 +47,7 @@ class ModelIntentTests(unittest.TestCase):
                 return first
             if stage == 2:
                 return final(kind='clarification', text='请选择一张，等待确定目标。', missing_fields=['invoice_no'],
-                    pending_change={'field':'purpose','new_value':'采购对账备查'},
+                    pending_change={'field':prior_field,'new_value':prior_value},
                     pending={'action':'create','scope':{'company_id':['C002'],'invoice_no':['F001','F008'],
                         'year':[2026],'month':[9],'periods':[[2026,9]]}})
             if stage == 3:
@@ -60,9 +61,12 @@ class ModelIntentTests(unittest.TestCase):
                 return call('propose_invoice_changes', proposal)
             return final()
         agent = Agent('U001', self.book, model, mode='mock', trace_path=self.book.with_suffix('.jsonl'))
-        agent.ask('乙企业2026年9月，查F001与F008备注；我想从两张中选一张，把用途换成“采购对账备查”，具体哪张稍后补，现在先别改。')
+        initial_field = '用途' if prior_field == 'purpose' else '备注'
+        agent.ask(first_request or ('乙企业2026年9月，查F001与F008备注；我想从两张中选一张，把'
+                  + initial_field + '换成“' + prior_value + '”，具体哪张稍后补，现在先别改。'))
         self.assertIsNotNone(agent.pending_intent)
-        self.assertEqual(agent.pending_intent['change']['new_value'], ['采购对账备查'])
+        self.assertEqual(agent.pending_intent['change']['field'], [prior_field])
+        self.assertEqual(agent.pending_intent['change']['new_value'], [prior_value])
         if not complete:
             return agent
         agent.ask(source_text or '选F008；用途不要沿用上一句那几个字，最后定为“设备领用复核”。请核对原值，按这个新值做草稿交给工作台确认。')
@@ -316,6 +320,60 @@ class ModelIntentTests(unittest.TestCase):
                                          request='显式清空要求',turn_id='t',anchor=None))
         self.assertIsNone(infer_proposal({**base,'new_value':'新值','mode':'batch'},selection,pending=pending,
                                          actor='U001',book=self.book,request='批量请求',turn_id='t',anchor=None))
+
+    def test_compatibility_bridge_cannot_pair_old_field_with_current_other_field_value(self):
+        for prior, request, first in (
+            ('remark','选F008，这次明确改用途为“新用途”，核对后只做草稿。',
+             '乙企业2026年9月，查F001与F008用途；我想挑一张把备注改为“原文字”，具体哪张稍后说，先别改。'),
+            ('purpose','选F008，这次明确改备注为“新用途”，核对后只做草稿。',None),
+            ('remark','选F008，备注保留，明确改用途为“新用途”，只做草稿。',None),
+        ):
+            with self.subTest(prior=prior,request=request):
+                agent=self.pending_agent(prior_field=prior,prior_value='原文字',first_request=first,
+                    source_text=request,proposal_patch={'field':prior,'new_value':'新用途'})
+                self.assertIsNone(agent.last_response.get('invoice_change'))
+                self.assertEqual(self.rows()[1],0)
+
+    def test_current_field_changes_and_unrepeated_pending_field_still_work(self):
+        for prior, field, request in (
+            ('remark','purpose','选F008，这次明确改用途为“新用途”，核对后只做草稿。'),
+            ('purpose','remark','选F008，这次明确改备注为“新用途”，核对后只做草稿。'),
+            ('remark','remark','选F008，最后就定为“新用途”，请给草稿确认。'),
+        ):
+            with self.subTest(prior=prior,field=field):
+                agent=self.pending_agent(prior_field=prior,prior_value='原文字',source_text=request,
+                    proposal_patch={'field':field,'new_value':'新用途'})
+                change=agent.last_response.get('invoice_change')
+                self.assertIsNotNone(change)
+                self.assertEqual((change['field'],change['new_value']),(field,'新用途'))
+                self.assertEqual(self.rows()[1],0)
+
+    def test_explicit_intent_field_and_formal_proposal_field_must_match(self):
+        agent=self.pending_agent(prior_field='remark',prior_value='原文字',complete=False)
+        pending_id=agent.pending_intent['request_id']
+        target={'company_id':'C002','year':2026,'month':9,'invoice_no':'F008','field':'purpose','new_value':'新用途'}
+        sources={k:{'kind':'pending'} for k in ('company_id','year','month')}
+        sources.update(invoice_no={'kind':'current','text':'F008'},field={'kind':'current','text':'用途'},
+                       new_value={'kind':'current','text':'新用途'})
+        intent={'action':'amend','pending_request_id':pending_id,'target':target,'sources':sources}
+        phase=0
+        def model(messages,tools):
+            nonlocal phase
+            phase+=1
+            if phase==1:
+                return call('get_invoice',{'company_id':'C002','invoice_no':'F008'},
+                            content=json.dumps({'intent':intent},ensure_ascii=False))
+            read=next(json.loads(m['content']) for m in reversed(messages) if m['role']=='tool')
+            return call('propose_invoice_changes',{'selection_id':read['data']['selection_id'],
+                'field':'remark','new_value':'新用途','mode':'item','excluded_invoice_ids':[],
+                'pending_request_id':pending_id})
+        agent.model=model
+        agent.ask('选F008，这次明确改用途为“新用途”，只做草稿。')
+        self.assertIsNone(agent.last_response.get('invoice_change'))
+        self.assertTrue(any(n=='propose_invoice_changes' and r['status']=='SCOPE_MISMATCH'
+                            for n,r in agent.last_response['tool_results']))
+        self.assertEqual(agent.pending_intent['change']['field'],['purpose'])
+        self.assertEqual(self.rows()[1],0)
 
     def test_current_span_read_candidate_can_normalize_without_new_wordlist(self):
         intent = {'action':'read','target':{'company_id':'C002','year':2026,'month':9},

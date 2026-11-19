@@ -8,6 +8,8 @@
 
 同一候选可由已有规范化 proposal 参数、当前原文、旧 pending 及本轮 fresh selection 编译，兼容已经正确选择工具但旧句式校验拒绝的路径；仅单票普通更正，batch/规则/显式清空等原合法路径仍使用既有验证。提案前再次核 candidate 与当前 actor/book/turn、selection 的唯一联合键和实际账期、field/new_value、可选 write_scope 完全一致，再交既有 ACL、预览、确认、事务、幂等、审计与新连接回读。字段来源由已验证的 runtime BoundIntent 承接，而非从自由正文猜测。
 
+optional 兼容编译不能把旧 pending 字段与当前其他字段的新值拼接。仅当当前引用外已有受控字段来源为空（合法承接），或唯一且与 formal proposal 字段一致时，才继续编译；冲突或多字段不作此推断，回既有 validator 或要求模型显式 intent。检查只使用原有 purpose/remark 字段枚举标签，不增加词表、句式或正则，不宣称判断了否定、转述或多字段语义角色。显式 intent 的 target 字段与实际 proposal 不同仍直接拒绝。
+
 `cancel` 只允许当前 pending id，撤销未提交候选和确认，不撤销历史事务。被取消消息中的 tool_calls 均配对取消结果，不进入 Handler。所有原模型消息照常进入 Trace；最终信封解析可剥 sidecar，但不改原始记录。
 
 预算的 typed pre-HTTP 拒绝独立于网络失败。已有真实结果且仅 token 预留不足时，可在原 Loop 剩余合法槽位尝试一次 tools=[] 收尾，不增加模型/续期/重规划/全局预算上限；模型若仍调用工具，逐ID拒绝且0 Handler。再次预算不足、无槽、格式无效则交付真实结果/回执并明确未完成。收尾不能用模型正文抹去预算通知，也不会自动确认或提交。
