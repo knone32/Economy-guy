@@ -155,7 +155,7 @@ def reply_evidence_conflict(text, results, user_text, *, trusted_scope=None, act
     return "unbound_reply_literals" if literals(checked_text) - known else None
 
 
-FINAL_KEYS = {'kind', 'text', 'missing_fields', 'pending', 'pending_change'}
+FINAL_KEYS = {'kind', 'text', 'missing_fields', 'pending', 'pending_change', 'answer', 'turn_action'}
 PENDING_KEYS = {'request_id', 'action', 'scope'}
 PENDING_SCOPE_KEYS = {'company_id', 'invoice_no', 'year', 'month', 'periods'}
 
@@ -194,6 +194,12 @@ def parse_final(content):
         return None
     fields = {"kind", "text", "missing_fields"} if value["kind"] == "clarification" else {"kind", "text"}
     if not fields <= set(value) or not set(value) <= FINAL_KEYS or type(value.get("text")) is not str or not value["text"].strip():
+        return None
+    if 'answer' in value and (value['kind'] not in {'information', 'clarification'}
+            or not isinstance(value['answer'], list) or not 1 <= len(value['answer']) <= 64
+            or any(type(ref) is not str or not ref for ref in value['answer'])):
+        return None
+    if 'turn_action' in value and (value['kind'] != 'information' or value['turn_action'] != 'stop'):
         return None
     if "pending_change" in value:
         change = value["pending_change"]
@@ -701,6 +707,8 @@ def render_task_scope_negotiation(stopped, results):
 
 
 DIRECTORY_SORT_LABELS = {
+    ("invoice_no", "asc"): "按票号递增排序",
+    ("invoice_no", "desc"): "按票号递减排序",
     ("date", "asc"): "按日期从早到晚排序",
     ("date", "desc"): "按日期从晚到早排序",
     ("amount", "asc"): "按金额从低到高排序",

@@ -25,7 +25,7 @@ from .invoice_binding import WRITE_SCOPE_SCHEMA, validate_write_scope
 
 YEAR = {"company_id": "string", "year": "integer"}
 MONTH = {**YEAR, "month": "integer"}
-DIRECTORY_SORT_FIELDS = {"sort_by": ("date", "amount"), "sort_order": ("asc", "desc")}
+DIRECTORY_SORT_FIELDS = {"sort_by": ("date", "amount", "invoice_no"), "sort_order": ("asc", "desc")}
 OPTIONAL_FIELDS = {
     "list_bank_transactions": {"direction"},
     "list_invoice_directory": DIRECTORY_SORT_FIELDS.keys(),
@@ -102,7 +102,7 @@ PARAMETERS = {"sql":"单条 SELECT 或只读 WITH 查询。严格遵守运行时
               "company_id":"企业编号，例如C001；不能凭空猜测。", "year":"明确的业务年份。",
               "month":"业务月份，1到12。", "page":"目录页码，从1开始。",
               "selector":"要统计的发票字段条件。",
-              "sort_by":"date 按日期，amount 按金额。", "sort_order":"asc 升序，desc 降序。", "invoice_no":"与企业共同确定发票的精确编号。",
+              "sort_by":"date 按日期，amount 按金额，invoice_no 按票号。", "sort_order":"asc 升序，desc 降序。", "invoice_no":"与企业共同确定发票的精确编号。",
               "field":"只允许purpose或remark。", "new_value":"用户明确的新内容，空字符串表示清空。",
               "rule_id":"规则编号，如R002。", "rule_type":"amount、purpose或bank。", "business_date":"YYYY-MM-DD业务日期。",
               "action":"该管理工具支持的操作名称。", "task_id":"已有任务ID；create使用空字符串。",

@@ -55,6 +55,8 @@ def available_periods(connection, user_id, company_id):
 
 INVOICE_PAGE_SIZE = 10
 _INVOICE_ORDER = {
+    ("invoice_no", "asc"): "invoice_no ASC",
+    ("invoice_no", "desc"): "invoice_no DESC",
     ("date", "asc"): "invoice_date ASC, invoice_no ASC",
     ("date", "desc"): "invoice_date DESC, invoice_no ASC",
     ("amount", "asc"): "amount_cents ASC, invoice_date ASC, invoice_no ASC",
