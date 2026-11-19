@@ -102,3 +102,7 @@
 - 人工启动更正：无可见窗口/无登录/无新增API的自有空闲PID30188已停止，SESSION-attempt1与before-attempt1及IDLE-RESTART-ALLOWED保留；START-HERE.cmd供用户真实桌面直接双击。人工当前仍0新增，未发生preview/确认/提交。RESULT-business.md与NEXT-DECISION-business.md、BUDGET-STATE.json记录等待真人状态，开放的是同一次12/180000授权，不关闭后又重置。
 - 用户新请求先做Live和接口职责测验、暂不人工通知：business-live2新runner/source配置FREEZE、PROTOCOL已预登记2场最多4输入，C此后才独立出题/SQL真值/表达seal。产品仍c9，旧C两题和UI错误/64封条不改。
 - 新runner只加实际Mount/按钮/cancel焦点就绪后记录/reject，readiness零API检查RUNNER-CHECK.json通过，非UI原问题根因证明；INTERFACE-CHECK.log冻结源14/14仅机制。人工TESTING-LEASE避免预算并发，新账本含原C4/32848前缀从5追加，仍总12/180000，不加授权不重置。
+- business-live2已首执/封存：2新场景4输入＝主更正办理FAIL、只读语义对照PASS，全层2/4；预览/approve/commit0。第2模型合法remark/新值被同分句source拒，pending旧purpose未更新，第3source缺失为级联；UI泛化企业/账期文案误导。所有原话/calls/状态/DB/66封条及失败不改，不择优重跑。
+- evidence-business/ROOT-LIVE2-AUDIT.json独立新连接SQL/各表快照/seed一致、业务/audit无写，66封条/官方ledger连续/9请求75122tokens一致；初次审计因新manifest键source_sha不叫candidate_sha而报元数据KeyError，修reader兼容后完成，不改原件。
+- ROOT-LIVE2-RESPONSIBILITY.json与replay_source_boundary.py零API原参数/原请求/pending重放：validate_arguments合法、invoice_change_boundary True、invoice_value_source False、pending_transition.py:211精确拒。源码未改、没改句/删键/模拟放行；是源层重复解析语义的职责残留，不能加词表/标点例外刷分。
+- 新增5/42274，累计同预算9/75122，剩3/104878，BUDGET-STATE.json开放但不自动新调用。旧C64文件/前4条及旧全封账不变。人工TESTING-LEASE保留禁止旧4前缀启动；未通知用户操作/未启动窗口/未模拟批准。RESULT-live2.md记录实际结果，不改写RESULT-business旧阶段。
