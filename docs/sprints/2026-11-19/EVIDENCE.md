@@ -32,4 +32,6 @@
 - root独立重算与冻结复核：evidence/ROOT-ROUND1-AUDIT.json，oracle全部raw_sql_records新连接重算完全一致，tracked不变，14条账本连续/tokens124400一致。普通sandbox只读连接无权，已在同受审上下文完成；零模型/不改原题与成绩。
 - 迭代2限定建议：evidence/A/ITERATION2-REVIEW.md；实际diff复核待A交付；evidence/B/iteration2-core-final.log 30/30、iteration2-dependent.log 7/7为B报告待root集成核实。
 - 第二候选验收预登记/全局余额：acceptance-v2/PROTOCOL.md、evidence/ITERATION2-BUDGET-PLAN.json；2类最多4新输入，不增加授权。v2启动case必须PTY（root零API探针isatty=true）；旧14条ledger原样复制前缀，后续15起编号，全冲刺24/240000硬限。
+- 迭代2最终代码/审查：B abf5fba+bda30ad；evidence/A/ITERATION2-DIFF.md保留selected-workspace遗漏的首失败及修复、跨来源负例和类型核对；evidence/B/ITERATION2.md、iteration2-results.json，最终31核心+7相关通过，不算语言成绩。
+- root集成为ea70577、a598f4228c0bc01e23653f26c6cf7f9659d8f9c9；ROOT-INTEGRATION2-CHECKS.log独立37/37、ROOT-INTEGRATION2-PREVIEW.log1/1，finance_agent与B bda最终无diff。冻结第二runtime后不再改代码。
 - 本轮环境、测试、修改、冻结和Live证据：主会话按阶段追加；新产物保存 model-first-20261119/evidence/，不混改历史目录。

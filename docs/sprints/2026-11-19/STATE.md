@@ -1,7 +1,7 @@
 # 当前状态（仅主会话更新）
 
-- 阶段：5，首轮评分已正式结束并公开为回归；进行今晚最后一次有限开发迭代2。原候选/题/真值/成绩不改，不恢复原评分。
-- 当前唯一冻结候选SHA：838569ef36b3d1352a3b9ffb5c696edc1663a704，detached frozen-runtime工作树，clean，完整tracked文件哈希在evidence/CODE-FREEZE.json。业务内容等同已独立验证的1e1e977；相差仅本轮状态文档。集成分支sprint/2026-11-19-model-first可继续提交STATE/EVIDENCE，不得修改冻结快照。当前控制HEAD用git rev-parse HEAD查，不与冻结验收SHA混淆。
+- 阶段：6，今晚最后一次有限迭代2已通过限定审查和root集成回归，正创建第二不可变快照；首轮原候选/题/真值/成绩不改，不恢复原评分。
+- 第一冻结候选838569ef36b3d1352a3b9ffb5c696edc1663a704永久保留于frozen-runtime；第一报告门禁NOT_READY。第二业务集成提交a598f4228c0bc01e23653f26c6cf7f9659d8f9c9（root cherry-pick abf+bda），finance_agent与B最终bda一致；本次状态文档提交后创建frozen-runtime-v2，最终完整SHA以evidence/CODE-FREEZE-v2.json和acceptance-v2/FREEZE.json为准。integration仅状态文档可续写，冻结快照不可改。
 - 工作区：model-first-20261119/integration；用户原发布工作区与上一轮候选均干净，保持不变。
 - 已确认目录差异：github-main-publish-20261119 为8d70924；E:/beside 为3111bd7；上轮candidate为4a718b9。未将目录HEAD当作用户正在运行的进程版本；新验收只从明确冻结的冲刺工作区启动。
 - 可复用环境已本轮验证：Python C:/Users/Lenovo/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe，3.12.14；PYTHONPATH 指向 reliability-v2-20261119/runtime-deps，依赖openai1.109.1/httpx0.28.1/textual1.0.0/openpyxl3.1.5/sqlglot30.33.0。虚构SQLite可只读，40票/48流水/0发票审计。受审用户上下文shared-flash/U001、test/U002可用，常规sandbox无法读WindowsVault；不需用户重输密钥。
@@ -14,8 +14,9 @@
 - 用户全冲刺授权24物理请求/240000 total_tokens/每次输出2048；已知消耗14/124400，余额最多10请求/115600tokens，未知usage必须停。原评分不延长、不补测，不自动刷新预算；任何新迭代需先结束原评分、公开旧题、最小修复、重新冻结与新题，仍受全局剩余额度约束。
 - 已知阻断：上轮通用正文抑制导致正确终止答复/展示顺序回退；引用票号来源拒绝、冲突范围模型误选、R1 SQL证据不闭合。不得整包盲合并上轮候选。
 - 初步方案：B实现有序工具事实引用/真实receipt契约，模型选工具、事实和次序，Harness绑定范围/标签/数值；A核实只读引用来源应与修改授权区分。不是最终实现或通过结论，完成后先定向验证与root审核。
-- 迭代2范围：B独立execution在c3上最小修权限准确拒绝原因、标准引用的只读缺槽来源、真实已返回发票集合分组计数/差额引用；A限定diff审查。C03b语言/中文年份规范化需通用模型来源契约，明确留明日，不添同义/年份词表；D08等门控亦未宣称解决。
+- 迭代2最终B SHA bda30ad7172501c646f4523e5c6917f30e19be61（父abf5fba22d6e688e888e61709f5271b6fb6bef30），工作树干净，零API/无push。权限OR检查未变而文案准确；readonly只补当前raw标准标识符/日期缺槽、保留scope/proof/workspace一致性，跨公司/跨月不配对不补，不扩写权；单一实际返回invoice投影集的票数/方向差额ref有父结果、无分页/截断/重复联合键条件及返回集合标签。C03b规范化来源契约、D08门控留明日。
+- 迭代2复核/测试：A保存abf selectedworkspace正例先失败、bda exact修复成功及旧范围/跨引用反例独立2/2。B最终核心31/31、相关7/7。root在a598独立37/37+合法预览1/1，diff --check通过，finance_agent与B最终无diff。旧原文echo兼容失败未删改，未重复77或全量，不能宣称全部回归绿。
 - 迭代2验证计划：新题只在第二完整SHA冻结后生成；acceptance-v2/PROTOCOL.md在代码完成前预登记2类最多4新输入（陌生筛选比较1+三轮持续办理3），不沿用原题；真批准前独立核草稿再模拟UI批准，核事务审计/新连接回读。PTY启动case前硬检查，原EOF记录不重跑/不补测。v2账本保留原14条作为全局前缀，不重新计24额度。第二轮结束不再自动开发/加测。
-- 下一步：B提交→A窄复核→root集成/必要定向验证→新不可变frozen-runtime-v2与完整SHA→同一独立C角色新任务仅按预登记新题首执。原838快照永不改，所有旧失败/未测明列。
+- 下一步：固定第二完整SHA与driver/协议；C在此后才能生成新4输入（2类）目标与表达/独立SQL真值并seal，继续原全局ledger编号15起。必须PTY，每次可信批准前先核草稿与封存目标。第二轮结束即今晚开发结束，不再自动迭代/加题，原首轮失败/未测单独列。
 - 实际进程核查：受审只读枚举未发现python.exe/pythonw.exe运行进程，未发现可确认的既存Python工作台加载路径；今后测试明确从冲刺integration/finance_agent启动，不沿用旧目录。
 - 禁止事项：评分中不改候选代码；不做GUI/文件导入；不改正式账簿；不推送main。C新题评分结束后才公开，自动转回归；失败不得本轮边看题边修。
