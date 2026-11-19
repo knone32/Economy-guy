@@ -53,3 +53,6 @@
 - 冻结前追加修正：A 0ab51d883b8e0ac4fd98fc9a3ef43551e0ca2e00与87c2ca1baff8f4479ecedac84b11b74d79fb4eb3由root集成为3ddda59/f0d918c；显式pending字段同样不允许跨字段来源拼值，预算收尾不越当前block。A/field-bundle-before/after/final.log、source-budget-before/final.log保留首红及正反结果。B/budget-cross-before.json独立证实原extensions=1缺口；无新问句词表/正则。
 - root最终程序61/61：evidence-round2/ROOT-FINAL-CONTRACT.log，20意图状态契约、原核心事实/预算/架构、权限、确认失效、提交回执、未知提交、审计回滚、幂等相关。仍不是Live理解成绩，不将更宽既有错误改为PASS。
 - root字段首红独立复验：evidence-round2/ROOT-FIELD-INHERITANCE-AFTER.json及probe_field_inheritance_after.py，错误remark草稿拒绝、invoice_change null、audit0，BEFORE原件未覆盖。此后冻结并由C独立新题，不边评分边修。
+- 第二轮正式冻结：完整SHA2430ba08693776512823c8c254995f86defe0c7a，detached frozen-runtime-round2，224 tracked hash及clean见evidence-round2/CODE-FREEZE-round2.json；finance_agent与root61项实际受测f0d918c无diff，仅控制文档变化。runtime/profile/采样/依赖/driver/scaffold锁见round2-acceptance/FREEZE.json。零模型请求冻结，随后才重启C生成新题。
+- 本轮C只读冻结元数据和预登记协议，禁止读实现分支/成功答案挑题；共享存储不称严格隐藏盲测。新账本18/180000，旧保护哈希evidence-round2/HISTORICAL-PROTECTION.json。主会话验收结束前不向A/B泄新题。
+- 可运行新候选入口RUN-ROUND2-CANDIDATE.ps1固定新runtime与全新manual-runtime-round2虚构库；LAUNCHER-CHECK.json仅语法及代码等价检查，不称人工GUI/模型验收，未启动额外API。
