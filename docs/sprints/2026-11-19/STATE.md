@@ -1,9 +1,10 @@
 # 当前状态（仅主会话更新）
 
-- 阶段R3-2 冻结后首次验收：用户明确开始第三轮，仅自然语言更正→正式预览。已恢复MISSION/STATE/EVIDENCE/NEXT-DECISION-round2和第二轮失败，禁止全仓审计或扩展功能。
-- 原最终候选2430ba08693776512823c8c254995f86defe0c7a保留；integration控制HEAD恢复c73272ae4cdb4adbc1361dc1bbe2c73ea7824270，干净。独立round3-minimal分支同起点，A仅修已有pending/来源契约，无API/新框架。root唯一集成。
-- 精确原阻断：pending_transition要求模型重复候选invoice_no列表，模型遗漏即拒并丢失pending；后轮company缺可信来源为此前失败级联。优先允许可信未绑定对象待补并由后轮显式对象/fresh读取绑定，不默认全提及/全读取集合、不信模型自由企业。
-- 用户第三轮独立12请求/160000tokens/输出2048已授权，round3-acceptance/AUTHORIZATION.json；当前新增API0。旧21/194995与第二轮13/124751封账不动。
-- 本轮预登记round3-acceptance/PROTOCOL.md：最多两场各最多2输入，冻结后C出新目标/真值/表达；首场失败即停，首场成功才第二场；仅记录正式预览后reject，不批准/提交/恢复。新driver隔离副本，旧记录不修改。
-- 最终候选ae6148f48b6009e1273e3b8beac7d1d9eb6e39f8已冻结frozen-runtime-round3，源码/依赖/profile/driver见round3-acceptance/FREEZE.json。生产仅agent prompt与pending_transition共3增4删，无新企业旁路/候选推断。root相关30/30通过；A4新正反例通过、相关47/48中的1旧echo失败在2430同复现并保留。C冻结后才开始两新场景，首场失败即停，仅预览后reject，不提交；不得边看题边修。
-
+- R3-3结案：按首场失败即停，停止当前候选晋级/新增机制/追加API。唯一目标自然语言更正→正式合法预览未完成，不展开写入/恢复/其他功能。
+- 最终冻结候选ae6148f48b6009e1273e3b8beac7d1d9eb6e39f8，独立frozen-runtime-round3保持clean/哈希不变；原8d70924/0638/2430与历史失败/账本全保留，不合main/推送/发布/操作正式数据。integration仅更新控制文档。
+- 最小代码仅允许invoice未知pending保留可信唯一企业/账期/修改内容，未绑定票号，不自动推候选；后续明确对象/fresh读取/字段值/ACL/确认保护不变。root30相关程序通过；4新正反例通过；更宽47/48中1旧echo在2430同fail保留，不计NLU。
+- Live只首场第1输入已执行，P1。正确两票查询后模型information缺missing_fields/pending/pending_change，runtime ANSWERED/pending=null，UI只交付事实而未交付待补追问。现有协议仍依赖模型给待补意图；允许未绑定票号的新契约未被使用。首场更正及第二场3输入UNTESTED，preview/approve/commit均0，不能声称真实更正工具已执行。
+- 第三轮独立预算已封2请求/19136 tokens，剩10/140864不续测，无预算阻断。旧21/194995和第二轮13/124751封账未变。
+- 安全/证据：root新连接独立SQL与快照/seed一致、业务表不变/audit0；C39文件封条、源码及旧round2 80文件保护相同，无本轮已观察安全回归。未执行更正/预览不宣称安全通过。
+- root审计初稿scored_inputs=4实际为评分条目（含3未测），已保留initial并明确score_entries4/executed_inputs1/untested_inputs3；C原件和分数未改。旧DB哈希sandbox无权限初查保留incomplete，真实用户上下文完整只读复核通过，不将未读当通过。
+- 最新恢复入口：MISSION.md/STATE.md/EVIDENCE.md、RESULT-round3.md、NEXT-DECISION-round3.md、round3-acceptance/FAILURES.json。若用户另行恢复只针对生命周期信号遗漏边界，不扩大架构或沿本题刷分。当前下一步是停止候选，而非完整写入闭环。

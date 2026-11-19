@@ -70,3 +70,7 @@
 - A最小提交406f7ccb595519f0a8630662633987c8a7ddcf42已集成ae6148f48b6009e1273e3b8beac7d1d9eb6e39f8。生产2文件3增4删，允许invoice未知pending保留唯一可信企业/账期及原字段新值，不自动继承全部mentions/read集合；实际后轮显式目标+fresh selection/权限/field/value/确认保护不变。
 - 程序证据evidence-round3/A/{REPORT.md,results.json,before.log,after.log,related.log,baseline-legacy.log}；4新正反例真实业务API预览取消后不写、无目标/错企业/错字段/无源值拒。相关47/48有1旧echo失败，冻结2430同复现，不改答案不隐藏。root独立ROOT-CONTRACT.log 30/30（4新+20既有意图+4权限+2架构），不是NLU分。
 - 第三轮冻结ae6148f48b6009e1273e3b8beac7d1d9eb6e39f8，frozen-runtime-round3；round3-acceptance/FREEZE.json固定正式入口/profile/依赖/fixture/driver/source hashes，零HTTP冻结后才C生成新目标/SQLite真值/表达，非严格盲测。新driver副本仅限reject并修list/tuple比较；原driver/原失败/旧账不改。
+- 第三轮首错门禁已执行：round3-acceptance/REPORT.md、SCORES.json、FAILURES.json、FINAL-VERIFICATION.json、MANIFEST.json共39文件封存；仅R3A.1首执P1（model最终省missing_fields/pending/pending_change→runtime ANSWERED/pending=null→UI只事实），其余3输入UNTESTED，正式preview/approve/commit0，无补题/复跑/代码修改。
+- 新账本evidence-round3/BUDGET-CLOSED.json独立封2请求19136tokens，剩10/140864不续用，无预算阻断；旧两封账不变。root终审ROOT-FINAL-BUSINESS-AUDIT.json重新独立SQL/各表快照/seed/audit0/官方endpoint/连续用量相同，C39文件封条无变。评分条目4含3未测，root初稿字段误名scored_inputs原件initial保留，最终明确executed1/untested3，不改C评分。
+- ROOT-FREEZE-BUDGET-AUDIT.json在真实Windows用户上下文完整只读验证冻结源码及旧round2 80文件哈希无变；sandbox读旧DB权限不足的初稿incomplete保留，未将其作为通过依据。无新增API。
+- 第三轮结果与最新决策RESULT-round3.md、NEXT-DECISION-round3.md：当前契约仍依赖模型显式给待补生命周期信号，本次完全省略且未触发补正，候选列表冗余修复不足以保证完整路径。按用户停止规则停止该候选晋级，不继续确认/提交/恢复或加新机制。全部题结案后转公开回归，旧记录不覆盖。
