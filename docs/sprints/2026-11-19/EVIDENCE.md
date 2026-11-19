@@ -74,3 +74,13 @@
 - 新账本evidence-round3/BUDGET-CLOSED.json独立封2请求19136tokens，剩10/140864不续用，无预算阻断；旧两封账不变。root终审ROOT-FINAL-BUSINESS-AUDIT.json重新独立SQL/各表快照/seed/audit0/官方endpoint/连续用量相同，C39文件封条无变。评分条目4含3未测，root初稿字段误名scored_inputs原件initial保留，最终明确executed1/untested3，不改C评分。
 - ROOT-FREEZE-BUDGET-AUDIT.json在真实Windows用户上下文完整只读验证冻结源码及旧round2 80文件哈希无变；sandbox读旧DB权限不足的初稿incomplete保留，未将其作为通过依据。无新增API。
 - 第三轮结果与最新决策RESULT-round3.md、NEXT-DECISION-round3.md：当前契约仍依赖模型显式给待补生命周期信号，本次完全省略且未触发补正，候选列表冗余修复不足以保证完整路径。按用户停止规则停止该候选晋级，不继续确认/提交/恢复或加新机制。全部题结案后转公开回归，旧记录不覆盖。
+
+## 第四阶段：一次业务动作接口实验
+
+- 只读诊断：evidence-stage4/DIAGNOSIS-DECISION.md六问，REAL-TRACE-EXTRACT.json保留R3A实际请求行5/18、工具、完整可见输出行8/21、ANSWERED行22；ACTUAL-SCHEMA-PROMPT-EVIDENCE.json在两次真实请求中核19工具及5行相关SYSTEM指示。私有reasoning原记录已隐藏，不能声称内部推理全可见。
+- 结论：原tool必须完整selection+字段/新值/模式/排除列表，没有缺目标业务动作入口；SYSTEM却分配最终JSON生命周期责任，部分语义识别与动作协议遗漏分开。未声明事件且窄门未触发可ANSWERED，最终事实交付抹掉待补说明。不是继续放松来源可解。
+- 唯一设计：现有propose action=request允许已知不完整业务槽，服务端绑定actor/book/request_id、来源/权限、pending/missing_fields并直接WAITING_USER，不再同轮最终JSON造pending。anyOf与实参validator保留默认完整提案5必需；request不能传selection/mode/write_scope/身份/确认/内部ID。完整提案仍fresh读和原权限/确认/事务底座，不推readset写目标。
+- 实施8dbfb9108f6d77d3b9f171c86f20c494c01a9933已root集成5253deea95fbc8090fb4253d6f5ffce8318f7fb3。A/REPORT.md、results.json、public-baseline-before/source-boundary-before及after日志保留原失败及新helper两source首红（查询字段串值、未选两票任选ID），以已有invoice_value_source/literal_single_invoice_edit收紧，无新词表/正则。root ROOT-CONTRACT.log20/20；A相关33/33+cancel/stale3/3，不计NLU。
+- A只读原冻结复现时曾在旧freeze目录误建自己的runner/空证据目录，已移至外部证据，未修改任何旧原文件；最终需核旧冻结clean/hash，不能把移动证据隐去。报告保留操作说明。
+- 新预算用户独立授权stage4-acceptance/AUTHORIZATION.json：8请求/120000tokens/输出2048，当前冻结时0。PROTOCOL.md单场最多2输入、首失败即停、不approve/commit/第五轮，旧21/194995、13/124751、2/19136封账不续花。
+- 冻结5253deea95fbc8090fb4253d6f5ffce8318f7fb3至frozen-runtime-stage4，stage4-acceptance/FREEZE.json锁实际source/工具入口/profile/依赖/driver/scaffold/fixture。冻结后才C独立目标→SQLite→新表达封存；不读实现选题，非严格隐藏盲测。源码评分期间不变。
