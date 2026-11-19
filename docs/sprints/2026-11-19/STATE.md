@@ -1,17 +1,14 @@
 # 当前状态（仅主会话更新）
 
-- 阶段：R2-5 Live首执结束、独立结案复核；用户19:47续接第二轮，23:30停止扩大开发范围。恢复先读MISSION/STATE/EVIDENCE。
-- 当前集成HEAD：2430ba08693776512823c8c254995f86defe0c7a（冻结业务候选），独立frozen-runtime-round2干净；此后integration仅可更新控制文档，不能改评分源码。A业务9b7a35、B共享39f45+交付1b0f330已由root cherry-pick；原main8d70924、旧838/0638冻结runtime和失败/账本均保留，未推送/发布/写正式数据。
-- A/B独立round2-intent、round2-delivery实施；root唯一integration。A负责intent/dispatch/pending及有界收尾，B负责typed facts/transport/budget。只做本轮核心业务链，不开发GUI/文件等明日功能。
-- 已实施：逐槽来源的read/amend/cancel候选、执行前pending原子更新和fresh selection绑定；有父事实/指标/范围/单位的有限compare/subtract；紧凑catalog；typed发送前预算拒绝及原Loop硬限内一次无工具收尾。均不能授予权限/确认/提交真实性。
-- 程序证据：root最终相关61/61（ROOT-FINAL-CONTRACT.log），此前联合核心43/43（ROOT-JOINT-CORE.log），A核心17+相关10、B核心28；均Mock/契约，零真实自然语言成绩。B更宽检查1旧Trace fixture错误已同基线复现，旧raw正文断言失败保留不归为通过。
-- 已解除的冻结阻断：旧pending字段与当前其他字段新值误拼草稿、预算收尾跨当前block续期。A追加0ab51d8+87c2ca1，兼容推断与显式pending字段均拒绝冲突；root AFTER独立确认错误草稿被拒/audit0，首红保留。预算只用当前block合法剩余槽，已用尽不续期。无新增字段词表/句式/正则，有限字段枚举只作保守来源冲突门禁。
-- 0API基础设施已确认真实新进程checkpoint/resume、不同PID、同chat、输入索引1/2不重放，见RESTART-RUNNER-CHECK.json；只测空业务存储，不算业务重启闭环。
-- 用户新独立预算18请求/180000 total_tokens/单次输出2048已授权（evidence-round2/AUTHORIZATION.json），本轮已停止新增API：13请求/124751 total_tokens，剩5请求/55249 tokens，不自动续测。旧21请求/194995tokens封账不动。新账本仅round2-acceptance，不续花旧额度。
-- C在完整SHA冻结后封存6输入并全部首执完成；待C正式评分封存后root才读题复核，不向A/B提前披露。PROTOCOL预登记3类最多7输入；新完整SHA冻结后才独立抽目标、SQLite算真值、出自然表达并封存。共享存储只能称冻结后新题，不称严格盲测。
-- 下一步：C评分/失败/封账归档→root独立核SQLite真值/原始Trace→简洁结果及明日决策；评分中不改代码/补测，优先更正→预览→可信UI模拟确认→事务/审计→真进程重启回读。重大安全失败立即停评分；不边修边重测。
-
-
-
-- 当前已知Live门禁：首轮待补信封协议无效未建pending，更正级联不能进入预览；真实新PID重启仅当前事实读回正确，没有提交所以不算修改持久化闭环。最后比较任务取得数据但预算前置拒绝导致未完整交付。无已知重大权限/错误事实/虚假成功放行；不能把契约61通过或单步安全停止冒充完整业务完成。最终分项以C封存后root复核为准。
-
+- 阶段：R2-6 第二轮结案；本轮停止开发及新增API。23:30前不扩大范围；不因尚有余额随机补题或边修边重新评分。
+- 最终冻结业务候选：2430ba08693776512823c8c254995f86defe0c7a，独立frozen-runtime-round2干净且224 tracked哈希不变。integration仍为唯一控制分支，冻结后只更新控制文档；原main8d70924、旧0638/838候选/失败/账本不动，无合main/推送/发布/正式数据操作。
+- 已完成代码：read/amend/cancel来源候选、执行前pending原子更正与fresh selection绑定；字段来源冲突不能混接旧字段与当前其他字段新值；有父事实指标/单位/范围的有限compare/subtract；紧凑catalog；typed预算拒绝及当前block剩余槽内一次无工具收尾，不续期/抬上限。权限/范围/预览确认/事务/审计/回读底座保留。
+- 相关程序61/61通过，仅Mock/契约，不计自然语言能力；首红/宽检查旧错误保留。root字段反例AFTER拒错误草稿/audit0；A/B实施工作树clean且停止。无本轮问句/同义词/正则特判，受控字段枚举仅保守来源冲突门禁，旧语言启发式未宣称全移除。
+- C在完整SHA冻结后才独立目标→SQLite双连接真值→自然表达/封条，6输入首执结束，题现已公开为回归，不可再隐藏计分。共享存储，非严格盲测。
+- 真实Live：2/6有限通过（新PID当前事实只读、无已建pending下安全停止）；3个P1输入（两次模型pending协议缺候选票号集合、一处级联阻断）；1预算partial。完整提交链0、预览0、批准0、提交0。五层PASS/适用INTENT6/6 TOOL4/5(NA1) RESULT5/6 RESPONSE2/6 STATE3/6；不能从语义可观察正确推导已完成业务。
+- 未解决P1门禁：pending创建协议脆弱，模型目标正确却遗漏候选列表；更正未获可信企业来源而AMBIGUOUS。正确BETWEEN查询scope UNKNOWN后扩大读取，预算拒绝未完整交付比较。已建pending更正→预览、有效pending取消、可信确认→提交→审计→提交后进程重启持久值均未获本轮Live证明。
+- 安全/恢复：无本轮已知P0越权、错误事实或虚假成功放行；3隔离账簿业务表不变/audit0，权限Live未全面覆盖。PID49524→52824、同chat/重新鉴权/只读正确；restored_turns0不证明历史内容恢复。driver changed_tables list/tuple误报保留，独立SQLite规范化重算仅anchors/workspace_identity变化。
+- 新独立预算封账：13物理请求/124751 total_tokens，剩5请求/55249 tokens；guard reserved57125>55249 before_http，未发送第14物理请求；未知usage=false。不自动继续消耗，旧21/194995封账及历史保护hash不变。
+- root独立终审：所有oracle跨3库新连接重算相同、实际DB与快照相同、C80文件封条和冻结源码/旧保护一致、账本连续且13/124751一致。证据evidence-round2/ROOT-FINAL-BUSINESS-AUDIT.json与ROOT-FREEZE-BUDGET-AUDIT.json。
+- 交付门禁：未达到，不晋级、不宣称优于旧版。保留独立可运行候选与RUN-ROUND2-CANDIDATE.ps1；手工GUI接受未测。明日扩展前先解决上述两处并用新冻结/新题/独立新预算验证完整链，不提前GUI/文件导入或全仓重构。
+- 恢复入口：MISSION.md、本STATE.md、EVIDENCE.md；当前结论model-first-20261119/RESULT-round2.md，最新决策NEXT-DECISION-round2.md；新首错round2-acceptance/FAILURES.json。历史RESULT/NEXT-DECISION及acceptance*/记录不覆盖。

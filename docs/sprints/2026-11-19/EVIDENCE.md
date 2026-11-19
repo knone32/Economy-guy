@@ -57,3 +57,8 @@
 - 本轮C只读冻结元数据和预登记协议，禁止读实现分支/成功答案挑题；共享存储不称严格隐藏盲测。新账本18/180000，旧保护哈希evidence-round2/HISTORICAL-PROTECTION.json。主会话验收结束前不向A/B泄新题。
 - 可运行新候选入口RUN-ROUND2-CANDIDATE.ps1固定新runtime与全新manual-runtime-round2虚构库；LAUNCHER-CHECK.json仅语法及代码等价检查，不称人工GUI/模型验收，未启动额外API。
 - 首执已结束，C未追加API：新13请求/124751tokens、剩5/55249；一个token_reservation拒绝reserved57125>remaining55249，before_http=true，未产生第14条物理请求。evidence-round2/ROOT-FREEZE-BUDGET-AUDIT.json独立核新账本计数/连续已知成功用量总和、224源码文件hash无变、旧两轮FAILURES与旧ledger/封账hash不变。正式成绩待C封存及root SQLite复核，不以HTTP200推定端到端成功。
+- C正式结案并公开为回归：round2-acceptance/REPORT.md、SCORES.json、FAILURES.json、FINAL-VERIFICATION.json、MANIFEST.json（80文件）。6首执=2有限通过、3P1输入、1预算partial；INTENT6/6不代表业务完成，完整链/preview/approve/commit均0。没有基于失败新题改候选或择优复跑。
+- root最终零API独立审：evidence-round2/root_final_audit.py、ROOT-FINAL-BUSINESS-AUDIT.json，6个原始SQL记录在3库分别新连接重算一致，各表与final快照一致、业务表与seed相同/audit0、sealed80文件hash全同，ledger连续/官方endpoint/13请求124751tokens一致。原始system确要求pending.scope候选invoice_no，实际两次模型省略；不能误称已符合协议的提案被拒。
+- root真实首错区分：两次模型pending信封缺槽是协议失败而非语义误解；后续更正公司来源缺失是级联。正确BETWEEN SQL范围证据UNKNOWN/unsupported_predicate引发更多读取，budget发送前拒绝导致比较交付不完整；没有把原始NO_DATA改答案或把未知最终回复归NLU失败。
+- 当前结果/决策：RESULT-round2.md、NEXT-DECISION-round2.md；新独立预算evidence-round2/BUDGET-CLOSED.json封13/124751，剩5/55249不续测，旧21/194995不动。安全没有本轮已知P0，但真实完整修改门禁未过，不晋级为明日扩展基线，不自动合main/推送/发布。
+- 过拟合窄审：evidence-round2/ROOT-OVERFIT-REVIEW.json仅检查本轮production diff与来源/事实契约，未见固定票号/题名/金额/月/新正则问句补丁；受控purpose/remark字段枚举为保守来源冲突，不能宣称已移除所有旧语言启发式或证明泛化提升。
