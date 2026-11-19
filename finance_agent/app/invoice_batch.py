@@ -261,7 +261,7 @@ def plan_invoice_change(agent, source_request, proposal, selection, *, authorize
             db.execute("BEGIN")
             if any(not check_permission(db, agent.user_id, company, operation).allowed
                    for operation in ("read", "modify")):
-                return None, "DENIED", "当前账号没有该企业的发票读取和修改权限。"
+                return None, "DENIED", "当前账号缺少本次发票修改操作所需权限。"
             rows = [get_invoice(db, agent.user_id, company, invoice_no) for invoice_no in invoice_nos]
             if any(row is None for row in rows):
                 return None, "CONFLICT", "清单中的发票已失效，请重新查询。"
@@ -337,7 +337,7 @@ def run_invoice_batch(agent, message, request, *, approve_batch, approve_item, c
             db.execute("BEGIN")
             if any(not check_permission(db, agent.user_id, company, operation).allowed
                    for operation in ("read", "modify")):
-                return "DENIED", "你没有该企业的读取和修改权限，未创建批量草稿。"
+                return "DENIED", "当前账号缺少本次批量修改操作所需权限，未创建批量草稿。"
             rows = [get_invoice(db, agent.user_id, company, invoice_no) for invoice_no in invoice_nos]
             if any(not row or row["invoice_date"][:7] != period for row in rows):
                 return "CONFLICT", "清单内发票已失效或账期已变更，未执行修改。"

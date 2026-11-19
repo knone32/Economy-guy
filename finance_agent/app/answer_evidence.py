@@ -23,6 +23,40 @@ INVOICE_FIELDS = {
 }
 
 
+def returned_invoice_counts(result):
+    """Count an actual complete returned identity set, not a natural-language goal.
+
+    The projection/coverage metadata is produced by BusinessSQL from the same
+    authorized snapshot. Aliases, arbitrary row_count and duplicate rows cannot
+    supply invoice identity. Whole-snapshot coverage is deliberately not needed.
+    """
+    data = result.get('data') or {}
+    projection = data.get('invoice_projection') or {}
+    coverage = data.get('invoice_coverage') or {}
+    if (data.get('truncated') is not False or coverage.get('sql_paginated') is not False
+            or coverage.get('display_truncated') is not False
+            or not {'company_id', 'invoice_no'} <= projection.keys()):
+        return None
+    companies = (result.get('evidence') or {}).get('scope', {}).get('company_ids', ())
+    if not companies or any(type(c) is not str or not c for c in companies):
+        return None
+    counts = dict.fromkeys(sorted(set(companies)), 0)
+    company_index, invoice_index = projection['company_id'], projection['invoice_no']
+    if any(type(i) is not int or i < 0 for i in (company_index, invoice_index)):
+        return None
+    seen = set()
+    for row in data.get('rows', ()):
+        if max(company_index, invoice_index) >= len(row):
+            return None
+        company, number = row[company_index], row[invoice_index]
+        if (company not in counts or type(number) is not str or not number
+                or (company, number) in seen):
+            return None
+        seen.add((company, number))
+        counts[company] += 1
+    return counts
+
+
 def catalog(results, receipt, turn_id):
     """Only this ask's actual results are addressable; no historical IDs resolve."""
     facts = {}
@@ -65,6 +99,22 @@ def catalog(results, receipt, turn_id):
                 facts[prefix + key + '.result']['text'] += (
                     '\n以上仅为授权快照中的实际 SQL 返回；查询语义归属为 UNKNOWN，'
                     '列名不是已认证的业务指标，不证明满足全部筛选或完整目标。')
+            counts = returned_invoice_counts(result)
+            if counts is not None:
+                for company, count in counts.items():
+                    field = key + '.returned_invoice_count.' + company
+                    add(field, '本次返回明细的企业发票数',
+                        f'{scope}：本次返回明细中 {company} 发票 {count} 张（按企业与票号联合键计数，不代表授权账簿全集）。')
+                    facts[prefix + field]['parent_ref'] = prefix + key + '.result'
+                if len(counts) == 2:
+                    first, second = counts
+                    difference = counts[first] - counts[second]
+                    comparison = (f'{first} 与 {second} 的发票张数相同，差额 0 张' if difference == 0
+                                  else f'{first} 比 {second} 多 {difference} 张' if difference > 0
+                                  else f'{second} 比 {first} 多 {-difference} 张')
+                    field = key + '.returned_invoice_difference.' + first + '.' + second
+                    add(field, '本次返回明细的企业发票数比较', f'{scope}：本次返回明细中 {comparison}。')
+                    facts[prefix + field]['parent_ref'] = prefix + key + '.result'
     add('receipt', '本轮真实操作回执', '操作回执：' + str(receipt.get('message', '本轮未取得操作回执。')))
     return facts
 
@@ -88,5 +138,6 @@ def prompt(facts):
         '并准确给 missing_fields 和待补事件。没有业务读取且用户要求结束时使用 turn_action:"stop"；'
         '它只终止本轮和未提交候选，不撤销历史提交。一般知识用 general，已有受限解释用 explanation。'
         'UNKNOWN SQL只能引用实际表格及其限制，不得宣称完整目标已满足。'
+        '用户需要的统计或比较须用相应事实ref或工具计算覆盖；不要只在text中补充未引用的数值。'
         '没有所需事实就继续调用工具或追问，不用错误/历史引用代替。\n'
         + json.dumps(list(facts.values()), ensure_ascii=False))}

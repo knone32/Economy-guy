@@ -1,5 +1,5 @@
 """可信运行层的范围证据；模型参数和自报来源不能构造此许可。"""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from copy import deepcopy
 
 SOURCES={'user_current','session_confirmed','trusted_reference','current_sqlite'}
@@ -26,6 +26,34 @@ class ScopeProof:
     def metadata(self):
         """可记录的来源，不含凭据或模型自报权限。"""
         return {'values':deepcopy(self.values),'sources':dict(self.sources), **({'annual_year': self.annual_year} if self.annual_year else {})}
+
+
+def supplement_read_literals(proof, expected, raw):
+    """Fill missing read-only literal slots without inventing cross-quote pairs.
+
+    Only the get_invoice dispatcher uses this. Existing current/reference slots
+    win; quoted data never enters the shared context or any write proof.
+    Multiple companies or periods cannot be reliably paired by literal sets.
+    """
+    keys = ('company_id', 'invoice_no', 'year', 'month', 'periods')
+    candidates = {k: list(raw.get(k, ())) for k in keys}
+    if any(len(candidates[k]) > 1 for k in ('company_id', 'year', 'month', 'periods')):
+        return proof, expected
+    workspace = proof.read_workspace or {}
+    known = {k: expected.get(k) or proof.values.get(k) or workspace.get(k) or () for k in keys}
+    for key in keys:
+        a, b = candidates[key], known[key]
+        if key == 'periods':
+            a, b = list(map(tuple, a)), list(map(tuple, b))
+        if a and b and not set(a) <= set(b):
+            return proof, expected
+    values, sources, scope = deepcopy(proof.values), dict(proof.sources), deepcopy(expected)
+    for key in keys:
+        if candidates[key] and not known[key]:
+            values[key] = candidates[key]
+            sources[key] = 'user_current'
+            scope[key] = candidates[key]
+    return replace(proof, values=values, sources=sources), scope
 
 def validate_scope(proof,user_id,name,args,partial=False):
     """权限由Handler先检查；来源缺失和已知范围冲突分别返回。"""
