@@ -34,4 +34,5 @@
 - 第二候选验收预登记/全局余额：acceptance-v2/PROTOCOL.md、evidence/ITERATION2-BUDGET-PLAN.json；2类最多4新输入，不增加授权。v2启动case必须PTY（root零API探针isatty=true）；旧14条ledger原样复制前缀，后续15起编号，全冲刺24/240000硬限。
 - 迭代2最终代码/审查：B abf5fba+bda30ad；evidence/A/ITERATION2-DIFF.md保留selected-workspace遗漏的首失败及修复、跨来源负例和类型核对；evidence/B/ITERATION2.md、iteration2-results.json，最终31核心+7相关通过，不算语言成绩。
 - root集成为ea70577、a598f4228c0bc01e23653f26c6cf7f9659d8f9c9；ROOT-INTEGRATION2-CHECKS.log独立37/37、ROOT-INTEGRATION2-PREVIEW.log1/1，finance_agent与B bda最终无diff。冻结第二runtime后不再改代码。
+- 第二/最终冻结代码SHA：0638f8dcd34aa7a2debbcd19a2ed7d1369bb1ebe，model-first-20261119/frozen-runtime-v2；evidence/CODE-FREEZE-v2.json锁tracked哈希/clean/driver/协议/root38检查/旧消耗14与124400。此后C才新任务生成新目标，不读新修复实现。
 - 本轮环境、测试、修改、冻结和Live证据：主会话按阶段追加；新产物保存 model-first-20261119/evidence/，不混改历史目录。

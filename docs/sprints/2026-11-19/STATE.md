@@ -1,7 +1,7 @@
 # 当前状态（仅主会话更新）
 
-- 阶段：6，今晚最后一次有限迭代2已通过限定审查和root集成回归，正创建第二不可变快照；首轮原候选/题/真值/成绩不改，不恢复原评分。
-- 第一冻结候选838569ef36b3d1352a3b9ffb5c696edc1663a704永久保留于frozen-runtime；第一报告门禁NOT_READY。第二业务集成提交a598f4228c0bc01e23653f26c6cf7f9659d8f9c9（root cherry-pick abf+bda），finance_agent与B最终bda一致；本次状态文档提交后创建frozen-runtime-v2，最终完整SHA以evidence/CODE-FREEZE-v2.json和acceptance-v2/FREEZE.json为准。integration仅状态文档可续写，冻结快照不可改。
+- 阶段：7，今晚最终候选2已冻结，独立C新任务现才生成2类最多4输入的新题；此轮结束不再开发或加测。
+- 当前最终候选代码SHA：0638f8dcd34aa7a2debbcd19a2ed7d1369bb1ebe，detached frozen-runtime-v2，clean，完整tracked哈希在CODE-FREEZE-v2.json；内容与已验证集成a598的finance_agent相同。第一候选838569ef36b3d1352a3b9ffb5c696edc1663a704仍保留于frozen-runtime，第一门禁NOT_READY。integration仅状态文档续写，两个冻结快照不可改。
 - 工作区：model-first-20261119/integration；用户原发布工作区与上一轮候选均干净，保持不变。
 - 已确认目录差异：github-main-publish-20261119 为8d70924；E:/beside 为3111bd7；上轮candidate为4a718b9。未将目录HEAD当作用户正在运行的进程版本；新验收只从明确冻结的冲刺工作区启动。
 - 可复用环境已本轮验证：Python C:/Users/Lenovo/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe，3.12.14；PYTHONPATH 指向 reliability-v2-20261119/runtime-deps，依赖openai1.109.1/httpx0.28.1/textual1.0.0/openpyxl3.1.5/sqlglot30.33.0。虚构SQLite可只读，40票/48流水/0发票审计。受审用户上下文shared-flash/U001、test/U002可用，常规sandbox无法读WindowsVault；不需用户重输密钥。
@@ -17,6 +17,6 @@
 - 迭代2最终B SHA bda30ad7172501c646f4523e5c6917f30e19be61（父abf5fba22d6e688e888e61709f5271b6fb6bef30），工作树干净，零API/无push。权限OR检查未变而文案准确；readonly只补当前raw标准标识符/日期缺槽、保留scope/proof/workspace一致性，跨公司/跨月不配对不补，不扩写权；单一实际返回invoice投影集的票数/方向差额ref有父结果、无分页/截断/重复联合键条件及返回集合标签。C03b规范化来源契约、D08门控留明日。
 - 迭代2复核/测试：A保存abf selectedworkspace正例先失败、bda exact修复成功及旧范围/跨引用反例独立2/2。B最终核心31/31、相关7/7。root在a598独立37/37+合法预览1/1，diff --check通过，finance_agent与B最终无diff。旧原文echo兼容失败未删改，未重复77或全量，不能宣称全部回归绿。
 - 迭代2验证计划：新题只在第二完整SHA冻结后生成；acceptance-v2/PROTOCOL.md在代码完成前预登记2类最多4新输入（陌生筛选比较1+三轮持续办理3），不沿用原题；真批准前独立核草稿再模拟UI批准，核事务审计/新连接回读。PTY启动case前硬检查，原EOF记录不重跑/不补测。v2账本保留原14条作为全局前缀，不重新计24额度。第二轮结束不再自动开发/加测。
-- 下一步：固定第二完整SHA与driver/协议；C在此后才能生成新4输入（2类）目标与表达/独立SQL真值并seal，继续原全局ledger编号15起。必须PTY，每次可信批准前先核草稿与封存目标。第二轮结束即今晚开发结束，不再自动迭代/加题，原首轮失败/未测单独列。
+- 下一步：C先无API冻结新运行配置/driver，再独立新目标→SQL真值→新表达→seal；必须PTY，各轮判分后continue，真实模拟批准前独立核草稿。首轮ledger14条原样作为v2前缀，新增15起；全冲刺24/240000封顶。第二轮结束root独立核验/持久报告/明日入口，不再改代码或追加第三轮，首轮4失败4未测原样单列。
 - 实际进程核查：受审只读枚举未发现python.exe/pythonw.exe运行进程，未发现可确认的既存Python工作台加载路径；今后测试明确从冲刺integration/finance_agent启动，不沿用旧目录。
 - 禁止事项：评分中不改候选代码；不做GUI/文件导入；不改正式账簿；不推送main。C新题评分结束后才公开，自动转回归；失败不得本轮边看题边修。
