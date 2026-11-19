@@ -15,4 +15,6 @@
 - 本轮契约提交：0589d164223be774d254f83fddbcf25022586f5f；独立分支sprint/2026-11-19-model-first、investigation、execution各用独立worktree。
 - 本轮环境：model-first-20261119/evidence/preflight-1795084778148633000/RESULT.json（受审用户上下文，无网络）；Python/依赖、明确源码路径、fixture hash和只读计数均记录；两个既有官方DeepSeek profile的凭据存在仅布尔。常规sandbox对照preflight-1795084731653578100/RESULT.json无法读Vault，非凭据不存在。
 - 冻结前业务验收规则：model-first-20261119/evidence/ACCEPTANCE-PROTOCOL.md。尚无具体新目标/问句/答案，C未启动。
+- 用户本轮新预算明确授权：model-first-20261119/evidence/AUTHORIZATION.json，24请求/240000 total_tokens/单次输出2048；冻结前0调用。
+- 受审只读进程核对：model-first-20261119/evidence/PROCESS-PATH-CHECK.json，未发现运行中的Python进程；不声称旧目录HEAD就是用户正在运行版本。
 - 本轮环境、测试、修改、冻结和Live证据：主会话按阶段追加；新产物保存 model-first-20261119/evidence/，不混改历史目录。
