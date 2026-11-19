@@ -1,0 +1,4 @@
+sqlglot 30.33.0; local pinned wheel reused from prior isolated route3 experiment.
+SHA256 a5b279fe7397a9fb6cdd0274a13a5fcee0fa83ac6ff617083f1f2832031e90bc
+License and upstream metadata retained inside wheel. No shared install or network fetch.
+Used only for same-string SQL evidence attribution, never natural-language routing.

@@ -140,8 +140,9 @@ class Stage3CTests(DatabaseTestCaseMixin,unittest.TestCase):
     def test_unplanned_progress_does_not_buy_unlimited_requests(self):
         agent=self.agent([reply(tool("get_invoice",invoice(i),str(i))) for i in range(1,6)])
         agent.ask("C001 核对发票 F001、F002、F003、F004、F005、F006、F007、F008、F009、F010")
-        self.assertEqual(agent.last_response["execution"]["model_requests"],3)
-        self.assertEqual(agent.last_response["execution"]["extensions"],0)
+        # One permission-checked completion slot, then stop without a plan.
+        self.assertEqual(agent.last_response["execution"]["model_requests"],4)
+        self.assertEqual(agent.last_response["execution"]["extensions"],1)
 
     def test_replan_once_only_and_cannot_erase_executed_fact(self):
         first=plan(5)

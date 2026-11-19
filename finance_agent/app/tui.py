@@ -659,6 +659,7 @@ class AgentWorkspace(ConversationUI, App):
             if self.task_focus:
                 self.agent.focus_task(*self.task_focus)
             self.agent.context.restored_turns = list(self.resumed)
+            self.agent.context.restore_query_hints(self.resumed)
             self.agent.context.personal_detail = self.conversation.personal_detail()
         if self.agent.transport:
             trace = self.agent.transport.trace
@@ -852,6 +853,11 @@ class AgentWorkspace(ConversationUI, App):
     def action_cancel_edit(self):
         if self.agent and not self.busy:
             receipt = self.agent.cancel_update()
+            if self.conversation and self.conversation.chat:
+                try:
+                    self.conversation.set_reference_state(self.agent.context.reference_state_snapshot())
+                except (OSError, ValueError, sqlite3.Error):
+                    self.note('本次已终止，但引用退休状态保存失败；重新打开对话时请明确企业和票号。')
             self.task_focus = None
             self.remember_focus()
             self.update_header()
@@ -1197,7 +1203,10 @@ class AgentWorkspace(ConversationUI, App):
                      f"\n{row['direction']} ¥{row['amount']}　{row['counterparty_name'] or ''}" for row in data]
             if "finance_summary" in evidence:
                 totals = evidence["finance_summary"]
-                lines.append(f"收支汇总　收入 ¥{totals['bank_income_total']}，支出 ¥{totals['bank_expense_total']}")
+                parts = [f"{label} ¥{totals[prefix + '_total']}（{totals[prefix + '_count']}条）"
+                         for prefix, label in [('bank_income', '收入'), ('bank_expense', '支出')]
+                         if prefix + '_total' in totals]
+                lines.append('收支汇总　' + '，'.join(parts))
             return (f"银行流水 · {len(data)} 条", "\n".join(lines) or "没有符合条件的银行流水。")
         if tool == "list_rule_versions":
             return ("规则版本", render_rule_history(data))

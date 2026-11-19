@@ -40,6 +40,8 @@ class TurnExecution:
         self.seen = set()
         self.observed = []
         self.unscheduled_sql = False
+        self.allow_read_completion = False
+        self.read_completion_used = False
         self.sql_evidence = set()
 
     def snapshot(self):
@@ -84,7 +86,11 @@ class TurnExecution:
                 item["action"] == "query_business_sql" and item["source"] == "current_sqlite"
                 for item in self.observed[self.block_progress:]
             )
-            if not (sql_progress or (ready and self.can_continue(ready))):
+            reads = [s for s in self.observed if s['source'] == 'current_sqlite'
+                     and 'company_id' in s['arguments'] and s['action'] not in {'prepare_invoice_update', 'manage_task', 'manage_preference'}]
+            completion = (self.allow_read_completion and not self.schedule and not self.read_completion_used
+                          and bool(reads) and self.can_continue(reads))
+            if not (sql_progress or completion or (ready and self.can_continue(ready))):
                 self.stop("NO_LEGAL_WORK")
                 return False
             if self.extensions>=self.policy.max_extensions:
@@ -92,7 +98,11 @@ class TurnExecution:
                 return False
             self.extensions += 1
             self.block_progress = self.progress
-            self.block_limit = min(self.block_limit+self.policy.block_requests,self.policy.max_requests)
+            if completion and not sql_progress:
+                self.read_completion_used = True
+                self.block_limit = min(self.block_limit+1,self.policy.max_requests)
+            else:
+                self.block_limit = min(self.block_limit+self.policy.block_requests,self.policy.max_requests)
             reason = "本块取得新 SQL 证据，仍在等待模型完成分析" if sql_progress else "本块有新工具证据且仍有合法就绪步骤"
             self.emit("budget.extended",{"reason":reason,**self.snapshot()})
         self.model_requests += 1

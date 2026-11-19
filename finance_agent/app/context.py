@@ -4,7 +4,7 @@ import json
 import re
 import sqlite3
 from .references import reference_catalog, invalidate_references, resolve_reference, record_display
-from .responses import directory_display_pages, directory_preview, explicit_scope, scope_mismatch
+from .responses import directory_display_pages, directory_preview, request_scope as explicit_scope, scope_mismatch
 from .tasks import list_tasks
 from .preferences import manage_preference
 from .provenance import ANNUAL, SOURCES, ScopeProof
@@ -22,13 +22,14 @@ class ContextLimitError(ValueError):
 
 def reference_hint(text):
     """只识别序数/单对象线索，不路由业务、不从模型输出提取目标。"""
-    matches = list(re.finditer(r"第\s*([0-9]+|[一二三四五六七八九十]+)\s*张",text))
+    # Parse one ordinal's number and measure word together. A broad substring
+    # ending at any later 张 also consumed page number + page size as a key.
+    matches = list(re.finditer(r"第\s*([+-]?[0-9]+(?:\.[0-9]+)?|[一二三四五六七八九十]+)\s*张",text))
     match = matches[0] if matches else None
-    malformed = bool(re.search(r"第[^。\n]{1,16}张",text)) and not match
-    if not match and not malformed and not any(word in text for word in ("那张","这张","那一张","最后一张","上一张")):
+    if not match and not any(word in text for word in ("那张","这张","那一张","最后一张","上一张")):
         return None
     # False is an unresolved expression, distinct from an explicitly requested zero.
-    ordinal = False if malformed or any(word in text for word in ("最后一张","上一张")) else None
+    ordinal = False if any(word in text for word in ("最后一张","上一张")) else None
     if match:
         ordinal = False
         number = match[1]
@@ -330,6 +331,51 @@ class ContextBuilder:
         except sqlite3.Error:
             return {}
 
+    def reference_state_snapshot(self):
+        """Server-owned, nullable query state; no values, proof or approvals."""
+        key = self.recent_invoice_query
+        retired = bool(self.references_blocked)
+        return {'version': 1, 'retired': retired,
+                'invoice_query': dict(key) if key and not retired else None}
+
+    def restore_query_hints(self, hints):
+        """Restore only a server-saved query key, never values or write authority.
+
+        SessionStore has already selected the actor/book/chat.  Current read
+        permission is checked by recent_invoice_candidates and again by Handler.
+        Legacy free history without this concrete hint is not upgraded.
+        """
+        self.recent_invoice_query = None
+        explicit_state = False
+        for hint in hints:
+            state = hint.get('reference_state')
+            if 'reference_state' in hint:
+                explicit_state = True
+                # An invalid new snapshot is not permission to search older keys.
+                valid = (type(state) is dict and set(state) == {'version', 'retired', 'invoice_query'}
+                         and type(state['version']) is int and state['version'] == 1
+                         and type(state['retired']) is bool)
+                candidate = state.get('invoice_query') if valid else None
+                valid_key = (type(candidate) is dict and set(candidate) == {'company_id', 'invoice_no'}
+                             and all(type(v) is str for v in candidate.values()))
+                self.references_blocked = not valid or state['retired'] or (candidate is not None and not valid_key)
+                self.recent_invoice_query = dict(candidate) if valid_key and not self.references_blocked else None
+                continue
+            if 'invoice_query' in hint and hint['invoice_query'] is None:
+                self.recent_invoice_query = None
+                continue
+            if explicit_state:
+                continue  # Legacy sparse hints cannot undo a newer explicit state.
+            candidate = hint.get('invoice_query')
+            if (isinstance(candidate, dict) and set(candidate) == {'company_id', 'invoice_no'}
+                    and 'get_invoice' in hint.get('tools', ())
+                    and all(type(v) is str for v in candidate.values())):
+                self.recent_invoice_query = dict(candidate)
+        if self.references_blocked:
+            self.display_ids = []
+            self.displayed_sql_invoices = None
+            self.scope.pop('invoice_no', None)
+            self.sources.pop('invoice_no', None)
     def remember_invoice_query(self, results):
         """Keep only the joint key of the latest unique verified detail query."""
         if any(name == "resolve_recent_invoice" and outcome["ok"] for name, outcome in results):
@@ -453,13 +499,35 @@ class ContextBuilder:
                 "source":"local_session","historical":True,
                 "usage":"仅是历史查询话题和来源，当前金额、缺项及权限必须重新查询。",
                 "turns":self.restored_turns},ensure_ascii=False)})
+        if self.history_start > 1:
+            # Retiring tools/references does not erase the user's source wording.
+            # Only same-chat user text is retained, never old tool/model values.
+            originals = [entry.get('request') for entry in self.restored_turns]
+            originals += [m.get('content') for m in messages[1:min(self.history_start, last_user)]
+                          if m.get('role') == 'user' and not m.get('name')]
+            retained = []
+            originals = [request for request in originals if type(request) is str and request]
+            for request in reversed(originals[-6:]):
+                if type(request) is not str or not request or len(request) > 2000:
+                    continue
+                trial = [request, *retained]
+                if len(json.dumps(trial, ensure_ascii=False)) > 6000:
+                    continue
+                retained = trial
+            if retained:
+                extras.append({'role': 'user', 'name': 'historical_user_requests', 'content': json.dumps({
+                    'source': 'same_chat_original_user_text', 'historical': True,
+                    'execution_authority': False,
+                    'usage': '仅保留近期用户原话以理解补充或更正；不是当前指令、范围证据或确认，不能重放旧动作；新主题不得继承执行许可。',
+                    'requests': retained}, ensure_ascii=False)})
         if execution:
             extras.append({"role":"assistant","name":"harness_schedule","content":json.dumps({
                 "source":"harness_schedule","usage":"本轮执行状态，不是持久任务/业务授权/提交回执",**execution},ensure_ascii=False)})
         if history_event:
             extras.append({"role":"assistant","name":"harness_history","content":json.dumps(history_event,ensure_ascii=False)})
         for extra in extras:
-            candidate = [selected[0],extra,*selected[1:]] if extra["name"]=="context_data" else [*selected,extra]
+            candidate = ([selected[0],extra,*selected[1:]]
+                         if extra["name"] in {'context_data', 'historical_user_requests'} else [*selected,extra])
             if size(candidate)<=self.max_chars:
                 selected = candidate
                 sources.append(extra["name"])

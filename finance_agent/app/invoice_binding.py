@@ -1,7 +1,7 @@
 """Bind optional invoice write roles to real user text and current selections."""
 import re
 
-from .responses import explicit_scope
+from .responses import request_scope as explicit_scope
 from .tui_intent import excluded_invoice_ids, invoice_value_source
 
 

@@ -88,6 +88,7 @@ class ConversationUI:
 
     def restore_conversation(self):
         history = self.conversation.history()
+        reference_state = None
         permitted = {row["company_id"] for row in company_access(self.db,self.user) if row["read"]}
         focus = history["focus"]
         if focus and focus[0] in permitted:
@@ -100,6 +101,14 @@ class ConversationUI:
             if found["ok"] and found["data"]["can_execute"]:
                 self.task_focus = tuple(task)
         for turn in history["turns"]:
+            # State retirement is not model history. Apply it even when a long
+            # request, management filter or lost read permission hides the body.
+            state = (turn.get('hint') or {}).get('reference_state')
+            if (turn['seq'] > history['boundary'] and type(state) is dict
+                    and (turn['state'] == 'COMPLETED' or state.get('retired') is True)):
+                reference_state = state
+                if state.get('retired') is True:
+                    self.resume_displays = []
             scopes = [call.get("scope") or {} for call in turn["calls"]]
             scoped = {scope.get("company_id") for scope in scopes}
             scoped.update(company for scope in scopes for company in scope.get("company_ids", ()))
@@ -153,7 +162,15 @@ class ConversationUI:
                 if len(turn["request"]) <= 2000 and (not focus or focus[0] in permitted):
                     self.resumed.append({"request":turn["request"], **hint})
                 self.resume_focus = tuple(focus) if focus and focus[0] in permitted else None
+        # Idle F4 can update this snapshot without adding a transcript turn.
+        # It is newer than any retained per-turn hint and must win restoration.
+        if history.get('reference_state') is not None:
+            reference_state = history['reference_state']
+            if reference_state.get('retired') is True:
+                self.resume_displays = []
         self.resumed = self.resumed[-6:]
+        if reference_state is not None:
+            self.resumed.append({'request': '', 'reference_state': reference_state})
         self.resume_displays = self.resume_displays[-64:]
         self.saved_records = self.saved_records[-20:]
         if self.has_saved_history:
@@ -187,6 +204,9 @@ class ConversationUI:
             hint = {"tools":[c["tool"] for c in reads], "focus":next_focus}
             if reads or retired_annual_focus:
                 self.resume_focus = next_focus
+        # Snapshot the reference owner's *post-turn* state, not earlier reads
+        # from a turn which may have just been cancelled. Null is meaningful.
+        hint = {**(hint or {}), 'reference_state': self.agent.context.reference_state_snapshot()}
         try:
             evidence = [{**call, "id": self.storage_text(call["id"]),
                          "error": self.storage_text(call["error"]) if call.get("error") else None} for call in calls]

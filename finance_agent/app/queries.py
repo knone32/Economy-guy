@@ -162,10 +162,17 @@ def list_missing_purpose_invoices(connection, user_id: str, company_id: str, yea
     return [_invoice_dict(row) for row in rows]
 
 
-def list_bank_transactions(connection, user_id: str, company_id: str, year: int, month: int) -> list[dict]:
+def list_bank_transactions(connection, user_id: str, company_id: str, year: int, month: int, direction=None) -> list[dict]:
     """查询指定企业、年月的银行流水，所有字段只读。"""
     prefix = _check_month(year, month); _authorize(connection, user_id, company_id)
-    rows = connection.execute("SELECT * FROM bank_transactions WHERE company_id = ? AND transaction_date LIKE ? ORDER BY transaction_date, transaction_no", (company_id, prefix + "%")).fetchall()
+    if direction is not None and direction not in {'收入', '支出'}:
+        raise QueryError('direction 必须是收入或支出')
+    sql = "SELECT * FROM bank_transactions WHERE company_id = ? AND transaction_date LIKE ?"
+    params = (company_id, prefix + '%')
+    if direction is not None:
+        sql += ' AND direction = ?'
+        params += (direction,)
+    rows = connection.execute(sql + ' ORDER BY transaction_date, transaction_no', params).fetchall()
     return [_bank_row(row) for row in rows]
 
 

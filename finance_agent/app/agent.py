@@ -8,6 +8,8 @@ from uuid import uuid4
 from .tool_registry import (TOOLS, TEACHING_TOOLS, REGISTRY, handle_tool, tool_result,
                             remaining_work_allowed, validate_arguments, register_invoice_selection)
 from .trace import redact, write_trace, warn_trace_degraded
+from .responses import merge_pending_scope
+from .pending_transition import contract_error as pending_contract_error, transition as apply_pending_transition, PendingTransitionError
 from .write_coordination import WriteCoordinator
 from .updates import commit_invoice_update, edit_scope_error
 from .provenance import SOURCES, ScopeProof
@@ -18,8 +20,8 @@ from .tui_intent import (invoice_choice_reply, invoice_followup_action, invoice_
                          invoice_change_boundary, literal_single_invoice_edit, named_invoice_read_and_edit, unresolved_invoice_field)
 from .invoice_batch import plan_invoice_change, recover_named_invoice_selection
 from .invoice_binding import bind_write_scope
-from .responses import (DIRECTORY_INLINE_LIMIT, directory_complete, directory_count_only, directory_display_pages, explicit_scope,
-                        parse_final, reply_evidence_conflict, render_information, render_query_conclusion, render_clarification, render_summary_basis,
+from .responses import (DIRECTORY_INLINE_LIMIT, directory_complete, directory_count_only, directory_display_pages, request_scope as explicit_scope,
+                        parse_final, final_structure_diagnostic, reply_evidence_conflict, render_information, render_query_conclusion, render_clarification, render_summary_basis,
                         render_explanation_evidence, render_grounded_explanation, render_invoice_comparison, render_reference_error, render_stopped,
                         render_task_scope_negotiation, render_tool_failure, QUERY_GOALS, query_goal,
                         verified_query_goal, render_goal_coverage, render_bank_income_comparison, render_hypothetical_purpose_rules, scope_mismatch)
@@ -64,6 +66,10 @@ context_data的prior_query_tools只是历史查询类型线索：当前轮仅更
 工具 status=NO_DATA 表示无记录，金额为0.00；DENIED/INVALID_ARGUMENTS/ERROR不能当作零或成功。金额单位元。
 只根据工具真实结果回答。用户身份由程序决定。"""
 SYSTEM += """
+工具可用不代表本轮都需要查询。仅读取和呈现回答用户本轮问题所需的业务对象、范围和指标；
+排除项是约束，不是新增查询目标。单一明细工具已带同范围合计时，不额外调用综合概览或其他对象目录。
+"""
+SYSTEM += """
 最终文本必须是JSON对象：信息回答 {"kind":"information","text":"自然语言回答"}；
 问候、无须数据库的一般知识解释使用 {"kind":"general","text":"自然语言说明"}，不作任何保存/提交/数据库当前状态声明。
 追问 {"kind":"clarification","text":"自然语言问题","missing_fields":["invoice_no"]}。
@@ -107,12 +113,18 @@ def live_model(messages, tools):
 _BUILTIN_LIVE_MODEL=live_model
 
 SYSTEM += """
-查询、追问的 text 是实际展示给用户的正文。按当前工具事实回答，未完成的子目标必须追问并给出 missing_fields，不要把问题放在 information 中。
+查询、追问的 text 是实际展示给用户的正文。按当前工具事实回答，需要用户补充时明确给missing_fields和待补事件；正文可同时交付已取得的查询结果。
 修改要求缺票号但字段新值已明确时，clarification 可带 pending_change={field,new_value} 保存已知内容，值必须精确来自原话；不要为只读请求创建此数据。
 同句读取多张而只改部分时，必须在现有 propose_invoice_changes 上提供 write_scope={company_id,year,month,invoice_nos}，只包含修改目标；不要把读取集合变成修改集合。普通查询无需该参数。
 context_data.pending_request 是当前会话的待补要求，不是权限或确认。补充或更正该要求时，重新读当前数据，提案带 pending_request_id 并按需给 write_scope。
 无需提案的待补接续，可在最终信封带 pending={request_id,action}，action 为 continue、cancel 或 replace。取消只清除待补和未提交草稿，不撤销已提交数据。
 新问题不要引用无关待补项。只读查询、转述或含糊对象不得提出修改；无法唯一选择时保留原要求并追问。无需调用额外意图声明工具。
+pending 可选 scope 仅列本轮更正后的候选槽位（company_id、invoice_no、year、month、periods）；未更正槽位保留。范围必须来自原话或已有待补槽位，不代表权限。取消或替换必须引用当前 request_id。
+引号内的用途、备注或转述内容是载荷，不是新的查询对象或账期。一般改写使用 general，不需要重读历史业务事实。信息回答若仍接续待补要求，应明确携带 pending；独立新问题不携带旧 pending。
+回复kind仅表示正文类型，不决定待补生命周期。潜在发票修改已读取当前票据后，最终JSON明确给missing_fields：无待补用[]，需要用户补充则列缺项，并提供pending事件和已知pending_change。information也可交付查询结果并建立待补。
+首次待补使用pending={action:"create",scope:{...}}，request_id由后端绑定；接续/替换/取消使用当前待补request_id。scope各槽位用列表，候选集合必须明确给invoice_no列表，不能用全部提及或读取集合替代。未更正的企业、账期、字段和新值保留。无事件时不能仅凭正文宣告清单已替换或取消。
+最终JSON根字段只有kind、text及可选missing_fields、pending、pending_change。pending内部只有action、request_id、scope。
+pending_change与pending是根对象中的同级字段，不能嵌套；未更正的字段和新值可省略pending_change，由后端保留。
 """
 
 
@@ -483,7 +495,45 @@ class Agent:
             # Keep data while the model decides continuation; never inherit a draft or approval.
             self.pending_intent, pending = active_pending, None
         model_text = None
+        natural = None
         pending_action = None
+        explicit_pending_applied = False
+        pending_repair_used = False
+        pending_repair_active = False
+        pending_repair_reason = None
+        read_finish_used = read_finish_active = False
+        completed_read_calls = {}
+
+        def workbook_stamp():
+            stamp = []
+            for path in (self.db_path, Path(str(self.db_path) + '-wal')):
+                try:
+                    info = Path(path).stat()
+                    stamp.append((info.st_size, info.st_mtime_ns))
+                except FileNotFoundError:
+                    stamp.append(None)
+            return tuple(stamp)
+
+        def read_signature(function):
+            try:
+                return json.dumps([function['name'], json.loads(function['arguments'])], sort_keys=True, ensure_ascii=False)
+            except (KeyError, ValueError, TypeError, RecursionError):
+                return None
+
+        def may_finish_duplicate(record):
+            if (read_finish_used or not read_only or allow_prepare or management or active_pending or invoice_write
+                    or execution.schedule or self.user_id != actor or not self.workbook_available()
+                    or record['stamp'] != workbook_stamp()):
+                return False
+            scope = record['scope']
+            companies = scope.get('company_ids') or ([scope['company_id']] if scope.get('company_id') else [])
+            if not companies:
+                return False
+            try:
+                with closing(open_existing(self.db_path, readonly=True)) as connection:
+                    return all(check_permission(connection, self.user_id, c, 'read').allowed for c in companies)
+            except sqlite3.Error:
+                return False
         rejected_reply = None
         model_change = None
         scope_repair_used = False
@@ -582,6 +632,7 @@ class Agent:
         self.trace_id = uuid4().hex
         self.trace("turn.started", {"user": self.user_id, "transport_bound": self.transport is not None})
         self.execution = execution = TurnExecution(self.budget_policy,self.trace)
+        execution.allow_read_completion = True
         read_results = []
         retrieval_corrected = False
         read_only = not (allow_prepare or management or self.teaching)
@@ -1026,11 +1077,14 @@ class Agent:
 
             scope_fields = {"company_id", "year", "month"} & set(missing_fields)
             pending_fields = missing_fields if model_text is not None or invoice_write else scope_fields
-            if (read_only and category == "clarification" and pending_fields
+            if (read_only and category == "clarification" and pending_fields and not explicit_pending_applied
                     and (self.pending_intent is None or pending_action in {"continue", "replace"})):
                 request = (active_pending["request"] + "\n" + current_request
                            if active_pending and pending_action == "continue" else text_request)
-                pending_scope = explicit_scope(request, include_update_aliases=True)
+                transition_scope = (natural.get('pending') or {}).get('scope') if natural else None
+                pending_scope = merge_pending_scope(
+                    active_pending.get('scope') if active_pending and pending_action in {'continue', 'replace'} else None,
+                    current_request if active_pending else request, transition_scope)
                 if "year" in pending_fields and missing_year_months - inferred.keys():
                     # The year already present may belong to a different, complete period.
                     pending_scope.pop("year", None)
@@ -1040,8 +1094,13 @@ class Agent:
                                        "missing_fields": tuple(pending_fields), "actor": self.user_id,
                                        "workbook": str(self.db_path), "request_id": self.trace_id,
                                        "model_managed": model_text is not None}
+                self.pending_intent['source_request'] = (
+                    active_pending.get('source_request', active_pending['request']) + '\n' + current_request
+                    if active_pending and pending_action in {'continue', 'replace'} else request)
                 if model_change:
                     self.pending_intent["change"] = {key: [value] for key, value in model_change.items()}
+                elif active_pending and pending_action in {'continue', 'replace'} and active_pending.get('change'):
+                    self.pending_intent['change'] = dict(active_pending['change'])
             if comparison and category == "database_query":
                 current = next((result["data"] for name, result in read_results
                                 if name == "get_invoice" and result["status"] == "SUCCESS"
@@ -1112,7 +1171,8 @@ class Agent:
             task_creations = [(name, outcome) for name, outcome in read_results
                               if name == "manage_task" and confirmed_task_creation(outcome)]
             stop = execution.stop_reason
-            write_expected = bool(allow_prepare or invoice_write or mixed or invoice_change or bulk_no_confirmation)
+            write_expected = bool(allow_prepare or scoped_edit or confirmed_invoice_edit or invoice_change
+                                  or (active_pending and active_pending.get('change')) or bulk_no_confirmation)
             scoped = single_scope_results() if single_scope and (simple_directory or metric_request) else []
             directory_results = [(name, outcome) for name, outcome in scoped if name == "list_invoice_directory"]
             directory_verified = simple_directory and complete_directory(directory_results)
@@ -1589,6 +1649,13 @@ class Agent:
         recent_keys = {(candidate["company_id"], candidate["invoice_no"])
                        for candidate in recent_invoices.values() if not scope_mismatch(explicit, candidate)}
         recent_tool_scope = None
+        # A unique, permission-filtered actual query key is already held by the
+        # reference owner.  Bind it for a deictic read, never from model arguments.
+        if (read_only and not invoice_write and hint and hint['ordinal'] is None
+                and not hint['anchor_id'] and len(recent_keys) == 1
+                and len({(v['company_id'], v['invoice_no']) for v in recent_invoices.values()}) == 1):
+            company, number = next(iter(recent_keys))
+            recent_tool_scope = {'company_id': [company], 'invoice_no': [number]}
         recent_edit = None
         if (invoice_write and not reference and queried
                 and recent_keys == {(queried["company_id"], queried["invoice_no"])}
@@ -1677,7 +1744,7 @@ class Agent:
             if active_pending:
                 context.append({"role": "user", "name": "context_data", "content": json.dumps({
                     "pending_request": {key: active_pending[key] for key in
-                                        ("request_id", "request", "scope", "missing_fields", "change")
+                                        ("request_id", "request", "source_request", "scope", "missing_fields", "change")
                                         if key in active_pending}}, ensure_ascii=False)})
             if confirmed_invoice_edit is not None:
                 context.append({"role": "system", "content":
@@ -1765,15 +1832,27 @@ class Agent:
                                   and self.transport.diagnose_next_request)
             # The same set is advertised to the model, scheduler and dispatcher.
             turn_tools = [tool for tool in turn_tools if tool["function"]["name"] in self.allowed_tools]
-            permitted = {tool["function"]["name"] for tool in turn_tools}
+            request_tools = [] if pending_repair_active or read_finish_active else turn_tools
+            permitted = {tool["function"]["name"] for tool in request_tools}
+            if pending_repair_active:
+                context.append({'role': 'system', 'content':
+                    '仅补正上一条最终JSON的待补结构，不能调用业务工具、不能增加读取或修改。'
+                    '按原始用户要求和已有本轮事实自然回复；完成用missing_fields=[]，待补用非空列表及pending事件。'
+                    '首次create可省request_id；continue/replace/cancel须引用当前待补id。'
+                    'scope必须是槽位到列表的对象；候选集合由你解释原话明确提交，不能照抄全部提及。'
+                    '保留未更正槽位和用户原新值，不授予权限/确认。结构问题：' + str(pending_repair_reason)})
+            if read_finish_active:
+                context.append({'role': 'system', 'content':
+                    '重复的只读调用没有再次执行。仅依据本轮已取得的原始读时结果输出最终答复，不能再调用工具。'
+                    '这不是新读取、当前值二次核验或新提交；仍有未完成目标要明确说明，不要宣称全部完成。'})
             if not diagnostic_request:
-                self.trace("model_input", redact({"messages": context, "tools": turn_tools}))
+                self.trace("model_input", redact({"messages": context, "tools": request_tools}))
             try:
-                reply = self.transport(context,turn_tools) if self.transport and self.model is _BUILTIN_LIVE_MODEL else self.model(context, turn_tools)
+                reply = self.transport(context,request_tools) if self.transport and self.model is _BUILTIN_LIVE_MODEL else self.model(context, request_tools)
                 if not isinstance(reply, dict) or reply.get("role") != "assistant":
                     raise ValueError("模型不能伪造消息角色")
-                reply = self.protocol.normalize(reply,bool(turn_tools))
-                wire_reply = self.protocol.wire([reply],bool(turn_tools))[0]
+                reply = self.protocol.normalize(reply,bool(request_tools))
+                wire_reply = self.protocol.wire([reply],bool(request_tools))[0]
                 # Reject invalid Unicode before saving or forwarding the assistant message.
                 json.dumps(wire_reply, ensure_ascii=False).encode("utf-8")
                 calls = reply.get("tool_calls") or []
@@ -1781,6 +1860,8 @@ class Agent:
                     raise ValueError("工具请求结构错误")
                 if len({c["id"] for c in calls}) != len(calls):
                     raise ValueError("重复工具请求编号")
+                if (pending_repair_active or read_finish_active) and calls:
+                    raise ValueError('受限最终答复阶段禁止业务工具分发')
             except Exception:
                 self.coordinator.pending = None
                 if allow_prepare:
@@ -1791,6 +1872,8 @@ class Agent:
             if not diagnostic_request:
                 self.trace("model_reply", redact(wire_reply))
             self.messages.append(reply)
+            pending_repair_active = False
+            read_finish_active = False
             if not calls:
                 if self.update_session.explicit_edit_only:
                     missing = edit_scope_error(self.update_session.expected_scope or {})
@@ -1798,8 +1881,40 @@ class Agent:
                         return finish(render_clarification(missing["evidence"]), store=False,
                                       category="clarification")
                 natural = parse_final(reply.get("content"))
+                if reconciliation_edit and not execution.schedule:
+                    if self.user_id == actor and self.workbook_available():
+                        if not read_results:
+                            read_exact_edit_target(reconciliation_edit, from_reference=reconciliation_from_reference)
+                            if execution.stop_reason:
+                                outcome = read_results[-1][1] if read_results else None
+                                self.messages.pop()
+                                return finish(render_tool_failure(execution.stop_reason, "get_invoice", outcome))
+                        self.coordinator.assess_current_match(read_results, natural_scope=reconciliation_edit)
+                        if self.write_receipt["status"] == "CURRENT_VALUE_MATCHES":
+                            self.messages.pop()
+                            if natural is None:
+                                self.trace("error", {"category": "invalid_final_envelope"})
+                            return finish("", store=False, chat_notice=self.write_receipt["message"],
+                                          single_edit_verified=True)
+                invoice_read_evidence = any(name in {'get_invoice', 'resolve_recent_invoice'}
+                    and result.get('status') == 'SUCCESS' and result.get('evidence', {}).get('source') == 'current_sqlite'
+                    for name, result in read_results)
+                narrow_pending_contract = read_only and bool(active_pending or invoice_write and invoice_read_evidence)
+                pending_error = pending_contract_error(natural, narrow_pending_contract)
+                if pending_error:
+                    self.trace('pending.contract_rejected', {'reason': pending_error, 'repair_used': pending_repair_used})
+                    if not pending_repair_used:
+                        pending_repair_used = pending_repair_active = True
+                        pending_repair_reason = (json.dumps(final_structure_diagnostic(reply.get('content')), ensure_ascii=False)
+                                                 if pending_error == 'invalid_final_envelope' else pending_error)
+                        continue
+                    model_text = None
+                    execution.stop('INVALID_RESPONSE')
+                    return finish('待补结构补正仍不完整；没有提交修改，请重新明确要求。', store=False)
                 if natural is not None and natural["kind"] in {"information", "explanation"} and read_results:
-                    conflict = reply_evidence_conflict(natural["text"], read_results, current_request)
+                    conflict = reply_evidence_conflict(natural["text"], read_results, current_request,
+                        trusted_scope=self.context.proof(), actor=self.user_id,
+                        trusted_references=tuple(recent_invoices.values()))
                     if conflict:
                         self.trace("reply.rejected", {"reason": conflict, "source": "model"})
                         rejected_reply = conflict
@@ -1808,30 +1923,40 @@ class Agent:
                     model_text = natural["text"]
                     model_change = natural.get("pending_change")
                     if model_change:
-                        source = active_pending["request"] + "\n" + current_request if active_pending else current_request
+                        source = active_pending.get('source_request', active_pending['request']) + "\n" + current_request if active_pending else current_request
                         if not invoice_change_boundary(source, model_change["field"], model_change["new_value"]):
                             model_text = model_change = None
                             execution.stop("INVALID_RESPONSE")
                             return finish("待补修改内容缺少有效原文来源，请明确字段和新值。", store=False)
                     transition = natural.get("pending")
                     if transition:
-                        if not active_pending or transition["request_id"] != active_pending["request_id"]:
+                        try:
+                            self.pending_intent = apply_pending_transition(active_pending, transition,
+                                actor=self.user_id, book=self.db_path, current_id=self.trace_id,
+                                current_request=current_request, current_scope=explicit_scope(current_request, True),
+                                missing_fields=natural.get('missing_fields', ()), change=model_change)
+                        except (PendingTransitionError, TypeError, ValueError) as error:
                             model_text = None
-                            execution.stop("INVALID_RESPONSE")
-                            return finish("待补请求引用已失效，请重新明确当前要求。", store=False)
+                            execution.stop('INVALID_RESPONSE')
+                            self.trace('pending.transition_rejected', {'reason': str(error)})
+                            return finish('待补范围或引用缺少有效原文来源；没有提交修改。', store=False)
                         pending_action = transition["action"]
+                        explicit_pending_applied = True
                         if pending_action == "cancel":
                             self.cancel_update()
                             execution.stop("CANCELLED")
                             return finish(model_text, store=False, category="clarification")
-                        if pending_action == "replace":
-                            self.pending_intent = None
-                    elif active_pending and natural["kind"] != "clarification":
-                        self.pending_intent = None
+                    # A reply kind alone never consumes another clarification.
+                    if explicit_pending_applied and natural.get('missing_fields'):
+                        # Current invoice reads may be complete while selecting
+                        # a future edit still requires the user. Do not let a
+                        # read-completion fast path retire that separate state.
+                        return finish(model_text, store=False, category='clarification',
+                                      missing_fields=natural['missing_fields'])
                 if scoped_edit and (verified := scoped_invoice_reads()) and (
-                        natural is None or (natural["kind"] == "clarification" and not scoped_edit["write_scope"])):
+                        natural is None or (natural.get('missing_fields') and not scoped_edit["write_scope"])):
                     self.messages.pop()
-                    if (not scoped_edit["write_scope"] and natural and natural["kind"] == "clarification"
+                    if (not scoped_edit["write_scope"] and natural and natural.get('missing_fields')
                             and set(natural["missing_fields"]) == {"invoice_no"}):
                         return finish_scoped_edit_question(verified, natural["text"])
                     notice = render_query_conclusion(verified) + "\n尚未形成可核验的修改预览。"
@@ -1853,21 +1978,6 @@ class Agent:
                     if clarification is not None:
                         return clarification
                 # Compare trusted evidence before using the model final to decide what is missing.
-                if reconciliation_edit and not execution.schedule:
-                    if self.user_id == actor and self.workbook_available():
-                        if not read_results:
-                            read_exact_edit_target(reconciliation_edit, from_reference=reconciliation_from_reference)
-                            if execution.stop_reason:
-                                outcome = read_results[-1][1] if read_results else None
-                                self.messages.pop()
-                                return finish(render_tool_failure(execution.stop_reason, "get_invoice", outcome))
-                        self.coordinator.assess_current_match(read_results, natural_scope=reconciliation_edit)
-                        if self.write_receipt["status"] == "CURRENT_VALUE_MATCHES":
-                            self.messages.pop()
-                            if natural is None:
-                                self.trace("error", {"category": "invalid_final_envelope"})
-                            return finish("", store=False, chat_notice=self.write_receipt["message"],
-                                          single_edit_verified=True)
                 if natural and natural["kind"] == "clarification" and confirmed_fields.intersection(natural["missing_fields"]):
                     remaining = [key for key in natural["missing_fields"] if key not in confirmed_fields]
                     if remaining:
@@ -1881,8 +1991,9 @@ class Agent:
                         execution.stop("MODEL_FINISHED_WITH_PENDING_WORK")
                         notice = "本轮账期已经核验，其余操作尚未完成。请按原条件重试。"
                         return finish(notice, store=False, chat_notice=notice)
-                if (read_only and not bulk_no_confirmation and invoice_intent_source(text_request)
-                        and natural is not None and natural["kind"] != "clarification"):
+                if (read_only and not bulk_no_confirmation
+                        and (confirmed_invoice_edit or (invoice_write and active_pending and active_pending.get('change')))
+                        and natural is not None and not natural.get('missing_fields')):
                     self.messages.pop()
                     execution.stop("MODEL_FINISHED_WITH_PENDING_WORK")
                     notice = ("上一次提交结果仍未知，请先核查审计。" if unresolved_receipt
@@ -1961,6 +2072,7 @@ class Agent:
                 if wants_explanation and read_only:
                     explanation = render_grounded_explanation(natural["text"], facts, text)
                     if explanation:
+                        model_text = explanation
                         notice = explanation
                         answer = render_information(read_results) + "\n" + notice if read_results else notice
                         return finish(answer, store=False,
@@ -2024,7 +2136,7 @@ class Agent:
                     # 只保留业务意图；本轮草稿/最终确认已在begin时清空。
                     return finish(render_clarification(natural) + "\n操作回执：" + self.write_receipt["message"], store=False, category="clarification")
                 self.coordinator.pending = None
-                if natural["kind"] == "clarification":
+                if natural["kind"] == "clarification" or natural.get('missing_fields'):
                     fields = natural["missing_fields"]
                     if model_text is None and simple_directory and self.context.previous_directory(read_results):
                         self.messages.pop()
@@ -2048,11 +2160,15 @@ class Agent:
                                       category="clarification", missing_fields=natural["missing_fields"],
                                       chat_notice=render_query_conclusion(matched) + "\n" + question)
                     return finish(question, store=False, category="clarification", missing_fields=natural["missing_fields"])
-                if natural["kind"] == "general" and not allow_prepare and not read_results and not expected_scope:
+                if natural["kind"] == "general" and not allow_prepare and not read_results:
                     # 一般说明作为未核实模型表达单独标注，绝不写入操作回执。
                     return finish("一般说明（模型生成，未核实；不代表数据库执行或当前业务事实）：\n" + natural["text"],
                                   store=False,category="general_unverified")
                 if sql_analysis and not read_results:
+                    if (not explicit and not query_goal(current_request) and not invoice_write
+                            and not active_pending):
+                        return finish('本轮没有读取当前业务数据；以下为模型一般表达。', store=False,
+                                      category='general_unverified', chat_notice='本轮没有读取当前业务数据；一般表达不构成业务事实或操作回执。')
                     return finish("本轮尚未取得当前账簿结果。请补充查询范围或明确要核对的内容。",
                                   store=False, category="clarification")
                 # 非普通分析路径继续使用既有执行证据渲染。
@@ -2067,6 +2183,19 @@ class Agent:
                 execution.requested_tools += 1
                 self.trace("tool.requested", call)
                 fn = call["function"]
+                signature = read_signature(fn)
+                previous_read = completed_read_calls.get(signature)
+                if len(calls) == 1 and previous_read and may_finish_duplicate(previous_read):
+                    read_finish_used = read_finish_active = True
+                    result = tool_result('ALREADY_READ', evidence={'source': 'current_turn_reference',
+                        'original_tool_call_id': previous_read['id'], 'original_trace_id': self.trace_id},
+                        error='本轮已有该读取结果；未再次进入Handler，只允许一次最终答复。')
+                    self.messages.append({'role': 'tool', 'tool_call_id': call['id'],
+                                          'content': json.dumps(result, ensure_ascii=False)})
+                    self.trace('tool_result', {'request': call, 'result': result})
+                    self.trace('read.final_only', {'original_call_id': previous_read['id'],
+                        'suppressed_call_id': call['id'], 'no_new_handler_or_progress': True})
+                    continue
                 if isinstance(fn.get("name"), str) and fn["name"] not in permitted:
                     result = tool_result("DENIED", evidence={"source": "tool_dispatch"},
                                          error="工具未授权给当前Agent")
@@ -2132,10 +2261,12 @@ class Agent:
                             prior_scope = active_pending["scope"]
                             same_scope = all(not explicit.get(key) or explicit[key] == prior_scope.get(key)
                                              for key in ("company_id", "year", "month", "periods"))
-                            if (same_scope and pending_read.get("company_id") in prior_scope.get("company_id", ())
-                                    and pending_read.get("invoice_no") in prior_scope.get("invoice_no", ())):
-                                tool_scope = {**tool_scope, **prior_scope}
-                                tool_proof = ScopeProof(actor, tool_scope, dict.fromkeys(tool_scope, "session_confirmed"))
+                            pending_read_scope = {**prior_scope, **explicit}
+                            if (same_scope and pending_read.get("company_id") in pending_read_scope.get("company_id", ())
+                                    and pending_read.get("invoice_no") in pending_read_scope.get("invoice_no", ())):
+                                tool_scope = {**tool_scope, **pending_read_scope}
+                                tool_proof = ScopeProof(actor, tool_scope,
+                                    {key: 'user_current' if key in explicit else 'session_confirmed' for key in tool_scope})
                         if recent_tool_scope and fn.get("name") == "get_invoice":
                             tool_scope = {**expected_scope, **recent_tool_scope}
                             tool_proof = ScopeProof(actor, recent_tool_scope,
@@ -2178,7 +2309,7 @@ class Agent:
                                         if not active_pending or pending_id != active_pending["request_id"]:
                                             result = tool_result("AMBIGUOUS", error="待补请求引用已失效，请重新明确修改要求。")
                                         else:
-                                            proposal_source = active_pending["request"] + "\n" + current_request
+                                            proposal_source = active_pending.get('source_request', active_pending['request']) + "\n" + current_request
                                     if (result is None and pending_id and "write_scope" not in proposal and selection
                                             and selection[2] == "get_invoice" and len(selection[0]) == 1
                                             and proposal["mode"] == "item"):
@@ -2190,8 +2321,8 @@ class Agent:
                                     if result is None and "write_scope" in proposal:
                                         try:
                                             bound_edit = bind_write_scope(proposal_source, proposal, selection)
-                                            if pending_id and proposal["new_value"] in active_pending["request"]:
-                                                bound_edit["write"] = active_pending["request"]
+                                            if pending_id and proposal["new_value"] in active_pending.get('source_request', active_pending['request']):
+                                                bound_edit["write"] = active_pending.get('source_request', active_pending['request'])
                                                 bound_edit["field_evidence"] = active_pending.get("change") or bound_edit.get("field_evidence")
                                             proposal = {**proposal, "excluded_invoice_ids": sorted(bound_edit["excluded"])}
                                             choices = active_pending["scope"].get("invoice_no", ()) if pending_id else ()
@@ -2252,6 +2383,8 @@ class Agent:
                                                                  error="集合修改必须明确完整年月")
                                         else:
                                             edit_periods = requested_periods
+                                            if bound_edit:
+                                                edit_periods = tuple(map(tuple, bound_edit['write_scope'].get('periods', ())))
                                             if not edit_periods and selection and selection[2] == "resolve_recent_invoice":
                                                 edit_periods = ((selection[1]["year"], selection[1]["month"]),)
                                             invoice_change, status, error = plan_invoice_change(
@@ -2341,6 +2474,12 @@ class Agent:
                     if not (execution.stop_reason or ask_after_plan):
                         execution.stop(result["status"])
                 message = {"role": "tool", "tool_call_id": call["id"], "content": json.dumps(result, ensure_ascii=False)}
+                if (signature and fn.get('name') not in {'prepare_invoice_update', 'propose_invoice_changes',
+                        'manage_task', 'manage_preference', 'manage_display_preference', 'set_schedule'}
+                        and result.get('status') in {'SUCCESS', 'NO_DATA'}
+                        and result.get('evidence', {}).get('source') == 'current_sqlite'):
+                    completed_read_calls[signature] = {'id': call['id'], 'stamp': workbook_stamp(),
+                                                       'scope': result['evidence'].get('scope', {})}
                 if fn.get('name')!='set_schedule':
                     read_results.append((fn.get('name'),result))
                 self.messages.append(message)

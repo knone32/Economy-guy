@@ -6,12 +6,13 @@ from pathlib import Path
 import sqlite3
 from dataclasses import asdict
 from datetime import date
+from decimal import Decimal
 from . import finance, queries
 from .permissions import check_permission
 from .updates import inspect_request, prepare_invoice_update
 from .stage2_schema import open_existing
 from .rules import resolve_rule, check_missing_purpose, RuleError
-from .responses import scope_mismatch, explicit_scope
+from .responses import scope_mismatch, request_scope as explicit_scope
 from .tasks import list_tasks, manage_task
 from .preferences import manage_preference
 from .references import resolve_reference
@@ -26,6 +27,7 @@ YEAR = {"company_id": "string", "year": "integer"}
 MONTH = {**YEAR, "month": "integer"}
 DIRECTORY_SORT_FIELDS = {"sort_by": ("date", "amount"), "sort_order": ("asc", "desc")}
 OPTIONAL_FIELDS = {
+    "list_bank_transactions": {"direction"},
     "list_invoice_directory": DIRECTORY_SORT_FIELDS.keys(),
     "check_missing_purpose": {"rule_business_date"},
     "propose_invoice_changes": {"rule_business_date", "target_year", "target_month", "rule_cohort", "write_scope", "pending_request_id"},
@@ -35,7 +37,7 @@ REGISTRY = {
     "list_invoices": (queries.list_invoices, MONTH),
     "list_invoice_directory": (queries.invoice_directory, {**MONTH, "page": "integer", "sort_by": "string", "sort_order": "string"}),
     "get_invoice": (queries.get_invoice, {"company_id": "string", "invoice_no": "string"}),
-    "list_bank_transactions": (queries.list_bank_transactions, MONTH),
+    "list_bank_transactions": (queries.list_bank_transactions, {**MONTH, "direction": "string"}),
     "invoice_total": (finance.invoice_total, MONTH),
     "bank_income_total": (finance.bank_income_total, MONTH),
     "bank_expense_total": (finance.bank_expense_total, MONTH),
@@ -119,8 +121,12 @@ PARAMETERS = {"sql":"单条 SELECT 或只读 WITH 查询。严格遵守运行时
               "ordinal":"用户明确的展示序号，从1开始。", "anchor_id":"已展示anchor编号；唯一列表时可为空，不能自行编造。",
               "goal":"本轮用户目标描述，不是执行证据。","steps":"必要工具步骤及依赖，不拆分SQL/事务等内部操作。",
               "stop_condition":"目标证据齐全或等待用户/确认/拒绝时停止的描述；不能扩大运行时硬限。"}
+PARAMETERS['direction'] = '可选。银行方向枚举：收入或支出；省略时保持整月收支明细。'
+DESCRIPTIONS['list_bank_transactions'] += ' 可用direction仅取收入或支出，同时返回同一筛选范围的明细、程序计算笔数与合计；这些指标不需要另查综合财务汇总或发票目录。'
 for tool in TOOLS:
     tool["function"]["description"] = DESCRIPTIONS[tool["function"]["name"]]
+    if tool['function']['name'] == 'list_bank_transactions':
+        tool['function']['parameters']['properties']['direction']['enum'] = ['收入', '支出']
     for key, schema in tool["function"]["parameters"]["properties"].items():
         schema["description"] = PARAMETERS[key]
         if tool["function"]["name"] == "list_invoice_directory" and key in {"year", "month"}:
@@ -652,9 +658,14 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
                 return outcome
             if name == "list_rule_versions":
                 versions = [dict(row) for row in connection.execute("""
-                    SELECT rule_id,version,name,effective_from,status,content FROM rules
+                    SELECT rule_id,version,name,effective_from,status,content,rule_type,params_json FROM rules
                     WHERE rule_id=? AND company_scope IN (?, '*') ORDER BY effective_from,version
                 """, (args["rule_id"], args["company_id"]))]
+                for version in versions:
+                    try:
+                        version['params'] = json.loads(version['params_json'])
+                    except (ValueError, TypeError):
+                        version['params'] = None
                 return tool_result("SUCCESS" if versions else "NO_DATA", versions,
                                    {"scope": {"company_id": args["company_id"]}, "source": "current_sqlite"})
             if name == "get_applicable_rules":
@@ -673,7 +684,15 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
                 return tool_result("SUCCESS", {"selector": selector, "count": count}, evidence)
             if name == "check_missing_purpose":
                 data = check_missing_purpose(connection, user_id, **args)
+                parents = data['missing_invoices']
+                derived = []
+                if data.get('count') == len(parents) and not data.get('truncated'):
+                    total = sum(int(Decimal(row['amount']) * 100) for row in parents)
+                    derived = [{'metric': 'missing_purpose_amount_total', 'amount_cents': total,
+                                'parent_invoice_nos': [row['invoice_no'] for row in parents],
+                                'coverage': 'complete_missing_set'}]
                 return tool_result("SUCCESS", data, {"rule": data["rule"], "source": "current_sqlite", "scope": args,
+                                                     "derived": derived,
                                                      "reference_rule_screening": data["reference_rule_screening"]})
             if name in ANNUAL:
                 data = function(connection, user_id, **args)
@@ -699,7 +718,14 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
             evidence = {"source": "current_sqlite", "scope": actual_scope}
             if name == "list_invoice_directory":
                 return tool_result("SUCCESS" if data["rows"] else "NO_DATA", data, evidence)
-            if name in {'list_invoices','list_bank_transactions'}:
+            if name == 'list_bank_transactions' and args.get('direction'):
+                prefix = 'bank_income' if args['direction'] == '收入' else 'bank_expense'
+                # Values and counts use the exact same authorized rows.  A
+                # filtered bank read does not silently add an invoice query.
+                total = sum(int(Decimal(row['amount']) * 100) for row in data)
+                evidence['finance_summary'] = {prefix + '_count': len(data), prefix + '_total': queries._money(total)}
+                evidence['filters'] = {'direction': args['direction']}
+            elif name in {'list_invoices','list_bank_transactions'}:
                 # 与明细同一已鉴权快照，复用现有金额服务；渲染按工具范围选取，不跨企业拼加。
                 evidence['finance_summary']=finance.get_finance_summary(connection,user_id,**args)
             if name == "get_invoice" and data:

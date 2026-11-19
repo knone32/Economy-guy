@@ -36,6 +36,21 @@ class SessionBusyError(OSError):
     """Another process owns this actor and workbook conversation."""
 
 
+def _reference_state_json(state):
+    """Validate server metadata only; it never contains values or approvals."""
+    if (type(state) is not dict or set(state) != {'version', 'retired', 'invoice_query'}
+            or type(state['version']) is not int or state['version'] != 1
+            or type(state['retired']) is not bool):
+        raise ValueError('Invalid reference state')
+    key = state['invoice_query']
+    if key is not None and (type(key) is not dict or set(key) != {'company_id', 'invoice_no'}
+                            or any(type(v) is not str or not v or len(v) > 80 for v in key.values())):
+        raise ValueError('Invalid reference query key')
+    if state['retired'] and key is not None:
+        raise ValueError('Retired reference cannot retain a query key')
+    return json.dumps(state, ensure_ascii=False)
+
+
 class SessionStore:
     """One active transcript per trusted actor/workbook, with an OS-held lock."""
 
@@ -96,7 +111,7 @@ class SessionStore:
                   created TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                   updated TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                   state TEXT NOT NULL DEFAULT 'ACTIVE' CHECK(state IN ('ACTIVE','ARCHIVED')),
-                  focus TEXT, task TEXT, boundary INTEGER NOT NULL DEFAULT 0);
+                  focus TEXT, task TEXT, boundary INTEGER NOT NULL DEFAULT 0, reference_state TEXT);
                 CREATE UNIQUE INDEX IF NOT EXISTS active_chat
                   ON chats(workbook,actor) WHERE state='ACTIVE';
                 CREATE TABLE IF NOT EXISTS turns(
@@ -110,8 +125,10 @@ class SessionStore:
                   workbook TEXT NOT NULL, actor TEXT NOT NULL, detail TEXT NOT NULL,
                   PRIMARY KEY(workbook,actor));
                 PRAGMA user_version=1;
-                COMMIT;
             """)
+            # The old v1 store is upgraded additively in this same transaction.
+            if 'reference_state' not in {r['name'] for r in db.execute('PRAGMA table_info(chats)')}:
+                db.execute('ALTER TABLE chats ADD COLUMN reference_state TEXT')
             self.chat = self._active(db)
             db.execute("UPDATE turns SET state='INTERRUPTED' WHERE chat=? AND state='RUNNING'", (self.chat,))
 
@@ -192,9 +209,15 @@ class SessionStore:
     def boundary(self, message):
         self.validate()
         with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if not db.execute("SELECT 1 FROM chats WHERE id=? AND workbook=? AND actor=? AND state='ACTIVE'",
+                              (self.chat,self.identity,self.actor)).fetchone():
+                raise ValueError('Conversation is outside the active actor/workbook')
             seq = db.execute("INSERT INTO turns(chat,state,request,display) VALUES (?,'COMPLETED','',?)",
                              (self.chat, json.dumps([["会话分界",message]], ensure_ascii=False))).lastrowid
-            db.execute("UPDATE chats SET boundary=?,task=NULL,updated=CURRENT_TIMESTAMP WHERE id=?", (seq,self.chat))
+            retired = _reference_state_json({'version':1,'retired':True,'invoice_query':None})
+            db.execute("UPDATE chats SET boundary=?,task=NULL,reference_state=?,updated=CURRENT_TIMESTAMP WHERE id=?",
+                       (seq,retired,self.chat))
 
     def begin(self, request, mode):
         self.validate()
@@ -203,6 +226,22 @@ class SessionStore:
                              (self.chat,redact(request),mode)).lastrowid
             db.execute("UPDATE chats SET updated=CURRENT_TIMESTAMP WHERE id=?", (self.chat,))
             return seq
+
+    def set_reference_state(self, state):
+        """Trusted UI/backend setter, including idle cancellation with no turn.
+
+        This is not exposed as a model tool. The locked actor, actual workbook
+        identity and active chat must still match at the point of persistence.
+        """
+        self.validate()
+        encoded = _reference_state_json(state)
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            changed = db.execute("""UPDATE chats SET reference_state=?,updated=CURRENT_TIMESTAMP
+                WHERE id=? AND workbook=? AND actor=? AND state='ACTIVE'""",
+                (encoded,self.chat,self.identity,self.actor)).rowcount
+            if changed != 1:
+                raise ValueError('Reference state is outside the active actor/workbook/chat')
 
     def checkpoint(self, seq, lookup=None):
         self.validate()
@@ -220,20 +259,36 @@ class SessionStore:
         evidence = [{k: c.get(k) for k in ("id", "tool", "status", "scope", "rule")}
                     | {k: c[k] for k in ("source", "error") if k in c} for c in calls]
         if any(c["tool"] in {"manage_task","manage_preference","manage_display_preference","prepare_invoice_update"} for c in evidence):
-            hint = None
+            # Management/prepare history never restores work or approvals, but
+            # must not erase the server-owned reference retirement snapshot.
+            hint = ({'reference_state': hint['reference_state']}
+                    if type(hint) is dict and type(hint.get('reference_state')) is dict else None)
         if operation is not None:
             evidence = {"tools": evidence, "operation": operation}
+        reference_state = (_reference_state_json(hint['reference_state'])
+                           if type(hint) is dict and 'reference_state' in hint else None)
         with self.connection() as db:
-            db.execute("""UPDATE turns SET display=?,calls=?,trace=?,hint=?,state=?
+            db.execute('BEGIN IMMEDIATE')
+            if not db.execute("SELECT 1 FROM chats WHERE id=? AND workbook=? AND actor=? AND state='ACTIVE'",
+                              (self.chat,self.identity,self.actor)).fetchone():
+                raise ValueError('Conversation is outside the active actor/workbook')
+            changed = db.execute("""UPDATE turns SET display=?,calls=?,trace=?,hint=?,state=?
                           WHERE chat=? AND seq=? AND state IN ('RUNNING','UNKNOWN_OUTCOME')""",
                        (json.dumps(redact(display),ensure_ascii=False),json.dumps(redact(evidence)),trace,
-                        json.dumps(hint),state,self.chat,seq))
+                        json.dumps(hint),state,self.chat,seq)).rowcount
+            if changed != 1:
+                raise ValueError('Turn is no longer active')
+            if reference_state is not None:
+                db.execute('UPDATE chats SET reference_state=? WHERE id=?', (reference_state,self.chat))
             db.execute("UPDATE chats SET updated=CURRENT_TIMESTAMP WHERE id=?", (self.chat,))
 
     def history(self):
         self.validate()
         with self.connection() as db:
-            chat = db.execute("SELECT focus,task,boundary FROM chats WHERE id=?", (self.chat,)).fetchone()
+            chat = db.execute("SELECT focus,task,boundary,reference_state FROM chats WHERE id=? AND workbook=? AND actor=? AND state='ACTIVE'",
+                              (self.chat,self.identity,self.actor)).fetchone()
+            if chat is None:
+                raise ValueError('Conversation is outside the active actor/workbook')
             rows = []
             for entry in db.execute("SELECT * FROM turns WHERE chat=? ORDER BY seq", (self.chat,)):
                 row = dict(entry)
@@ -244,7 +299,11 @@ class SessionStore:
                 if isinstance(stored, dict):
                     row["calls"] = stored["tools"]
                 rows.append(row)
+        reference_state = json.loads(chat['reference_state']) if chat['reference_state'] else None
+        if reference_state is not None:
+            _reference_state_json(reference_state)
         return {key: json.loads(chat[key]) if chat[key] else None for key in ("focus","task")} | {
+            'reference_state': reference_state,
             "boundary":chat["boundary"],"turns":rows}
 
     def _read_detail(self, db):

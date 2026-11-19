@@ -5,7 +5,7 @@ from datetime import date
 from uuid import uuid4
 from .updates import UpdateSession, confirm_draft, commit_invoice_update, inspect_request, result as tool_result
 from .trace import warn_trace_degraded
-from .responses import explicit_scope, scope_mismatch
+from .responses import request_scope as explicit_scope, scope_mismatch
 from .tasks import task_progress
 from .updates import current_target_matches
 
@@ -100,7 +100,7 @@ class WriteCoordinator:
                 closing='”' if value[0]=='“' else '"'
                 if not value.endswith(closing):return
                 value=value[1:-1]
-        if not value.strip():
+        if value != "" and not value.strip():
             return
         company,invoice=scope['company_id'][0],scope['invoice_no'][0]
         if natural_scope and not any(

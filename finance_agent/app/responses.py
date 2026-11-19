@@ -9,8 +9,51 @@ from .queries import INVOICE_FIELD_LABELS, _money
 
 _EXPLANATION_MARKER = re.compile(r"\[\[([A-Za-z][\w.-]*)\]\]")
 
+_QUOTED_DATA = re.compile(r'“[^”\r\n]*”|‘[^’\r\n]*’|「[^」\r\n]*」|『[^』\r\n]*』|"[^"\r\n]*"')
 
-def reply_evidence_conflict(text, results, user_text):
+
+def request_scope(text, include_update_aliases=False):
+    """Current business targets exclude quoted data; literal mention indexes stay separate.
+
+    A quoted value can still be saved verbatim by the existing edit coordinator.
+    It cannot silently grant a second company, invoice or period to that edit.
+    """
+    return explicit_scope(_QUOTED_DATA.sub(lambda m: ' ' * len(m[0]), text), include_update_aliases)
+
+
+def merge_pending_scope(previous, current_text, declared=None, read_results=()):
+    """Merge scope slots, never reinterpret quoted values or lose unchanged slots.
+
+    Declared candidate subsets are bounded by prior/current mentions. They are
+    clarification data only: actual tools still re-read and enforce permissions.
+    """
+    prior = {k: list(v) for k, v in (previous or {}).items()}
+    current = request_scope(current_text, include_update_aliases=True)
+    combined = {**prior, **current}
+    if declared is not None:
+        for key, value in declared.items():
+            values = value if isinstance(value, list) else [value]
+            if key == 'periods':
+                values = [tuple(v) for v in values]
+            available = list(prior.get(key, ())) + list(current.get(key, ()))
+            if key == 'periods':
+                available = [tuple(v) for v in available]
+            if not values or any(v not in available for v in values):
+                raise ValueError('待补范围没有当前原话或已知槽位来源')
+            combined[key] = values
+    elif previous:
+        rows = [r['data'] for name, r in read_results if name in {'get_invoice', 'resolve_recent_invoice'}
+                and r.get('status') == 'SUCCESS' and r.get('evidence', {}).get('source') == 'current_sqlite']
+        keys = {(r['company_id'], r['invoice_no']) for r in rows}
+        companies = {c for c, _ in keys}
+        if len(keys) >= 2 and len(companies) == 1 and companies <= set(combined.get('company_id', ())):
+            mentioned = set(prior.get('invoice_no', ())) | set(current.get('invoice_no', ()))
+            if {n for _, n in keys} <= mentioned:
+                combined['invoice_no'] = sorted(n for _, n in keys)
+    return combined
+
+
+def reply_evidence_conflict(text, results, user_text, *, trusted_scope=None, actor=None, trusted_references=()):
     """Reject unbound numeric/identifier literals; this is not a semantic classifier."""
     token = re.compile(r"(?<![A-Za-z0-9_])(?:[CFR]\d+|v?\d+(?:,\d{3})*(?:\.\d+)?)(?![A-Za-z0-9_])", re.I)
     def literals(value):
@@ -20,6 +63,8 @@ def reply_evidence_conflict(text, results, user_text):
                        else str(Decimal(item.lstrip('vV').replace(',', '')).normalize()))
         return output
     known = literals(user_text)
+    # Layout ordinals are syntax, never a bag of additionally allowed amounts.
+    checked_text = re.sub(r'(?m)^(\s{0,3})(?:\d{1,3}[.)、])\s+', r'\1', text)
     def collect(value, key=""):
         if isinstance(value, dict):
             for name, item in value.items():
@@ -42,15 +87,100 @@ def reply_evidence_conflict(text, results, user_text):
             if evidence.get("query_scope", {}).get("scope") is None:
                 return "unverified_query_scope"
             expected = literals(user_text)
-            for condition in evidence.get("query_scope", {}).get("filters", ()):
+            expected.update(literals(request_scope(user_text, include_update_aliases=True)))
+            from .provenance import ScopeProof, SOURCES
+            if isinstance(trusted_scope, ScopeProof) and trusted_scope.actor == actor:
+                for key, values in trusted_scope.values.items():
+                    if trusted_scope.sources.get(key) in SOURCES:
+                        expected.update(literals(values))
+                companies = evidence['query_scope']['scope'].get('company_ids', ())
+                for reference in trusted_references:
+                    if (isinstance(reference, dict) and len(companies) == 1
+                            and reference.get('company_id') == companies[0]):
+                        expected.update(literals(reference.get('invoice_no', '')))
+            conditions = evidence.get('query_scope', {}).get('conditions')
+            if conditions is not None:
+                checked_filters = [c['value'] for c in conditions if c['field'] in {'company_id', 'invoice_no'}]
+            else:
+                checked_filters = evidence.get('query_scope', {}).get('filters', ())
+            for condition in checked_filters:
                 if any(v[0].isalpha() and v not in expected for v in literals(condition)):
                     return "unbound_query_filter"
         collect(result.get("data"))
         collect(evidence.get("scope"))
         collect(evidence.get("rule"))
+        collect(evidence.get('reference'))
+        collect(evidence.get('finance_summary'))
+        collect(evidence.get('derived'))
+        for condition in evidence.get('query_scope', {}).get('conditions', ()):
+            if condition.get('field') == 'amount_cents':
+                values = condition['value'] if isinstance(condition['value'], list) else [condition['value']]
+                for amount in values:
+                    if type(amount) is int:
+                        collect({'amount_cents': amount})
+        data = result.get('data')
+        if isinstance(data, dict):
+            if name in {'get_invoice', 'resolve_recent_invoice'} and data.get('amount') is not None:
+                try: collect({'invoice_amount_cents': int(Decimal(data['amount']) * 100)})
+                except (InvalidOperation, TypeError, ValueError): pass
+            summary = evidence.get('finance_summary') or data
+            if {'invoice_total', 'bank_income_total'} <= summary.keys():
+                try:
+                    difference = int((Decimal(summary['bank_income_total']) - Decimal(summary['invoice_total'])) * 100)
+                    collect({'income_minus_invoice_cents': difference, 'absolute_difference_cents': abs(difference)})
+                except (InvalidOperation, TypeError, ValueError): pass
+            if name == 'list_invoice_directory' and isinstance(data.get('rows'), list):
+                rows = data['rows']
+                collect({'page_row_count': len(rows), 'page_blank_purpose_count': sum(not r['has_purpose'] for r in rows)})
+                if len(rows) == data.get('total'):
+                    try:collect({'directory_total_cents': sum(int(Decimal(r['amount'])*100) for r in rows)})
+                    except (InvalidOperation, TypeError, ValueError):pass
         if result["status"] == "NO_DATA":
             known.update(literals(0))
-    return "unbound_reply_literals" if literals(text) - known else None
+    # Derived threshold gaps retain both original parents. This numerical
+    # evidence does not certify arbitrary prose rule-applicability claims.
+    invoices = [r for n,r in results if n in {'get_invoice','resolve_recent_invoice'} and r.get('status') == 'SUCCESS']
+    rules = [r for n,r in results if n == 'get_applicable_rules' and r.get('status') == 'SUCCESS']
+    for invoice in invoices:
+        for rule in rules:
+            row, definition = invoice.get('data') or {}, rule.get('data') or {}
+            params = definition.get('params') or {}
+            scope = rule.get('evidence', {}).get('scope', {})
+            if (type(params.get('threshold_cents')) is int and row.get('company_id') == scope.get('company_id')
+                    and str(scope.get('business_date', ''))[:7] == str(row.get('invoice_date', ''))[:7]):
+                try:
+                    gap = params['threshold_cents'] - int(Decimal(row['amount'])*100)
+                    collect({'threshold_gap_cents':gap,'absolute_gap_cents':abs(gap)})
+                except (InvalidOperation,TypeError,ValueError):pass
+    return "unbound_reply_literals" if literals(checked_text) - known else None
+
+
+FINAL_KEYS = {'kind', 'text', 'missing_fields', 'pending', 'pending_change'}
+PENDING_KEYS = {'request_id', 'action', 'scope'}
+PENDING_SCOPE_KEYS = {'company_id', 'invoice_no', 'year', 'month', 'periods'}
+
+
+def final_structure_diagnostic(content):
+    """Only report a rejected JSON's structural path, never repair its values."""
+    try:
+        value = json.loads(content)
+    except (TypeError, ValueError, RecursionError):
+        return {'path': '$', 'error': 'invalid_json_object'}
+    if type(value) is not dict:
+        return {'path': '$', 'error': 'expected_object'}
+    nodes = [('$', value, FINAL_KEYS), ('$.pending', value.get('pending'), PENDING_KEYS)]
+    if type(value.get('pending')) is dict:
+        nodes.append(('$.pending.scope', value['pending'].get('scope'), PENDING_SCOPE_KEYS))
+    for path, node, allowed in nodes:
+        if node is None:
+            continue
+        if type(node) is not dict:
+            return {'path': path, 'error': 'expected_object'}
+        if set(node) - allowed:
+            return {'path': path, 'error': 'unexpected_keys',
+                    'keys': sorted(set(node) - allowed), 'allowed_keys': sorted(allowed)}
+    return {'path': '$', 'error': 'invalid_final_contract',
+            'required': ['kind', 'text'], 'allowed_keys': sorted(FINAL_KEYS)}
 
 
 def parse_final(content):
@@ -63,26 +193,33 @@ def parse_final(content):
     if type(value) is not dict or type(value.get("kind")) is not str or value["kind"] not in {"general", "information", "clarification", "explanation"}:
         return None
     fields = {"kind", "text", "missing_fields"} if value["kind"] == "clarification" else {"kind", "text"}
-    if not fields <= set(value) or not set(value) <= fields | {"pending", "pending_change"} or type(value.get("text")) is not str or not value["text"].strip():
+    if not fields <= set(value) or not set(value) <= FINAL_KEYS or type(value.get("text")) is not str or not value["text"].strip():
         return None
     if "pending_change" in value:
         change = value["pending_change"]
-        if (value["kind"] != "clarification" or type(change) is not dict or set(change) != {"field", "new_value"}
+        if (value["kind"] not in {"information", "clarification"} or type(change) is not dict or set(change) != {"field", "new_value"}
                 or type(change["field"]) is not str or change["field"] not in {"purpose", "remark"}
-                or type(change["new_value"]) is not str or not change["new_value"].strip()):
+                or type(change["new_value"]) is not str):
             return None
     if "pending" in value:
         pending = value["pending"]
-        if (type(pending) is not dict or set(pending) != {"request_id", "action"}
-                or type(pending["request_id"]) is not str or not pending["request_id"].strip()
-                or type(pending["action"]) is not str or pending["action"] not in {"continue", "cancel", "replace"}):
+        if (type(pending) is not dict or "action" not in pending
+                or set(pending) - PENDING_KEYS
+                or (pending.get("action") != "create" and
+                    (type(pending.get("request_id")) is not str or not pending["request_id"].strip()))
+                or ("request_id" in pending and type(pending["request_id"]) is not str)
+                or type(pending["action"]) is not str or pending["action"] not in {"create", "continue", "cancel", "replace"}):
+            return None
+        if "scope" in pending and (type(pending["scope"]) is not dict or
+                set(pending["scope"]) - PENDING_SCOPE_KEYS):
             return None
     markers = set(_EXPLANATION_MARKER.findall(value["text"]))
     if markers and (value["kind"] != "explanation" or markers - {"result", "boundary"}):
         return None
-    if value["kind"] == "clarification":
+    if "missing_fields" in value:
         missing = value["missing_fields"]
-        if not isinstance(missing, list) or not missing or any(type(v) is not str or not v.strip() for v in missing):
+        if (not isinstance(missing, list) or (value["kind"] == "clarification" and not missing)
+                or any(type(v) is not str or not v.strip() for v in missing)):
             return None
     return value
 
@@ -158,7 +295,7 @@ def render_grounded_explanation(text, facts, user_text=""):
                 or not re.search(r"发票|回款|收款", prose)
                 or not re.search(r"不能|无法|不足以|不意味|不代表|不等于|没有可靠|缺乏|缺少", prose)):
             return None
-        return evidence
+        return re.sub(token, lambda match: evidence, text)
     if (not prose.strip() or re.search(
             r"[\d¥￥$\[\]]|[零〇一二两三四五六七八九十百千万亿]+\s*(?:张|条|元|分|年|月)|"
             r"金额|人民币|已(?:经)?(?:保存|提交|修改|付款|支付|确认|授权)|成功(?:保存|提交|修改)", prose)):
@@ -221,7 +358,7 @@ def explicit_scope(text, include_update_aliases=False):
     remaining = date_pattern.sub(" ", text)
     years = {int(y) for y in re.findall(r"(?<!\d)(\d{4})\s*年", remaining)}
     months = grouped_months | {month_value(m) for m in re.findall(
-        rf"(?<![\d一二三四五六七八九十])({month_literal})\s*月", remaining)}
+        rf"(?<![\d一二三四五六七八九十这那该同每第])({month_literal})\s*月", remaining)}
     if not periods and len(years) == len(months) == 1:
         periods.add((next(iter(years)), next(iter(months))))
     if periods:
@@ -963,8 +1100,9 @@ def render_information(results):
             if totals and name=='list_invoices':
                 parts.append(f"本轮发票价税合计 {totals['invoice_total']} 元（{totals['invoice_count']}张）。")
             if totals and name=='list_bank_transactions' and 'amount_rule' in outcome['evidence']:
-                parts.append(f"本轮银行收入 {totals['bank_income_total']} 元（{totals['bank_income_count']}条）；"
-                             f"银行支出 {totals['bank_expense_total']} 元（{totals['bank_expense_count']}条）。")
+                for prefix, label in [('bank_income', '收入'), ('bank_expense', '支出')]:
+                    if prefix + '_total' in totals:
+                        parts.append(f"本轮银行{label} {totals[prefix + '_total']} 元（{totals[prefix + '_count']}条）。")
                 add_scope({**outcome['evidence'], 'rule': outcome['evidence']['amount_rule']})
         if outcome["status"] == "NO_DATA":
             parts.append("没有匹配记录；这不是权限拒绝。")

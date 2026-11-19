@@ -1,7 +1,7 @@
 """Bind only explicit user expressions to the current invoice edit."""
 import re
 
-from .responses import explicit_scope
+from .responses import request_scope as explicit_scope
 
 
 _COMPANY = r"(?:甲企业|乙企业|C\d+)"
@@ -46,13 +46,16 @@ def _edit_scope(match, text):
     scope = explicit_scope(target, include_update_aliases=True)
     field = match["field"] or match["direct_field"]
     scope["field"] = ["purpose" if field == "用途" else "remark"]
+    role = scope['field'][0]
     value = text[match.end():].strip()
     if (match["verb"] or match["direct_verb"]) == "清空":
-        values = [""] if not value else []
+        values = [""] if invoice_clear_source(text, role) else []
     else:
         if not match["field"]:
             value = re.sub(r"^(?:修改为|设置为|改成|改为|设为|为)\s*", "", value)
         values = literal_value(value)
+        if not values and invoice_clear_source(text, role):
+            values = [""]
     if values:
         scope["new_value"] = values
     return scope
@@ -86,6 +89,21 @@ def literal_single_invoice_edit(text, *, reference=None, allow_deictic=False):
     match = _EDIT.match(text)
     if (not match or not match["target"] or not match["verb"] or match["verb"] == "清空"
             or re.search(r"[，,；;。？！!?\n]", text[match.end():])):
+        # A quote is a literal value, not a second business target.  This
+        # read-only reconciliation accepts field/value clauses in a larger
+        # request; it never prepares or commits an edit.
+        scope = explicit_scope(text, include_update_aliases=True)
+        if reference is not None and not scope.get('company_id') and not scope.get('invoice_no'):
+            scope.update({k: [reference[k]] for k in ('company_id', 'invoice_no')})
+        choices = []
+        for quoted in _QUOTED_TEXT.finditer(text):
+            prefix = re.split(r'[，,。；;\n]', text[:quoted.start()])[-1]
+            fields = [field for field, label in _FIELD_NAMES.items() if label in prefix or field in prefix]
+            if len(fields) == 1 and invoice_change_boundary(text, fields[0], quoted[0][1:-1]):
+                choices.append((fields[0], quoted[0][1:-1]))
+        if len(set(choices)) == 1 and all(len(scope.get(k, ())) == 1 for k in ('company_id', 'invoice_no')):
+            field, value = choices[0]
+            return {**scope, 'field': [field], 'new_value': [value]}
         return None
     scope = _edit_scope(match, text)
     reference_target = r"[它他]"
@@ -362,9 +380,62 @@ def _questioned_invoice_choice(text):
             "write_scope": None, "pending_choice": change}
 
 
+def invoice_clear_source(text, field):
+    """Prove CLEAR from existing edit grammar, not from the proposed empty value.
+
+    Return an internal source span, not authority. Target/actor/period/selection
+    checks and final confirmation remain owned by their existing services.
+    No new action vocabulary or question routing is introduced here.
+    """
+    label = _FIELD_NAMES[field]
+    if _HYPOTHETICAL.match(text) or text.rstrip().endswith(('?', '？')):
+        return None
+    masked = _QUOTED_TEXT.sub(lambda m: ' ' * len(m[0]), text)
+    for clause in re.finditer(r'[^，,。；;\n]+', masked):
+        raw = text[clause.start():clause.end()]
+        lead = len(clause[0]) - len(clause[0].lstrip())
+        value = clause[0].strip()
+        if not value or _HYPOTHETICAL.match(value) or _NEGATED_EDIT.search(value):
+            continue
+        # Existing prefix forms and the same postfix form with its omitted 把.
+        for candidate, added in ((value, 0), ('把' + value, 1)):
+            match = _EDIT.match(candidate)
+            if not match:
+                continue
+            actual_field = match['field'] or match['direct_field']
+            if actual_field != label:
+                continue
+            if added:
+                target = (match['target'] or '').strip()
+                if target and not re.fullmatch(
+                        rf'(?:{_JOINT_TARGET}|{_INVOICE_OWNER_MONTH}\s*(?:的\s*)?(?:{_INVOICE})?|{_COMPANY}|{_INVOICE})', target, re.I):
+                    continue
+            operation = match['verb'] or match['direct_verb']
+            base = clause.start() + lead - added
+            if operation == '清空':
+                tail = candidate[match.end():].strip()
+                # CLEAR has no right-hand-side value. Consume the complete
+                # operation clause; a matched prefix is not an edit source.
+                suffix = r'(?:内容)?\s*[！!]?' if match['direct_field'] else r'[！!]?'
+                if not re.fullmatch(suffix, tail):
+                    continue
+                return {'field': field, 'operation': 'CLEAR',
+                        'source_span': [base + max(match.start(), added), base + len(candidate)]}
+        # An explicitly empty quoted assignment is a literal value, not a
+        # missing right-hand side. Reuse the same assignment grammar.
+        actual = _EDIT.match(raw.strip())
+        if actual and (actual['field'] or actual['direct_field']) == label:
+            tail = raw.strip()[actual.end():].strip()
+            if _QUOTED_TEXT.fullmatch(tail) and tail[1:-1] == '':
+                base = clause.start() + len(raw) - len(raw.lstrip())
+                return {'field': field, 'operation': 'CLEAR',
+                        'source_span': [base + actual.start(), base + len(raw.strip())]}
+    return None
+
+
 def invoice_change_boundary(text, field, new_value, *, rule_field=None):
     """Existing literal/negative checks, independent of positive action sentence forms."""
-    if not new_value.strip() or _HYPOTHETICAL.match(text) or text.rstrip().endswith(("?", "？")):
+    if _HYPOTHETICAL.match(text) or text.rstrip().endswith(("?", "？")):
         return False
     label = _FIELD_NAMES[field]
     if rule_field is not None and field != rule_field:
@@ -372,6 +443,10 @@ def invoice_change_boundary(text, field, new_value, *, rule_field=None):
     if re.search(rf"{label}\s*(?:别动|不要动|不改|不修改|保持原样)|(?:不改|不修改|不要修改|别改)\s*{label}", text):
         return False
     if label not in text and field != rule_field:
+        return False
+    if new_value == "":
+        return invoice_clear_source(text, field) is not None
+    if not new_value.strip():
         return False
     quotes = tuple(_QUOTED_TEXT.finditer(text))
     literal = re.escape(new_value)
@@ -385,6 +460,8 @@ def invoice_value_source(text, field, new_value):
     """Bind a value to a literal field in its clause without an action-verb vocabulary."""
     if not invoice_change_boundary(text, field, new_value):
         return False
+    if new_value == "":
+        return True
     quotes = tuple(_QUOTED_TEXT.finditer(text))
     masked = _QUOTED_TEXT.sub(lambda match: " " * len(match[0]), text)
     boundaries = [-1, *(m.start() for m in re.finditer(r"[，,。；;\n]", masked)), len(masked)]
@@ -403,6 +480,8 @@ def invoice_change_evidence(text, field, new_value, *, rule_field=None):
     """Legacy positive-action evidence; structured continuation reuses only its boundaries."""
     if not invoice_change_boundary(text, field, new_value, rule_field=rule_field):
         return False
+    if new_value == "":
+        return True
     label = _FIELD_NAMES[field]
     choice = _quoted_invoice_choice(text)
     if choice:

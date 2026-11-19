@@ -9,7 +9,7 @@ from .permissions import check_permission
 from .queries import get_invoice, list_invoices
 from .rules import missing_required_purpose, resolve_rule
 from .tui_intent import excluded_invoice_ids, invoice_change_boundary, invoice_change_evidence, literal_named_invoice_edit
-from .responses import explicit_scope
+from .responses import request_scope as explicit_scope
 from .stage2_schema import open_existing
 from .trace import redact
 from .updates import prepare_invoice_update

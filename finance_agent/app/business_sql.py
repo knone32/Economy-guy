@@ -1,5 +1,6 @@
 """Bounded, permission-scoped SQLite snapshots for model-authored reads."""
 from contextlib import closing
+from datetime import date, timedelta
 from decimal import Decimal
 import json
 import math
@@ -11,6 +12,7 @@ from .permissions import check_permission
 from .provenance import SOURCES, ScopeProof
 from .queries import _money
 from .stage2_schema import open_existing
+from .sql_evidence import describe as describe_sql
 
 
 # The projection names and declarations below are fixed application SQL.
@@ -31,7 +33,8 @@ MAX_RESULT_ROWS = 30
 MAX_RESULT_BYTES = 10_000
 MAX_SQL_BYTES = 4096
 _QUERY = re.compile(r"\s*(?:SELECT|WITH)\b", re.I)
-_CONDITION = r"(\w+)\s*([<>=!]+|like)\s*(-?\d+|'(?:[^']|'')*')"
+_SQL_LITERAL = r"(?:-?\d+|'(?:[^']|'')*')"
+_CONDITION = rf"(\w+)\s*([<>=!]+|like|in)\s*({_SQL_LITERAL}|\(\s*{_SQL_LITERAL}(?:\s*,\s*{_SQL_LITERAL})*\s*\))"
 SQL_SOURCE = re.compile(
     r"\s*select\s+(?P<projection>[\w\s,()*]+?)\s+from\s+(?P<table>invoices|bank_transactions)"
     rf"(?:\s+where\s+(?P<where>{_CONDITION}(?:\s+and\s+{_CONDITION})*))?"
@@ -97,47 +100,102 @@ def _invoice_coverage(db, scope, data, projection, *, blank_purpose=False):
 
 
 def _query_scope(sql, snapshot, reads, selects):
-    """Attribute a direct read to its verified snapshot intersection and extra predicates."""
+    """Describe the executed finite SELECT intersection, preserving all predicates.
+
+    This is attribution, not natural-language intent or whole-period coverage.
+    Unsupported operators, projections and shapes remain unknown.
+    """
     match = SQL_SOURCE.fullmatch(sql)
+    unknown = {"scope": None, "filters": ()}
     if not match or selects != 1 or match["group"]:
-        return {"scope": None, "filters": ()}
-    table = match["table"].lower()
-    if reads != {table}:
-        return {"scope": None, "filters": ()}
-
-    conditions = list(_SQL_CONDITION.finditer(match["where"] or ""))
-    unknown = {"scope": None, "filters": tuple(condition[0] for condition in conditions)}
-    date_field = "invoice_date" if table == "invoices" else "transaction_date"
-    companies = snapshot["company_ids"]
-    periods = snapshot.get("periods")
-    filters = []
-    for condition in conditions:
-        field, operator, value = condition.groups()
-        field, operator = field.lower(), operator.lower()
-        if field == "company_id":
-            if operator != "=" or not value.startswith("'"):
-                return unknown
-            companies = tuple(company for company in companies if company == value[1:-1].replace("''", "'"))
-        elif field == date_field:
-            month = _MONTH_PREFIX.fullmatch(value) if operator == "like" else None
-            if not month:
-                return unknown
-            period = tuple(map(int, month.groups()))
-            if periods is None:
-                periods = (period,) if snapshot["year"] == period[0] else ()
-            else:
-                periods = tuple(item for item in periods if item == period)
-        else:
-            filters.append(condition[0])
-
-    if not companies or periods == ():
         return unknown
-    scope = {"company_ids": companies}
-    if periods is None:
-        scope["year"] = snapshot["year"]
-    else:
-        scope["periods"] = periods
-    return {"scope": scope, "filters": tuple(filters), "date_field": date_field}
+    table = match['table'].lower()
+    if reads != {table}:
+        return unknown
+    conditions = []
+    companies = tuple(snapshot['company_ids'])
+    period_set = (set(map(tuple, snapshot['periods'])) if snapshot.get('periods') else
+                  {(snapshot['year'], month) for month in range(1, 13)})
+    date_field = 'invoice_date' if table == 'invoices' else 'transaction_date'
+    lower, upper = date.min, date.max
+    filters = []
+    try:
+        for part in _SQL_CONDITION.finditer(match['where'] or ''):
+            field, operator, literal = part.groups()
+            field, operator = field.lower(), operator.upper()
+            values = re.findall(_SQL_LITERAL, literal) if operator == 'IN' else [literal]
+            values = [v[1:-1].replace("''", "'") if v.startswith("'") else int(v) for v in values]
+            conditions.append({'field': field, 'operator': operator,
+                               'value': values if operator == 'IN' else values[0]})
+            if field == 'company_id':
+                if operator not in {'=', 'IN'} or any(type(v) is not str for v in values):
+                    return unknown
+                companies = tuple(c for c in companies if c in values)
+            elif field == date_field:
+                value = values[0]
+                if operator == 'LIKE':
+                    monthly = re.fullmatch(r'(\d{4})-(0[1-9]|1[0-2])-?%', value)
+                    yearly = re.fullmatch(r'(\d{4})-%', value)
+                    if monthly:
+                        y, m = map(int, monthly.groups());lo = date(y, m, 1)
+                        hi = date(y + (m == 12), m % 12 + 1, 1)
+                    elif yearly:
+                        y = int(yearly[1]);lo, hi = date(y, 1, 1), date(y+1, 1, 1)
+                    else:
+                        return unknown
+                    lower, upper = max(lower, lo), min(upper, hi)
+                else:
+                    if operator not in {'=', '>=', '>', '<', '<='} or type(value) is not str:
+                        return unknown
+                    day = date.fromisoformat(value)
+                    if day.isoformat() != value:
+                        return unknown
+                    if operator in {'=', '>='}:lower = max(lower, day)
+                    if operator == '>':lower = max(lower, day+timedelta(days=1))
+                    if operator in {'=', '<='}:upper = min(upper, day+timedelta(days=1))
+                    if operator == '<':upper = min(upper, day)
+                filters.append(part[0])
+            else:
+                filters.append(part[0])
+        periods = []
+        for year, month in sorted(period_set):
+            start = date(year, month, 1)
+            end = date(year + (month == 12), month % 12+1, 1)
+            if start < upper and end > lower:
+                periods.append((year, month))
+    except (ValueError, TypeError, OverflowError):
+        return unknown
+    if not companies or not periods or lower >= upper:
+        return unknown
+    scope = {'company_ids': companies, 'periods': tuple(periods)}
+    return {'scope': scope, 'filters': tuple(filters), 'conditions': conditions,
+            'date_field': date_field, 'coverage_basis': 'executed_predicates_intersect_authorized_snapshot'}
+
+
+def _projection_units(sql, columns):
+    """A finite lineage check; aliases never create money units."""
+    match = SQL_SOURCE.fullmatch(sql)
+    if not match:return ()
+    depth, pieces, start = 0, [], 0
+    projection = match['projection']
+    if projection.strip() == '*':
+        fields = [part.split()[0] for part in TABLES[match['table'].lower()].split(', ')]
+        if fields == list(columns):
+            return tuple('cents' if field == 'amount_cents' else 'unknown' for field in fields)
+    for i, char in enumerate(projection):
+        if char == '(':depth += 1
+        elif char == ')':depth -= 1
+        elif char == ',' and depth == 0:
+            pieces.append(projection[start:i]);start = i+1
+    pieces.append(projection[start:])
+    if len(pieces) != len(columns):return ()
+    units = []
+    for piece in pieces:
+        value = re.sub(r'\s+(?:AS\s+)?\w+\s*$', '', piece.strip(), flags=re.I)
+        value = re.sub(r'\s+', '', value).lower()
+        units.append('cents' if value in {'amount_cents','sum(amount_cents)','coalesce(sum(amount_cents),0)'}
+                     else 'count' if value == 'count(*)' else 'unknown')
+    return tuple(units)
 
 
 class BusinessSQLError(ValueError):
@@ -306,7 +364,10 @@ class BusinessSQL:
                 if not reads:
                     raise BusinessSQLError("SQL_REJECTED", "查询必须读取至少一张业务投影表")
                 columns = [column[0] for column in cursor.description]
-                rows, derived, truncated = _bounded_rows(cursor, columns)
+                attributed = describe_sql(sql, columns, scope, TABLES, reads)
+                units = ([p['unit'] for p in attributed['columns']] if attributed['scope'] is not None
+                         else _projection_units(sql, columns))
+                rows, derived, truncated = _bounded_rows(cursor, columns, units)
         except sqlite3.Error as error:
             if getattr(error, "sqlite_errorcode", None) in {sqlite3.SQLITE_INTERRUPT, sqlite3.SQLITE_TOOBIG}:
                 raise BusinessSQLError("SQL_QUERY_LIMIT", "SQL 超过执行资源上限，请简化查询") from None
@@ -315,9 +376,12 @@ class BusinessSQL:
             db.set_progress_handler(None, 0)
             # Coverage and selection checks keep the read-only guard without counting as user SQL.
             db.set_authorizer(_authorizer)
+        if attributed.get('scope') is not None:
+            attributed['display_truncated'] = truncated
+            attributed['query_set_complete'] = attributed['query_set_complete'] and not truncated
         data = {"sql": sql, "columns": columns, "rows": rows, "row_count": len(rows),
                 "truncated": truncated, "derived": derived,
-                "query_scope": _query_scope(sql, scope, reads, selects)}
+                "query_scope": attributed}
         projection = _invoice_projection(sql, columns)
         if {"invoice_no", "invoice_date", "amount_cents"} <= projection.keys():
             data["invoice_projection"] = projection
@@ -351,7 +415,7 @@ class BusinessSQL:
         return scope, data, keys
 
 
-def _bounded_rows(cursor, columns):
+def _bounded_rows(cursor, columns, units=()):
     rows, derived = [], []
     remaining = MAX_RESULT_BYTES - len(json.dumps(columns, ensure_ascii=False).encode("utf-8"))
     indexes = {name: i for i, name in enumerate(columns)}
@@ -363,7 +427,7 @@ def _bounded_rows(cursor, columns):
         if any(isinstance(value, bytes) or (isinstance(value, float) and not math.isfinite(value)) for value in row):
             raise BusinessSQLError("SQL_REJECTED", "请返回有限数值或文本，二进制结果不受支持")
         display = {str(i): _money(value) for i, (name, value) in enumerate(zip(columns, row))
-                   if name.endswith("_cents") and type(value) is int}
+                   if i < len(units) and units[i] == "cents" and type(value) is int}
         if ratio:
             n, d = row[indexes["numerator"]], row[indexes["denominator"]]
             if type(n) is int and type(d) is int:

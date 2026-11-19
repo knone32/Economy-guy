@@ -50,10 +50,12 @@ class ThinkingProtocol:
     def normalize(self,reply,tools=True):
         """实际模型缺字段/None不补造；真实空字符串按原样保留。"""
         message={key:reply[key] for key in ('role','content','tool_calls') if key in reply}
-        if self.enabled and tools:
-            if type(reply.get('reasoning_content')) is not str:
+        if self.enabled:
+            reasoning = reply.reasoning if isinstance(reply, PrivateAssistant) else reply.get('reasoning_content')
+            if type(reasoning) is str:
+                return PrivateAssistant(message, reasoning)
+            if tools:
                 raise ProtocolError('Thinking响应缺少合法私有协议字段')
-            return PrivateAssistant(message,reply['reasoning_content'])
         return message
 
     def wire(self,messages,tools=True):
