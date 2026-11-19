@@ -56,3 +56,4 @@
 - 第二轮正式冻结：完整SHA2430ba08693776512823c8c254995f86defe0c7a，detached frozen-runtime-round2，224 tracked hash及clean见evidence-round2/CODE-FREEZE-round2.json；finance_agent与root61项实际受测f0d918c无diff，仅控制文档变化。runtime/profile/采样/依赖/driver/scaffold锁见round2-acceptance/FREEZE.json。零模型请求冻结，随后才重启C生成新题。
 - 本轮C只读冻结元数据和预登记协议，禁止读实现分支/成功答案挑题；共享存储不称严格隐藏盲测。新账本18/180000，旧保护哈希evidence-round2/HISTORICAL-PROTECTION.json。主会话验收结束前不向A/B泄新题。
 - 可运行新候选入口RUN-ROUND2-CANDIDATE.ps1固定新runtime与全新manual-runtime-round2虚构库；LAUNCHER-CHECK.json仅语法及代码等价检查，不称人工GUI/模型验收，未启动额外API。
+- 首执已结束，C未追加API：新13请求/124751tokens、剩5/55249；一个token_reservation拒绝reserved57125>remaining55249，before_http=true，未产生第14条物理请求。evidence-round2/ROOT-FREEZE-BUDGET-AUDIT.json独立核新账本计数/连续已知成功用量总和、224源码文件hash无变、旧两轮FAILURES与旧ledger/封账hash不变。正式成绩待C封存及root SQLite复核，不以HTTP200推定端到端成功。
