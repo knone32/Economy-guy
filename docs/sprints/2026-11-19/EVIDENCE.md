@@ -40,3 +40,10 @@
 - root终审：evidence/ROOT-ROUND2-AUDIT.json，所有原始SQL记录独立重算相同、两冻结不变、首轮protected文件不变、全局ledger前14条/连续21条/usage一致。末请求去私有reasoning的最小报文42494，预留lower bound52734>余额45005，补充证明guard拒绝而非已证供应商网络故障；零新增API，原C推断报告不改。
 - 最终结果/明日决策：model-first-20261119/RESULT.md、NEXT-DECISION.md；预算封账evidence/BUDGET-CLOSED.json。可运行脚本RUN-FINAL-CANDIDATE.ps1固定frozen-runtime-v2与manual-runtime-v2虚构库，FINAL-LAUNCHER-CHECK.json仅语法/CLI帮助检查，不称真人UI验收；FINAL-CANDIDATE-CODE.patch在原基线apply --check通过。
 - 本轮环境、测试、修改、冻结和Live证据：主会话按阶段追加；新产物保存 model-first-20261119/evidence/，不混改历史目录。
+
+## 用户19:47续接的独立第二轮
+
+- 实际恢复核查：integration HEAD30b8efed29184a113e81b193b5b39c29a0dd32e8、frozen-runtime-v2 HEAD0638f8dcd34aa7a2debbcd19a2ed7d1369bb1ebe、main8d70924均干净；读取MISSION/STATE/EVIDENCE、NEXT-DECISION及两轮FAILURES原件。续接契约ed9c385f43e6a74127f9dc6f5832f2a545e93ffa后新建round2-intent与round2-delivery。
+- 独立新增预算：evidence-round2/AUTHORIZATION.json，用户明确授权18请求/180000 total_tokens/单次输出2048；旧21/194995不动。本轮证据目录evidence-round2，验收目录round2-acceptance，不覆写旧文件。
+- 预登记：round2-acceptance/PROTOCOL.md，3类最多7输入，持续更正/合法预览批准/事务审计/真进程重启回读、取消安全、复杂比较；具体目标与问法只能完整代码冻结后由C生成。
+- 0API进程基础设施：evidence-round2/RESTART-INFRASTRUCTURE.json与其指向create/reopen.json，Python PID42360→57472、同chat、draft/pending为空；只测空会话进程/存储，不算实际业务重启或语言能力。driver支持checkpoint+--resume新进程，不重放旧输入；PTY硬检查与模拟审批前独立核草稿保留。
