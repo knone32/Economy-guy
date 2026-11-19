@@ -26,4 +26,5 @@
 - 主会话已cherry-pick为4df8369与1e1e977d33310a9e5f278fcbb1a9d080472842a1，finance_agent与B最终无diff；evidence/ROOT-INTEGRATION-CHECKS.log独立33/33，通过架构、证据、来源、只读/写区分、未确认预览/三轮待补等相关检查。不是Live成绩。
 - 正式冻结：838569ef36b3d1352a3b9ffb5c696edc1663a704，detached model-first-20261119/frozen-runtime；全部tracked哈希/clean与33程序检查见evidence/CODE-FREEZE.json。此SHA冻结后才新启动sprint_c_acceptance（fork none）。
 - 新验收运行与题/真值/分项评分/预算将只记录model-first-20261119/acceptance。root本轮尚不读新题；C不参与开发，仍共享存储所以不是严格隐藏盲测。
+- 可运行入口辅助：model-first-20261119/RUN-CANDIDATE.ps1 固定frozen-runtime源码、现有Python/deps、独立manual-runtime虚构数据库，绝不指向正式业务库；仅现有Textual工作台，无新GUI。LAUNCHER-CHECK.json记录CLI help和脚本解析通过，未实际启动手工UI/未发API，不能当真人启动验收。
 - 本轮环境、测试、修改、冻结和Live证据：主会话按阶段追加；新产物保存 model-first-20261119/evidence/，不混改历史目录。
