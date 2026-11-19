@@ -62,3 +62,11 @@
 - root真实首错区分：两次模型pending信封缺槽是协议失败而非语义误解；后续更正公司来源缺失是级联。正确BETWEEN SQL范围证据UNKNOWN/unsupported_predicate引发更多读取，budget发送前拒绝导致比较交付不完整；没有把原始NO_DATA改答案或把未知最终回复归NLU失败。
 - 当前结果/决策：RESULT-round2.md、NEXT-DECISION-round2.md；新独立预算evidence-round2/BUDGET-CLOSED.json封13/124751，剩5/55249不续测，旧21/194995不动。安全没有本轮已知P0，但真实完整修改门禁未过，不晋级为明日扩展基线，不自动合main/推送/发布。
 - 过拟合窄审：evidence-round2/ROOT-OVERFIT-REVIEW.json仅检查本轮production diff与来源/事实契约，未见固定票号/题名/金额/月/新正则问句补丁；受控purpose/remark字段枚举为保守来源冲突，不能宣称已移除所有旧语言启发式或证明泛化提升。
+
+## 第三轮最短更正→预览
+
+- 用户明确缩小范围，独立授权12请求/160000 total_tokens/maxoutput2048；round3-acceptance/AUTHORIZATION.json及PROTOCOL.md先登记两场各最多2输入，首场失败即停，成功才第二场；严禁approve/commit，不续旧两封账。
+- root精确复核第二轮原始Trace：R2P.1 pending.transition_rejected.reason=explicit_invoice_candidates_required，R2P.2企业AMBIGUOUS为此前pending失败级联。明确企业存在首轮原话，不增信任自由模型company_id的旁路。
+- A最小提交406f7ccb595519f0a8630662633987c8a7ddcf42已集成ae6148f48b6009e1273e3b8beac7d1d9eb6e39f8。生产2文件3增4删，允许invoice未知pending保留唯一可信企业/账期及原字段新值，不自动继承全部mentions/read集合；实际后轮显式目标+fresh selection/权限/field/value/确认保护不变。
+- 程序证据evidence-round3/A/{REPORT.md,results.json,before.log,after.log,related.log,baseline-legacy.log}；4新正反例真实业务API预览取消后不写、无目标/错企业/错字段/无源值拒。相关47/48有1旧echo失败，冻结2430同复现，不改答案不隐藏。root独立ROOT-CONTRACT.log 30/30（4新+20既有意图+4权限+2架构），不是NLU分。
+- 第三轮冻结ae6148f48b6009e1273e3b8beac7d1d9eb6e39f8，frozen-runtime-round3；round3-acceptance/FREEZE.json固定正式入口/profile/依赖/fixture/driver/source hashes，零HTTP冻结后才C生成新目标/SQLite真值/表达，非严格盲测。新driver副本仅限reject并修list/tuple比较；原driver/原失败/旧账不改。
