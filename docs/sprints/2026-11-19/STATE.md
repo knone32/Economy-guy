@@ -1,23 +1,16 @@
 # 当前状态（仅主会话更新）
 
-- 阶段：7，今晚最终候选2已冻结，独立C新任务现才生成2类最多4输入的新题；此轮结束不再开发或加测。
-- 当前最终候选代码SHA：0638f8dcd34aa7a2debbcd19a2ed7d1369bb1ebe，detached frozen-runtime-v2，clean，完整tracked哈希在CODE-FREEZE-v2.json；内容与已验证集成a598的finance_agent相同。第一候选838569ef36b3d1352a3b9ffb5c696edc1663a704仍保留于frozen-runtime，第一门禁NOT_READY。integration仅状态文档续写，两个冻结快照不可改。
-- 工作区：model-first-20261119/integration；用户原发布工作区与上一轮候选均干净，保持不变。
-- 已确认目录差异：github-main-publish-20261119 为8d70924；E:/beside 为3111bd7；上轮candidate为4a718b9。未将目录HEAD当作用户正在运行的进程版本；新验收只从明确冻结的冲刺工作区启动。
-- 可复用环境已本轮验证：Python C:/Users/Lenovo/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe，3.12.14；PYTHONPATH 指向 reliability-v2-20261119/runtime-deps，依赖openai1.109.1/httpx0.28.1/textual1.0.0/openpyxl3.1.5/sqlglot30.33.0。虚构SQLite可只读，40票/48流水/0发票审计。受审用户上下文shared-flash/U001、test/U002可用，常规sandbox无法读WindowsVault；不需用户重输密钥。
-- 已完成A：evidence/A/REPORT.md、findings.json及原始摘录/窄探针；生产代码未改、工作树干净、零API。D03/D05精确SQL在当前已VERIFIED，R1仍UNKNOWN，G5只读源误拒已复现；D02属模型擅加条件；D08/D10留门控/日期来源风险，不再扩审计。
-- B候选已集成：c3a3bb79a08504f467453e5b9b12d65d6c771da0（父1f035545fb6e5b1568788149d353eb2b08f22f34）对应集成4df8369、1e1e977；finance_agent内容与B最终相同。新事实引用模块/有序事实回执、只读引用票号、typed stop、原生票号排序。未推送或合main，尚无新Live能力结论。
-- 复核中阻断与修复：1f原稿把引用票号覆盖既有明确目标，A同输入wrong-target探针证实基线SCOPE_MISMATCH、初稿SUCCESS。c3改成仅proof和scope均缺票号时补引用；先红后绿日志保留，A正做最终复核，不隐藏初稿回归。
-- 程序验证已完成：B最终核心27/27、来源交叉小子集6/6；A原scope负例修正后SCOPE_MISMATCH、fresh引用正例1/1。root在集成1e1独立33/33（核心/架构/SQL证据/引用安全/三轮待补），diff --check通过、工作树干净。相关旧77项初稿9fail3error vs基线6fail3error，新增3旧正文echo断言仍保留。未跑无目的全量。
-- C首轮最终：14请求/124400tokens，12计划8首执4未测；4合格=完整2+追问1+正确拒绝1，4P1=交付缺项1/范围阻断2/权限文案错误1。实际预览0、提交0；补更正取消引用3轮EOF未测、独立提交1轮因停止未测。状态执行边界无越权/未确认写，不能将未测说成通过。REPORT/SCORES/FAILURES/FINAL-VERIFICATION均已封存。
-- root独立终审核实：权限拒绝首错在invoice_batch OR检查共用文案，把缺任一所需权利说成两者均无；确属可信表述过宽，不是P0权限绕过。全部oracle SQL经同受审上下文新连接重算一致，原冻结tracked hash/连续14条账本及tokens一致，原分数未改。
-- 用户全冲刺授权24物理请求/240000 total_tokens/每次输出2048；第一结案14/124400。C2最新已报累计16请求/144904tokens（新2/20504），实际实时计数只认acceptance-v2/budget.json与全局ledger，不依赖本静态快照。未知usage必须停，不刷新预算。原评分不延长、不补测，新候选评分结束后不再迭代。
-- 已知阻断：上轮通用正文抑制导致正确终止答复/展示顺序回退；引用票号来源拒绝、冲突范围模型误选、R1 SQL证据不闭合。不得整包盲合并上轮候选。
-- 初步方案：B实现有序工具事实引用/真实receipt契约，模型选工具、事实和次序，Harness绑定范围/标签/数值；A核实只读引用来源应与修改授权区分。不是最终实现或通过结论，完成后先定向验证与root审核。
-- 迭代2最终B SHA bda30ad7172501c646f4523e5c6917f30e19be61（父abf5fba22d6e688e888e61709f5271b6fb6bef30），工作树干净，零API/无push。权限OR检查未变而文案准确；readonly只补当前raw标准标识符/日期缺槽、保留scope/proof/workspace一致性，跨公司/跨月不配对不补，不扩写权；单一实际返回invoice投影集的票数/方向差额ref有父结果、无分页/截断/重复联合键条件及返回集合标签。C03b规范化来源契约、D08门控留明日。
-- 迭代2复核/测试：A保存abf selectedworkspace正例先失败、bda exact修复成功及旧范围/跨引用反例独立2/2。B最终核心31/31、相关7/7。root在a598独立37/37+合法预览1/1，diff --check通过，finance_agent与B最终无diff。旧原文echo兼容失败未删改，未重复77或全量，不能宣称全部回归绿。
-- 迭代2验证计划：新题只在第二完整SHA冻结后生成；acceptance-v2/PROTOCOL.md在代码完成前预登记2类最多4新输入（陌生筛选比较1+三轮持续办理3），不沿用原题；真批准前独立核草稿再模拟UI批准，核事务审计/新连接回读。PTY启动case前硬检查，原EOF记录不重跑/不补测。v2账本保留原14条作为全局前缀，不重新计24额度。第二轮结束不再自动开发/加测。
-- C2已完成：零API运行冻结/PTY=True/原14账本前缀保护；新4输入目标→SQL双连接真值→表达已seal（均发生在第二freeze后、首新增API前）。首新输入已执行，正独立评分，root未读题。
-- 下一步：继续C2已封存余下输入，各轮先判分再continue，模拟批准前独立核草稿。全冲刺24/240000封顶，预算不足如实未测。第二轮结束root独立核验/持久报告/明日入口，不再改代码或追加第三轮，首轮4失败4未测原样单列。
-- 实际进程核查：受审只读枚举未发现python.exe/pythonw.exe运行进程，未发现可确认的既存Python工作台加载路径；今后测试明确从冲刺integration/finance_agent启动，不沿用旧目录。
-- 禁止事项：评分中不改候选代码；不做GUI/文件导入；不改正式账簿；不推送main。C新题评分结束后才公开，自动转回归；失败不得本轮边看题边修。
+- 阶段：8，今晚开发/验收结束。可靠性门禁NOT_READY；不再自动开发、加题或调用API。契约/候选/正反例/真实新题结果/明日入口齐备，但稳定业务基础目标未达，不宣称成功。
+- 最终候选代码SHA：0638f8dcd34aa7a2debbcd19a2ed7d1369bb1ebe，detached model-first-20261119/frozen-runtime-v2，clean；实际DeepSeek正式入口从此目录启动，代码/模型/依赖/driver均未变。第一候选838569ef36b3d1352a3b9ffb5c696edc1663a704保留于frozen-runtime，原分数不改。
+- 原基线保留8d70924a9871a0f44ec5149fb68ccf7531706546，github-main-publish-20261119的main干净；没有合并/推送/发布。E:/beside业务版本仍3111bd7，未切换生产目录/操作正式账簿。冲刺集成分支sprint/2026-11-19-model-first的后续HEAD仅持久报告文档，恢复时git rev-parse HEAD，不与验收SHA混淆。
+- 完成的有限机制：模型有序选择当前事实ref，Harness绑定范围/指标/数值/回执；标准引用只读补缺且不覆盖既有目标、不跨公司/日期拼接、不扩写权；typed stop；原生票号排序；真实返回发票集合计数/差额；准确权限拒绝文案。未新增同义/错字/年份词表或固定问句特判；单Loop与ACL/确认/事务/幂等/审计/回读保留。
+- 程序证据：最终root独立37/37+合法预览1/1；B核心31/31、相关7/7；A来源正反例/selectedworkspace复核通过。范围扩大/工作区转接遗漏先红后绿保留。第一切片相关77项9fail3error vs基线6fail3error，3新增原文显示断言仍计失败；最终未重跑77/全量，不能称全仓绿。
+- 首轮Live(838)：12计划8首执，完整交付2、合理追问/拒绝2、失败4P1；4未测(EOF3、停测1)。14请求124400tokens，原数据/评分保持不变，题已公开回归。实际预览/提交均0。
+- 最终候选新题Live(0638)：4首执，合理待补1PASS、2P1失败、1预算限制部分执行；完整业务交付0。比较结论漏交付，明确补目标/更正被工具阻断且pending旧值，末轮只重查旧值后被预算守卫阻止最终请求。未收到的响应不算模型理解失败。实际预览/批准/提交均0。
+- 预算封账：全冲刺21物理请求/194995 total_tokens，授权24/240000、输出2048。余额3/45005不自动续用，下一次Live须用户重新明确授权范围/上限。原14条ledger前缀/两轮封存不变，无未知实际HTTPusage、无择优重跑；见evidence/BUDGET-CLOSED.json。
+- root终审核实两轮全部原始真值SQL新连接重算相同，冻结和连续账本一致。末请求最小报文42494+8192+2048=52734>余额45005，证明guard在物理请求前拒绝；CONNECTION_ERROR不等于供应商网络故障，无第22次HTTP。补充证明ROOT-ROUND2-AUDIT.json，原C报告/成绩不改。
+- 安全：未观察到P0越权/未确认写或虚报保存，实际业务值不变、发票审计0。未跑到预览/批准/提交，不能称写入安全闭环已验收；会话pending一致性实际失败。无同条件旧新版Live，不宣称理解率或整体收益提升。
+- 正在执行任务：无；A/B/C均完成。没有开发GUI、文件导入或其他明日方向。
+- 明日阻断：P1通用派生事实交付(金额比较)、模型规范化来源/口语公司与中文年份(C03b)、更正事件提案前生效(V2M)、D08状态门控；预算拒绝误标连接错误。需共同意图/来源/状态契约，不继续句式兜底。
+- 下一步入口：先读MISSION.md、本文、EVIDENCE.md，再看model-first-20261119/RESULT.md和NEXT-DECISION.md。先评审最小契约与一查一改闭环，批准后新worktree/必要回归/新冻结/新题；不直接提升0638或提前进入GUI/文件开发。
+

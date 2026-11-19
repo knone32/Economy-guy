@@ -36,4 +36,7 @@
 - root集成为ea70577、a598f4228c0bc01e23653f26c6cf7f9659d8f9c9；ROOT-INTEGRATION2-CHECKS.log独立37/37、ROOT-INTEGRATION2-PREVIEW.log1/1，finance_agent与B bda最终无diff。冻结第二runtime后不再改代码。
 - 第二/最终冻结代码SHA：0638f8dcd34aa7a2debbcd19a2ed7d1369bb1ebe，model-first-20261119/frozen-runtime-v2；evidence/CODE-FREEZE-v2.json锁tracked哈希/clean/driver/协议/root38检查/旧消耗14与124400。此后C才新任务生成新目标，不读新修复实现。
 - C2运行冻结/新题封条：acceptance-v2/FREEZE.json、CHALLENGE-SEAL.json；PTY=True，旧14条ledger前缀和原授权保护已复核。新目标/双连接SQL/表达在新SHA冻结后生成并封存；首新输入新2请求20504tokens，累计16/144904。root评分结束前不读新题或向开发披露。
+- 最终验收已结案：acceptance-v2/REPORT.md、SCORES.json、FAILURES.json、FINAL-VERIFICATION.json、ARTIFACT-MANIFEST.json；4输入首执=合理待补1PASS、2P1、1预算部分执行，完整办理0，preview/approve/commit均0。新增7请求70595tokens，全局21/194995；没有覆盖/回写首轮评分。
+- root终审：evidence/ROOT-ROUND2-AUDIT.json，所有原始SQL记录独立重算相同、两冻结不变、首轮protected文件不变、全局ledger前14条/连续21条/usage一致。末请求去私有reasoning的最小报文42494，预留lower bound52734>余额45005，补充证明guard拒绝而非已证供应商网络故障；零新增API，原C推断报告不改。
+- 最终结果/明日决策：model-first-20261119/RESULT.md、NEXT-DECISION.md；预算封账evidence/BUDGET-CLOSED.json。可运行脚本RUN-FINAL-CANDIDATE.ps1固定frozen-runtime-v2与manual-runtime-v2虚构库，FINAL-LAUNCHER-CHECK.json仅语法/CLI帮助检查，不称真人UI验收；FINAL-CANDIDATE-CODE.patch在原基线apply --check通过。
 - 本轮环境、测试、修改、冻结和Live证据：主会话按阶段追加；新产物保存 model-first-20261119/evidence/，不混改历史目录。
