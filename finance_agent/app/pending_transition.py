@@ -28,7 +28,7 @@ def contract_error(final, narrow):
 
 
 def transition(previous, event, *, actor, book, current_id, current_request,
-               current_scope, missing_fields, change=None):
+               current_scope, missing_fields, change=None, _allow_empty_scope=False):
     """Validate a model slot patch; lexical mentions only bound admissibility.
 
     No assistant question text or tool-result rows become a write candidate set.
@@ -58,7 +58,7 @@ def transition(previous, event, *, actor, book, current_id, current_request,
     patch = event.get('scope', {})
     if type(patch) is not dict or set(patch) - {'company_id', 'invoice_no', 'year', 'month', 'periods'}:
         raise PendingTransitionError('invalid_pending_scope')
-    if action in {'create', 'replace'} and not patch:
+    if action in {'create', 'replace'} and not patch and not _allow_empty_scope:
         raise PendingTransitionError('explicit_candidate_scope_required')
     # Retain unambiguous user-sourced owner/date slots on initial creation;
     # An unresolved invoice stays unbound. Mentions and read results are not
@@ -124,4 +124,86 @@ def transition(previous, event, *, actor, book, current_id, current_request,
         pending['change'] = {k: [v] for k, v in change.items()}
     elif previous and previous.get('change'):
         pending['change'] = deepcopy(previous['change'])
+    return pending
+
+
+class PendingRequestError(PendingTransitionError):
+    def __init__(self, message, status='SCOPE_MISMATCH'):
+        super().__init__(message)
+        self.status = status
+
+
+def request_change(args, previous, *, actor, book, current_id, current_request):
+    """Start an incomplete invoice request; no selection, draft or authority.
+
+    Model supplies business slots only. Runtime owns identity, request ID and
+    missing slots. Invoice mentions/read sets never become target candidates.
+    """
+    from contextlib import closing
+    from .responses import request_scope, _QUOTED_DATA
+    from .intent_contract import FIELD_LABELS, _field_origins
+    from .tui_intent import invoice_value_source, literal_single_invoice_edit
+    from .permissions import check_permission
+    from .stage2_schema import open_existing
+
+    if previous and (previous.get('actor') != actor or previous.get('workbook') != str(book)):
+        raise PendingRequestError('待补事项不属于当前身份或账簿。', 'DENIED')
+    current = request_scope(current_request, include_update_aliases=True)
+    prior = (previous or {}).get('scope', {})
+    if 'invoice_no' in args:
+        # A mentioned/read ID is not a selected write target. Reuse existing
+        # literal write evidence or an already unique pending target only.
+        direct = literal_single_invoice_edit(current_request) or {}
+        if (direct.get('invoice_no') != [args['invoice_no']]
+                and prior.get('invoice_no') != [args['invoice_no']]):
+            raise PendingRequestError('尚未明确选择修改票号，不能把读取或提及对象当作修改目标。')
+    scope = {}
+    for slot, arg in (('company_id','company_id'), ('invoice_no','invoice_no'),
+                      ('year','target_year'), ('month','target_month')):
+        if arg in args:
+            available = current.get(slot) or prior.get(slot, ())
+            if args[arg] not in available:
+                raise PendingRequestError('办理参数缺少原话或当前待补来源：' + slot)
+            scope[slot] = [args[arg]]
+        elif slot != 'invoice_no' and len(current.get(slot, ())) == 1:
+            scope[slot] = list(current[slot])
+    known = {**prior, **scope}
+    with closing(open_existing(book, readonly=True)) as connection:
+        if not connection.execute('SELECT 1 FROM users WHERE user_id=?', (actor,)).fetchone():
+            raise PendingRequestError('未知办理身份。', 'DENIED')
+        for company in known.get('company_id', ()):
+            if not all(check_permission(connection, actor, company, op).allowed for op in ('read','modify')):
+                raise PendingRequestError('本次发票办理所需权限不足。', 'DENIED')
+    change = deepcopy((previous or {}).get('change', {}))
+    plain = _QUOTED_DATA.sub(' ', current_request)
+    if 'field' in args:
+        if not any(label in plain for label in FIELD_LABELS[args['field']]):
+            raise PendingRequestError('办理字段缺少当前原文来源。')
+        if change.get('field') != [args['field']]:
+            change.pop('new_value', None)
+        change['field'] = [args['field']]
+    if 'new_value' in args:
+        if ('field' not in args and change.get('field') and _field_origins(plain)
+                and _field_origins(plain) != set(change['field'])):
+            raise PendingRequestError('当前字段来源不能与旧待补字段拼接。')
+        value = args['new_value']
+        if ((value and value not in current_request) or
+                (not value and not any(q in current_request for q in ('""','“”','「」','『』','‘’')))):
+            raise PendingRequestError('办理新值缺少当前原文来源。')
+        change['new_value'] = [value]
+    if ('new_value' in args and change.get('field') and _field_origins(plain)
+            and not invoice_value_source(current_request, change['field'][0], args['new_value'])):
+        raise PendingRequestError('办理字段与新值没有同一原文业务分句来源。')
+    missing = [slot for slot in ('company_id','invoice_no','year','month') if len(known.get(slot, ())) != 1]
+    missing += [slot for slot in ('field','new_value') if len(change.get(slot, ())) != 1]
+    # Even complete request slots cannot bypass fresh selection/proposal.
+    missing = missing or ['invoice_selection']
+    event = {'action':'continue' if previous else 'create', 'scope':scope}
+    if previous:
+        event['request_id'] = previous['request_id']
+    pending = transition(previous, event, actor=actor, book=book, current_id=current_id,
+        current_request=current_request, current_scope=current, missing_fields=missing,
+        _allow_empty_scope=True)
+    if change:
+        pending['change'] = change
     return pending

@@ -30,7 +30,7 @@ OPTIONAL_FIELDS = {
     "list_bank_transactions": {"direction"},
     "list_invoice_directory": DIRECTORY_SORT_FIELDS.keys(),
     "check_missing_purpose": {"rule_business_date"},
-    "propose_invoice_changes": {"rule_business_date", "target_year", "target_month", "rule_cohort", "write_scope", "pending_request_id"},
+    "propose_invoice_changes": {"action", "company_id", "invoice_no", "rule_business_date", "target_year", "target_month", "rule_cohort", "write_scope", "pending_request_id"},
 }
 REGISTRY = {
     "query_business_sql": (None, {"sql": "string"}),
@@ -51,7 +51,7 @@ REGISTRY = {
     "get_applicable_rules": (None, {"company_id":"string", "rule_type":"string", "business_date":"string"}),
     "list_rule_versions": (None, {"company_id": "string", "rule_id": "string"}),
     "prepare_invoice_update": (None, {"company_id":"string", "invoice_no":"string", "field":"string", "new_value":"string"}),
-    "propose_invoice_changes": (None, {"selection_id":"string", "field":"string", "new_value":"string",
+    "propose_invoice_changes": (None, {"action":"string", "company_id":"string", "invoice_no":"string", "selection_id":"string", "field":"string", "new_value":"string",
                                        "mode":"string", "excluded_invoice_ids":"array",
                                        "rule_business_date":"string", "target_year":"integer",
                                        "target_month":"integer", "rule_cohort":"boolean", "write_scope":"object", "pending_request_id":"string"}),
@@ -149,6 +149,21 @@ for tool in TOOLS:
         fields["mode"]["enum"] = ["item", "batch"]
         fields["excluded_invoice_ids"]["items"] = {"type": "string"}
         fields["write_scope"] = {**WRITE_SCOPE_SCHEMA, "description": PARAMETERS["write_scope"]}
+        fields['action']['enum'] = ['request', 'propose']
+        request_keys = {'action', 'company_id', 'invoice_no', 'target_year', 'target_month', 'field', 'new_value'}
+        proposal_keys = set(fields) - {'company_id', 'invoice_no'}
+        parameters = tool['function']['parameters']
+        complete_required = parameters.pop('required')
+        parameters['anyOf'] = [
+            {'properties':{k: ({**v, 'enum':['request']} if k == 'action' else v)
+                           for k,v in fields.items() if k in request_keys},
+             'required':['action'], 'additionalProperties':False},
+            {'properties':{k: ({**v, 'enum':['propose']} if k == 'action' else v)
+                           for k,v in fields.items() if k in proposal_keys},
+             'required':complete_required, 'additionalProperties':False}]
+        tool['function']['description'] += (' 参数不完整仍要发起发票办理时用action=request，只传已知企业/票号/目标年月/字段/新值；'
+            '可省略未定目标，不传selection_id/mode/write_scope。Runtime保存有来源的已知槽并直接追问，'
+            '无需最终JSON另建pending。request不生成草稿；目标确定后须fresh读取，再按完整selection提案。')
     if tool["function"]["name"] == "manage_task":
         tool["function"]["parameters"]["properties"]["action"]["enum"] = ["create","show","update","correct","wait","pause","resume","complete","cancel"]
     if tool["function"]["name"] == "manage_display_preference":
@@ -185,6 +200,14 @@ def validate_arguments(name, raw_arguments, partial=False, *, directory_sort=Non
         raise ValueError("JSON参数嵌套过深或包含无效Unicode") from None
     fields = REGISTRY[name][1]
     required = set(fields) - set(OPTIONAL_FIELDS.get(name, ()))
+    if name == 'propose_invoice_changes' and type(args) is dict:
+        if args.get('action') == 'request':
+            allowed = {'action','company_id','invoice_no','target_year','target_month','field','new_value'}
+            if not set(args) <= allowed:
+                raise ValueError('request不能提供选集、确认或完整提案参数')
+            required = {'action'}
+        elif set(args) & {'company_id','invoice_no'}:
+            raise ValueError('完整提案须使用本轮selection而非自由对象参数')
     if type(args) is not dict or not set(args) <= set(fields) or (not partial and not required <= set(args)):
         raise ValueError("缺失或多余参数")
     for key,value in args.items():
@@ -200,7 +223,11 @@ def validate_arguments(name, raw_arguments, partial=False, *, directory_sort=Non
             type(invoice) is not str or not re.fullmatch(r"F\d+", invoice, re.I)
             for invoice in args["excluded_invoice_ids"]):
         raise ValueError("排除对象必须为发票编号")
-    if name == "propose_invoice_changes" and not partial:
+    if name == 'propose_invoice_changes' and args.get('action') == 'request':
+        for key, upper in (('target_year',9999), ('target_month',12)):
+            if key in args and not 1 <= args[key] <= upper:
+                raise ValueError('办理日期无效')
+    elif name == "propose_invoice_changes" and not partial:
         if "write_scope" in args:
             validate_write_scope(args["write_scope"])
         dates = {"target_year", "target_month"} & args.keys()
