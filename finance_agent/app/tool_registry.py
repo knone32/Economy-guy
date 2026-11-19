@@ -27,12 +27,14 @@ YEAR = {"company_id": "string", "year": "integer"}
 MONTH = {**YEAR, "month": "integer"}
 DIRECTORY_SORT_FIELDS = {"sort_by": ("date", "amount", "invoice_no"), "sort_order": ("asc", "desc")}
 OPTIONAL_FIELDS = {
+    "change_invoice": {"company_id", "invoice_no", "year", "month", "field", "new_value"},
     "list_bank_transactions": {"direction"},
     "list_invoice_directory": DIRECTORY_SORT_FIELDS.keys(),
     "check_missing_purpose": {"rule_business_date"},
-    "propose_invoice_changes": {"action", "company_id", "invoice_no", "rule_business_date", "target_year", "target_month", "rule_cohort", "write_scope", "pending_request_id"},
+    "propose_invoice_changes": {"rule_business_date", "target_year", "target_month", "rule_cohort", "write_scope", "pending_request_id"},
 }
 REGISTRY = {
+    "change_invoice": (None, {"company_id":"string", "invoice_no":"string", "year":"integer", "month":"integer", "field":"string", "new_value":"string"}),
     "query_business_sql": (None, {"sql": "string"}),
     "list_invoices": (queries.list_invoices, MONTH),
     "list_invoice_directory": (queries.invoice_directory, {**MONTH, "page": "integer", "sort_by": "string", "sort_order": "string"}),
@@ -51,7 +53,7 @@ REGISTRY = {
     "get_applicable_rules": (None, {"company_id":"string", "rule_type":"string", "business_date":"string"}),
     "list_rule_versions": (None, {"company_id": "string", "rule_id": "string"}),
     "prepare_invoice_update": (None, {"company_id":"string", "invoice_no":"string", "field":"string", "new_value":"string"}),
-    "propose_invoice_changes": (None, {"action":"string", "company_id":"string", "invoice_no":"string", "selection_id":"string", "field":"string", "new_value":"string",
+    "propose_invoice_changes": (None, {"selection_id":"string", "field":"string", "new_value":"string",
                                        "mode":"string", "excluded_invoice_ids":"array",
                                        "rule_business_date":"string", "target_year":"integer",
                                        "target_month":"integer", "rule_cohort":"boolean", "write_scope":"object", "pending_request_id":"string"}),
@@ -73,8 +75,9 @@ TEACHING_TOOLS = TOOLS
 TOOLS = [tool for tool in TOOLS if tool["function"]["name"] in ANNUAL | {
     "query_business_sql", "get_finance_summary", "list_invoices", "list_invoice_directory", "get_invoice", "list_bank_transactions",
     "check_missing_purpose", "count_invoice_fields", "get_applicable_rules", "list_rule_versions", "prepare_invoice_update",
-    "list_tasks", "manage_task", "manage_preference", "manage_display_preference", "resolve_invoice_reference", "resolve_recent_invoice", "propose_invoice_changes", "set_schedule"}]
+    "list_tasks", "manage_task", "manage_preference", "manage_display_preference", "resolve_invoice_reference", "resolve_recent_invoice", "propose_invoice_changes", "change_invoice", "set_schedule"}]
 DESCRIPTIONS = {
+    "change_invoice":"单张发票修改的业务办理入口。只传用户已知或更正的企业/票号/年月/字段/原话新值；未知项省略即可，系统保存已验证信息并追问。后续补充仍调用此工具，例如只提供invoice_no；已知参数也可重复提供，合同不变。系统负责继承来源、权限、fresh读取和正式预览；不需要模型先查询或提供selection_id/pending_id/action/mode。不会提交，预览必须由用户实际确认。普通查询不要调用。批量和规则选集仍用原提案工具。",
     "query_business_sql":"普通只读业务分析首选。在按可信企业和账期隔离的账簿快照上执行单条 SELECT 或只读 WITH。支持筛选、分组、JOIN 和子查询。金额原值是整数分；is_blank(value) 检查 NULL、空串与纯空白。规则判定仍用规则工具。",
     "get_annual_finance_summary":"仅用于可信的完整年度，分别汇总发票、银行收入和银行支出。",
     "list_annual_blank_purpose":"仅用于可信的完整年度，按页列出用途字段为空的发票；不判定必填或合规。",
@@ -143,27 +146,15 @@ for tool in TOOLS:
             tool["function"]["parameters"]["properties"][key]["enum"] = list(choices)
     if tool["function"]["name"] == "prepare_invoice_update":
         tool["function"]["parameters"]["properties"]["field"]["enum"] = ["purpose", "remark"]
+    if tool["function"]["name"] == "change_invoice":
+        tool['function']['parameters']['properties']['field']['enum'] = ['purpose', 'remark']
     if tool["function"]["name"] == "propose_invoice_changes":
         fields = tool["function"]["parameters"]["properties"]
         fields["field"]["enum"] = ["purpose", "remark"]
         fields["mode"]["enum"] = ["item", "batch"]
         fields["excluded_invoice_ids"]["items"] = {"type": "string"}
         fields["write_scope"] = {**WRITE_SCOPE_SCHEMA, "description": PARAMETERS["write_scope"]}
-        fields['action']['enum'] = ['request', 'propose']
-        request_keys = {'action', 'company_id', 'invoice_no', 'target_year', 'target_month', 'field', 'new_value'}
-        proposal_keys = set(fields) - {'company_id', 'invoice_no'}
-        parameters = tool['function']['parameters']
-        complete_required = parameters.pop('required')
-        parameters['anyOf'] = [
-            {'properties':{k: ({**v, 'enum':['request']} if k == 'action' else v)
-                           for k,v in fields.items() if k in request_keys},
-             'required':['action'], 'additionalProperties':False},
-            {'properties':{k: ({**v, 'enum':['propose']} if k == 'action' else v)
-                           for k,v in fields.items() if k in proposal_keys},
-             'required':complete_required, 'additionalProperties':False}]
-        tool['function']['description'] += (' 参数不完整仍要发起发票办理时用action=request，只传已知企业/票号/目标年月/字段/新值；'
-            '可省略未定目标，不传selection_id/mode/write_scope。Runtime保存有来源的已知槽并直接追问，'
-            '无需最终JSON另建pending。request不生成草稿；目标确定后须fresh读取，再按完整selection提案。')
+        tool['function']['description'] = '批量、规则或复杂选集的完整修改提案；须本轮可信selection_id。单张发票的开始办理及补充统一用change_invoice，不能在此启动不完整请求。候选不是授权。'
     if tool["function"]["name"] == "manage_task":
         tool["function"]["parameters"]["properties"]["action"]["enum"] = ["create","show","update","correct","wait","pause","resume","complete","cancel"]
     if tool["function"]["name"] == "manage_display_preference":
@@ -200,14 +191,6 @@ def validate_arguments(name, raw_arguments, partial=False, *, directory_sort=Non
         raise ValueError("JSON参数嵌套过深或包含无效Unicode") from None
     fields = REGISTRY[name][1]
     required = set(fields) - set(OPTIONAL_FIELDS.get(name, ()))
-    if name == 'propose_invoice_changes' and type(args) is dict:
-        if args.get('action') == 'request':
-            allowed = {'action','company_id','invoice_no','target_year','target_month','field','new_value'}
-            if not set(args) <= allowed:
-                raise ValueError('request不能提供选集、确认或完整提案参数')
-            required = {'action'}
-        elif set(args) & {'company_id','invoice_no'}:
-            raise ValueError('完整提案须使用本轮selection而非自由对象参数')
     if type(args) is not dict or not set(args) <= set(fields) or (not partial and not required <= set(args)):
         raise ValueError("缺失或多余参数")
     for key,value in args.items():
@@ -223,11 +206,11 @@ def validate_arguments(name, raw_arguments, partial=False, *, directory_sort=Non
             type(invoice) is not str or not re.fullmatch(r"F\d+", invoice, re.I)
             for invoice in args["excluded_invoice_ids"]):
         raise ValueError("排除对象必须为发票编号")
-    if name == 'propose_invoice_changes' and args.get('action') == 'request':
-        for key, upper in (('target_year',9999), ('target_month',12)):
+    if name == 'change_invoice':
+        for key, upper in (('year',9999), ('month',12)):
             if key in args and not 1 <= args[key] <= upper:
                 raise ValueError('办理日期无效')
-    elif name == "propose_invoice_changes" and not partial:
+    if name == "propose_invoice_changes" and not partial:
         if "write_scope" in args:
             validate_write_scope(args["write_scope"])
         dates = {"target_year", "target_month"} & args.keys()
@@ -516,7 +499,7 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
             return _confirm_proposal(service(intent),service,intent,user_id,action,management_confirmation)
         if name == "add":
             return tool_result("SUCCESS", args["a"] + args["b"])
-        if name == "propose_invoice_changes":
+        if name in {"propose_invoice_changes", "change_invoice"}:
             # Direct registry calls cannot establish a trusted editing session.
             return tool_result("DENIED", error="修改候选只可由Harness核实，不授予Prepare权限")
         if name == "prepare_invoice_update":

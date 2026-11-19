@@ -133,7 +133,8 @@ class PendingRequestError(PendingTransitionError):
         self.status = status
 
 
-def request_change(args, previous, *, actor, book, current_id, current_request):
+def request_change(args, previous, *, actor, book, current_id, current_request,
+                   business_continuation=False):
     """Start an incomplete invoice request; no selection, draft or authority.
 
     Model supplies business slots only. Runtime owns identity, request ID and
@@ -142,7 +143,7 @@ def request_change(args, previous, *, actor, book, current_id, current_request):
     from contextlib import closing
     from .responses import request_scope, _QUOTED_DATA
     from .intent_contract import FIELD_LABELS, _field_origins
-    from .tui_intent import invoice_value_source, literal_single_invoice_edit
+    from .tui_intent import invoice_value_source, invoice_change_boundary, literal_single_invoice_edit
     from .permissions import check_permission
     from .stage2_schema import open_existing
 
@@ -154,8 +155,11 @@ def request_change(args, previous, *, actor, book, current_id, current_request):
         # A mentioned/read ID is not a selected write target. Reuse existing
         # literal write evidence or an already unique pending target only.
         direct = literal_single_invoice_edit(current_request) or {}
+        continuation = (business_continuation and previous
+                        and previous.get('change')
+                        and current.get('invoice_no') == [args['invoice_no']])
         if (direct.get('invoice_no') != [args['invoice_no']]
-                and prior.get('invoice_no') != [args['invoice_no']]):
+                and prior.get('invoice_no') != [args['invoice_no']] and not continuation):
             raise PendingRequestError('尚未明确选择修改票号，不能把读取或提及对象当作修改目标。')
     scope = {}
     for slot, arg in (('company_id','company_id'), ('invoice_no','invoice_no'),
@@ -176,8 +180,14 @@ def request_change(args, previous, *, actor, book, current_id, current_request):
                 raise PendingRequestError('本次发票办理所需权限不足。', 'DENIED')
     change = deepcopy((previous or {}).get('change', {}))
     plain = _QUOTED_DATA.sub(' ', current_request)
+    field = args.get('field', next(iter(change.get('field', ())), None))
+    trusted_field = bool(business_continuation and previous
+                         and previous.get('change', {}).get('field') == [field])
+    current_fields = _field_origins(plain)
+    if trusted_field and current_fields and current_fields != {field}:
+        raise PendingRequestError('当前字段来源与已验证办理字段冲突，请明确更正字段。')
     if 'field' in args:
-        if not any(label in plain for label in FIELD_LABELS[args['field']]):
+        if not trusted_field and not any(label in plain for label in FIELD_LABELS[args['field']]):
             raise PendingRequestError('办理字段缺少当前原文来源。')
         if change.get('field') != [args['field']]:
             change.pop('new_value', None)
@@ -187,12 +197,17 @@ def request_change(args, previous, *, actor, book, current_id, current_request):
                 and _field_origins(plain) != set(change['field'])):
             raise PendingRequestError('当前字段来源不能与旧待补字段拼接。')
         value = args['new_value']
-        if ((value and value not in current_request) or
-                (not value and not any(q in current_request for q in ('""','“”','「」','『』','‘’')))):
+        inherited_value = bool(trusted_field and previous.get('change', {}).get('new_value') == [value])
+        if inherited_value and any(q.group(0)[1:-1] != value for q in _QUOTED_DATA.finditer(current_request)):
+            raise PendingRequestError('当前明确内容与重复的历史新值冲突。')
+        if not inherited_value and ((value and value not in current_request) or
+                (not value and not invoice_change_boundary(current_request, field, value))):
             raise PendingRequestError('办理新值缺少当前原文来源。')
         change['new_value'] = [value]
-    if ('new_value' in args and change.get('field') and _field_origins(plain)
-            and not invoice_value_source(current_request, change['field'][0], args['new_value'])):
+    source_check = (invoice_change_boundary if business_continuation and current_fields == {field}
+                    else invoice_value_source)
+    if ('new_value' in args and not trusted_field and change.get('field') and current_fields
+            and not source_check(current_request, change['field'][0], args['new_value'])):
         raise PendingRequestError('办理字段与新值没有同一原文业务分句来源。')
     missing = [slot for slot in ('company_id','invoice_no','year','month') if len(known.get(slot, ())) != 1]
     missing += [slot for slot in ('field','new_value') if len(change.get(slot, ())) != 1]

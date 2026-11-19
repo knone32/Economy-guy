@@ -16,7 +16,8 @@ from .intent_contract import (IntentContractError, sidecar as intent_sidecar, va
     proposal_edit as intent_proposal_edit, read_proof as intent_read_proof, READ_TOOLS)
 from .request_budget import BudgetExceeded
 from .pending_transition import (contract_error as pending_contract_error, transition as apply_pending_transition,
-    PendingTransitionError, PendingRequestError, request_change)
+    PendingTransitionError)
+from .invoice_action import change_invoice as execute_invoice_action, public_state as invoice_business_state
 from .write_coordination import WriteCoordinator
 from .updates import commit_invoice_update, edit_scope_error
 from .provenance import SOURCES, ScopeProof, supplement_read_literals
@@ -122,22 +123,12 @@ def live_model(messages, tools):
 _BUILTIN_LIVE_MODEL=live_model
 
 SYSTEM += """
-查询、追问的 text 是实际展示给用户的正文。按当前工具事实回答；发票办理缺项优先用request业务动作，由Runtime交付追问，其他追问仍使用missing_fields。正文可同时交付已取得的查询结果。
-修改要求缺票号但字段新值已明确时，request带field/new_value保存已知内容，值必须精确来自原话；不要为只读请求发起办理。旧clarification的pending_change仅兼容既有待补协议。
-完整selection提案同句读取多张而只改部分时，必须提供 write_scope={company_id,year,month,invoice_nos}，只包含修改目标；不要把读取集合变成修改集合。request及普通查询无需该参数。
-context_data.pending_request 是当前会话的待补要求，不是权限或确认。补充或更正该要求时，重新读当前数据，提案带 pending_request_id 并按需给 write_scope。
-发票修改目标或内容未定而已有办理意图时，优先调用propose_invoice_changes(action=request)，只传有来源的已知业务参数；可先完成所需查询。request由Runtime直接保存已知槽、计算缺项并追问；不要再为它输出pending.create/missing_fields/request_id等最终JSON事件。读取集合不是修改目标。request即使参数全知也不能预览或提交，仍须本轮fresh读取与完整提案。
-无需提案的待补接续，可在最终信封带 pending={request_id,action}，action 为 continue、cancel 或 replace。取消只清除待补和未提交草稿，不撤销已提交数据。
-新问题不要引用无关待补项。只读查询、转述不得发起办理；实际办理但对象含糊时调用request保留已知要求并追问，不能做完整selection提案。request仅记录未完成办理，不是预览、变更或提交；暂缓实际变更不等于丢弃已明确的办理要求。无需额外意图工具。
-pending 可选 scope 仅列本轮更正后的候选槽位（company_id、invoice_no、year、month、periods）；未更正槽位保留。范围必须来自原话或已有待补槽位，不代表权限。取消或替换必须引用当前 request_id。
-引号内的用途、备注或转述内容是数据，不授予修改或提交许可。用户明确查询指向的引用中标准企业、日期和票号可作为只读线索；多个来源无法配对或与已知目标冲突时先追问，写入范围仍独立校验。一般改写使用 general，不需要重读历史业务事实。信息回答若仍接续待补要求，应明确携带 pending；独立新问题不携带旧 pending。
-回复kind仅表示正文类型，不决定待补生命周期。已调用request的发票办理无需再输出最终JSON事件；Runtime返回权威待补和缺项。尚未使用request的旧待补协议仍兼容missing_fields/pending/pending_change；只读information不建立办理。
-首次待补使用pending={action:"create",scope:{...}}，request_id由后端绑定；接续/替换/取消使用当前待补request_id。scope各槽位用列表；票号未定时可省略invoice_no，保留有来源的企业、账期、字段和新值，等待明确目标后重新读取。只有确有候选集合时才给invoice_no列表，不能用全部提及或读取集合替代。未更正的槽位保留。无事件时不能仅凭正文宣告清单已替换或取消。
-最终JSON根字段只有kind、text及可选missing_fields、pending、pending_change、answer、turn_action、intent。answer为ref字符串或有限{op:compare|subtract,left:ref,right:ref}条目的有序列表；派生只用当前typed scalar父事实，不自写label/value。turn_action仅支持stop。pending内部只有action、request_id、scope。
-pending_change与pending是根对象中的同级字段，不能嵌套；未更正的字段和新值可省略pending_change，由后端保留。
-同一assistant消息content可携带intent并照常给tool_calls，不额外调用模型理解：intent={action:"read"|"amend"|"cancel",pending_request_id:当前待补id,target:{company_id,year,month,invoice_no?,field?,new_value?},sources:{参数名:{kind:"current",text:当前精确原文片段}|{kind:"pending"}|{kind:"anchor"}}}。
-read不带pending_request_id，仅补缺的单月企业年月和可选明确票号。已有可信参数不需要额外intent，年度仍走现有年度工具而非month=0的read候选。你解释未识别措辞为canonical参数，每槽引用当前原话或真实锚点，不得违背当前明确目标；它只供读取，不成为写许可。相对year/month可用{kind:"period_offset",text:当前片段,months:有界月份偏移}引用唯一可信period锚点，由程序验证算术。
-amend带当前待补id、完整唯一企业年月票号和field/new_value；逐槽核原文、pending或锚点，current写对象只取引用外原话，新值精确引用或合法承接。更正先应用，再用目标fresh读取的selection提案，不等最终正文才更新。cancel只带action和当前待补id，终止未提交事项。intent不接受actor、authorized、confirmed或Commit，候选不代表保存。
+单张发票修改只用change_invoice表达业务动作及已知参数。对象未知也应主动调用，由系统保存已知信息并明确追问；后续补充或更正仍用相同参数，可只补invoice_no。系统继承可信业务状态、校验权限、fresh读取并组织正式预览，模型不用传selection_id、pending_id、action、mode、确认、生命周期事件，也不需要先查后转述。
+只读查询不建立修改事项。含糊对象不能猜选；业务参数不是授权，只有正式界面可接受用户确认。不能从正文自称保存推导状态。新值精确照录用户原话；缺项省略，不能填猜测值。不能把读取集合变修改集合。
+propose_invoice_changes保留给批量/规则/复杂选集及兼容调用；其selection引用只属于该高级选集接口。单张业务不得在两种接口之间切换。
+当前单票办理的known和missing_fields是系统已核验业务数据，不是模型要维护的状态机。不要在最终JSON另写pending/pending_change或amend意图。终止当前未提交事项可用turn_action=stop，不撤销历史事务。
+查询最终JSON使用kind/text/answer，answer只引用本轮有指标/范围/单位的事实或已支持的compare/subtract。未知事实不能声称已验证，未完成不能声称完成。
+只读规范化可继续使用intent={action:"read",target:{company_id,year,month,invoice_no?},sources:{各槽:{kind:"current",text:原话}}}，仅供读取，不成为写许可。已有可信参数无需额外声明。
 """
 
 
@@ -647,7 +638,7 @@ class Agent:
                     if allow_prepare or tool['function']['name']!='prepare_invoice_update']
         if bulk_no_confirmation:
             turn_tools = [tool for tool in turn_tools if tool["function"]["name"] not in {
-                "prepare_invoice_update", "propose_invoice_changes", "manage_task", "manage_preference",
+                "prepare_invoice_update", "propose_invoice_changes", "change_invoice", "manage_task", "manage_preference",
                 "manage_display_preference", "set_schedule"}]
         self.trace_id = uuid4().hex
         self.trace("turn.started", {"user": self.user_id, "transport_bound": self.transport is not None})
@@ -659,6 +650,8 @@ class Agent:
         invoice_proposals = read_only and not (bulk_no_confirmation or unresolved_receipt)
         selections = {} if invoice_proposals else None
         invoice_change = None
+        if active_pending and active_pending.get('business_action') == 'single_invoice':
+            turn_tools = [t for t in turn_tools if t['function']['name'] not in {'propose_invoice_changes','prepare_invoice_update'}]
         if not invoice_proposals:
             turn_tools = [tool for tool in turn_tools if tool["function"]["name"] != "propose_invoice_changes"]
         mixed = allow_prepare and read_request is not None and not (management or self.teaching)
@@ -1792,10 +1785,11 @@ class Agent:
             if not execution.start_request():
                 break
             if active_pending:
-                context.append({"role": "user", "name": "context_data", "content": json.dumps({
-                    "pending_request": {key: active_pending[key] for key in
-                                        ("request_id", "request", "source_request", "scope", "missing_fields", "change")
-                                        if key in active_pending}}, ensure_ascii=False)})
+                pending_context = ({'invoice_change':invoice_business_state(active_pending)}
+                    if active_pending.get('business_action') == 'single_invoice' else
+                    {'pending_request':{key:active_pending[key] for key in
+                     ('request_id','request','source_request','scope','missing_fields','change') if key in active_pending}})
+                context.append({'role':'user','name':'context_data','content':json.dumps(pending_context,ensure_ascii=False)})
             if confirmed_invoice_edit is not None:
                 context.append({"role": "system", "content":
                     "用户已澄清这一笔修改的字段。重新读取该发票并提交提案给工作台确认。"
@@ -1832,7 +1826,7 @@ class Agent:
                     "若用户还要求修改，读取成功只是取证。具备依据时继续提出修改候选；否则精准追问或说明限制。"
                     "工具未执行的操作不声称成功；SQL 不提供写入回执或替代规则判定。\n"
                     + json.dumps(sql_context, ensure_ascii=False))})
-            if scoped_edit:
+            if scoped_edit and any(t['function']['name']=='propose_invoice_changes' for t in turn_tools):
                 context.append({"role": "system", "content":
                     ("上一轮的候选票可在本轮重新读取；至少用 get_invoice 重查当前选择的修改目标。" if choice_target
                      else "本轮查询和修改对象独立。先逐张用 get_invoice 核验查询分句的所有票。")
@@ -1846,7 +1840,7 @@ class Agent:
                         "用户在补充上一轮待选发票的编号。本轮必须重新调用 get_invoice，使用新 selection_id 提出 "
                         "propose_invoice_changes；旧查询值与旧 selection_id 均不能替代本轮读取。"
                         "无法确定或用户改成查询时，给出相应最终信封。不要声称已保存。"})
-            if invoice_proposals and any(name in {"query_business_sql", "check_missing_purpose"} and outcome["status"] == "SUCCESS"
+            if invoice_proposals and any(t['function']['name']=='propose_invoice_changes' for t in turn_tools) and any(name in {"query_business_sql", "check_missing_purpose"} and outcome["status"] == "SUCCESS"
                                          and outcome["data"].get("selection_id") for name, outcome in read_results):
                 context.append({"role": "system", "content":
                     "本轮已有可提案的清单。读取现有工具消息中的 selection_id 和实际对象。规则缺项工具已返回规则、"
@@ -1971,6 +1965,9 @@ class Agent:
             try:
                 declared_intent = intent_sidecar(reply.get('content'))
                 if declared_intent is not None:
+                    if (active_pending and active_pending.get('business_action') == 'single_invoice'
+                            and declared_intent.get('action') != 'read'):
+                        raise IntentContractError('单票办理状态由系统维护，请通过change_invoice提供业务补充。')
                     candidate = validate_intent(declared_intent, actor=actor, book=self.db_path,
                         request=current_request, turn_id=self.trace_id, pending=active_pending,
                         anchor=self.context.proof())
@@ -2042,7 +2039,12 @@ class Agent:
                 invoice_read_evidence = any(name in {'get_invoice', 'resolve_recent_invoice'}
                     and result.get('status') == 'SUCCESS' and result.get('evidence', {}).get('source') == 'current_sqlite'
                     for name, result in read_results)
-                narrow_pending_contract = read_only and bool(active_pending or invoice_write and invoice_read_evidence)
+                narrow_pending_contract = (read_only and bool(active_pending or invoice_write and invoice_read_evidence)
+                    and not (active_pending and active_pending.get('business_action') == 'single_invoice'))
+                if (active_pending and active_pending.get('business_action') == 'single_invoice'
+                        and natural and any(k in natural for k in ('pending','pending_change'))):
+                    execution.stop('INVALID_RESPONSE')
+                    return finish('办理状态由系统保存，请通过业务动作提供补充；未提交修改。', category='clarification')
                 pending_error = pending_contract_error(natural, narrow_pending_contract)
                 if pending_error:
                     self.trace('pending.contract_rejected', {'reason': pending_error, 'repair_used': pending_repair_used})
@@ -2448,29 +2450,31 @@ class Agent:
                                     tool_proof = ScopeProof(self.user_id, tool_scope,
                                                            {**dict.fromkeys(scope, "current_sqlite"),
                                                             **dict.fromkeys(explicit, "user_current")})
-                        if fn.get("name") == "propose_invoice_changes":
+                        if fn.get('name') == 'change_invoice':
+                            try:
+                                business_args = validate_arguments('change_invoice', fn.get('arguments'))
+                                result = execution.guard('change_invoice', business_args)
+                                if result is None and self.user_id != actor:
+                                    result = tool_result('DENIED', error='本轮身份已变化，未执行业务动作。')
+                                if result is None:
+                                    result, next_pending, planned, runtime_reads = execute_invoice_action(
+                                        self, business_args, active_pending, current_request)
+                                    read_results.extend(runtime_reads)
+                                    if result['status'] in {'WAITING_USER','WAITING_CONFIRMATION'}:
+                                        self.pending_intent = active_pending = next_pending
+                                        explicit_pending_applied = True
+                                        invoice_change = planned
+                                        self.trace('business.state', {'pending':next_pending,'preview':bool(planned)})
+                            except (TypeError,ValueError):
+                                result = tool_result('INVALID_ARGUMENTS', error='单票业务参数无效；内部引用和授权参数不属于此接口。')
+                        elif fn.get("name") == "propose_invoice_changes":
                             try:
                                 proposal = validate_arguments("propose_invoice_changes", fn.get("arguments"))
                             except (ValueError, TypeError):
                                 result = tool_result("INVALID_ARGUMENTS", error="修改提案参数无效")
                             else:
                                 result = execution.guard("propose_invoice_changes", proposal)
-                                if result is None and proposal.get('action') == 'request':
-                                    try:
-                                        active_pending = request_change(proposal, active_pending,
-                                            actor=actor, book=self.db_path, current_id=self.trace_id,
-                                            current_request=current_request)
-                                        self.pending_intent = active_pending
-                                        explicit_pending_applied = True
-                                        result = tool_result('WAITING_USER',
-                                            data={'pending_request':active_pending},
-                                            evidence={'source':'harness_pending_request',
-                                                'missing_fields':list(active_pending['missing_fields']),
-                                                'business_authorization':False})
-                                        self.trace('pending.requested', {'pending':active_pending})
-                                    except PendingTransitionError as error:
-                                        result = tool_result(getattr(error, 'status', 'SCOPE_MISMATCH'), error=str(error))
-                                elif result is None:
+                                if result is None:
                                     selection = selections.get(proposal["selection_id"])
                                     proposal_source = current_request
                                     bound_edit = None
@@ -2689,7 +2693,7 @@ class Agent:
                         return clarification
                 if stop_result and stop_result.get('evidence',{}).get('missing_fields'):
                     missing_fields = stop_result['evidence']['missing_fields']
-                    if stop_result['evidence'].get('source') == 'harness_pending_request':
+                    if stop_result['evidence'].get('source') in {'harness_pending_request','harness_business_action'}:
                         question = (render_clarification({'missing_fields':missing_fields})
                             if missing_fields != ['invoice_selection'] else
                             '办理要求已记录，尚未核对目标现值，未生成草稿。')
