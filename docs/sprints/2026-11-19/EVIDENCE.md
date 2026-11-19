@@ -84,3 +84,7 @@
 - A只读原冻结复现时曾在旧freeze目录误建自己的runner/空证据目录，已移至外部证据，未修改任何旧原文件；最终需核旧冻结clean/hash，不能把移动证据隐去。报告保留操作说明。
 - 新预算用户独立授权stage4-acceptance/AUTHORIZATION.json：8请求/120000tokens/输出2048，当前冻结时0。PROTOCOL.md单场最多2输入、首失败即停、不approve/commit/第五轮，旧21/194995、13/124751、2/19136封账不续花。
 - 冻结5253deea95fbc8090fb4253d6f5ffce8318f7fb3至frozen-runtime-stage4，stage4-acceptance/FREEZE.json锁实际source/工具入口/profile/依赖/driver/scaffold/fixture。冻结后才C独立目标→SQLite→新表达封存；不读实现选题，非严格隐藏盲测。源码评分期间不变。
+- 第四阶段正式结案：stage4-acceptance/REPORT.md、SCORES.json、FAILURES.json、ACTUAL-MODEL-INPUTS/ACTUAL-PROPOSE-TOOL-DEFINITIONS/ACTUAL-SCHEMA-ARGUMENT-AUDIT、FINAL-VERIFICATION/MANIFEST共46文件封存。首输入真实request→合法pending PASS，第二输入propose多company_id不符实际anyOf，未到正式preview，场景0/1、输入1/2；无修改参数/代填/重放/第五轮。
+- root独立终审evidence-stage4/ROOT-FINAL-BUSINESS-AUDIT.json跨新连接SQL/快照/seed同、audit0、46封条无变、3连续官方请求31644tokens一致。ROOT-INTERFACE-AUDIT.json直接从原trace核唯一extra company_id/无缺required、fresh selection为本轮真实get_invoice返回；新5253与旧ae源哈希及旧round3 39文件相同。旧全保护同时见C FINAL-VERIFICATION。
+- 新独立预算evidence-stage4/BUDGET-CLOSED.json封3/31644，剩5/88356不续用，无guard/未知usage，旧三账不动。C辅助评分写盘路径笔误HARNESS-NOTES透明记录，独立判断及DB核验先于continue，未重放或改标准。
+- 当前结果与工程决策RESULT-stage4.md、NEXT-DECISION-stage4.md：高层动作入口局部有效，但当前双模式接口仍参数协议失败；停止候选晋级。证据不支持大规模改核心，先定清业务参数与执行引用责任；不自动第五轮相同实验或写入链，不合main/推送。
