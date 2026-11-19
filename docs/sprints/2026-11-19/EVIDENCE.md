@@ -20,4 +20,6 @@
 - 本轮A已完成：model-first-20261119/evidence/A/REPORT.md、findings.json、historical-excerpts.json、current-boundary-probes.json。原D03/D05 SQL窄探针在当前8d709已VERIFIED，R1精确探针UNKNOWN/unverified_query_scope，G5 raw标识符与request_scope引用剔除差异直接复现；只是程序窄验证，不算完整Agent或Live通过。
 - 通用验收driver预备：model-first-20261119/acceptance/driver.py，复用旧无题基础设施，计划从冻结后新建frozen-runtime启动；支持封存的隔离夹具可信UI模拟批准/拒绝，不能称真人。尚无具体新题、无新增API。runtime snapshot独立于root持续更新的STATE文档，以保持评分时代码不变。
 - B可审阅提交：1f035545fb6e5b1568788149d353eb2b08f22f34，7文件369新增/8删除；只在execution分支，root待复核集成。核心26/26、相关77项与基线差异目前为B报告，精确日志待落盘核实；不是Live证据。
+- B与A发现初稿范围扩大：model-first-20261119/evidence/A/diff-scope-baseline.json、diff-scope-candidate.json，及B/read-scope-before.log保留首个FAIL；修复提交c3a3bb79a08504f467453e5b9b12d65d6c771da0，B/core-after-scope-fix.log为27核心通过。尚未整合/冻结/Live，不抹掉初稿失败。
+- B相关程序原始证据：model-first-20261119/evidence/B/REPORT.md、results.json、related-final.log、related-baseline.log、related-diff.json。77项候选9fail3error vs基线6fail3error，新增3旧模型原文显示断言仍为失败，未删改旧测试。
 - 本轮环境、测试、修改、冻结和Live证据：主会话按阶段追加；新产物保存 model-first-20261119/evidence/，不混改历史目录。

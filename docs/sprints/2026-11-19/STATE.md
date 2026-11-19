@@ -6,8 +6,9 @@
 - 已确认目录差异：github-main-publish-20261119 为8d70924；E:/beside 为3111bd7；上轮candidate为4a718b9。未将目录HEAD当作用户正在运行的进程版本；新验收只从明确冻结的冲刺工作区启动。
 - 可复用环境已本轮验证：Python C:/Users/Lenovo/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe，3.12.14；PYTHONPATH 指向 reliability-v2-20261119/runtime-deps，依赖openai1.109.1/httpx0.28.1/textual1.0.0/openpyxl3.1.5/sqlglot30.33.0。虚构SQLite可只读，40票/48流水/0发票审计。受审用户上下文shared-flash/U001、test/U002可用，常规sandbox无法读WindowsVault；不需用户重输密钥。
 - 已完成A：evidence/A/REPORT.md、findings.json及原始摘录/窄探针；生产代码未改、工作树干净、零API。D03/D05精确SQL在当前已VERIFIED，R1仍UNKNOWN，G5只读源误拒已复现；D02属模型擅加条件；D08/D10留门控/日期来源风险，不再扩审计。
-- 待集成B候选：1f035545fb6e5b1568788149d353eb2b08f22f34，独立execution分支干净，未推送；新事实引用模块/有序事实回执、只读引用票号、typed stop、原生票号排序。尚未cherry-pick到集成，不代表最终冻结或验收通过。
-- B报告程序结果：核心26/26，相关旧77项候选9失败3错误 vs同环境基线6失败3错误；新增3项旧模型原文echo断言，原断言保留；报告精确路径与leaf正落盘，root待核实。未跑无目的全量。
+- 待集成B候选：c3a3bb79a08504f467453e5b9b12d65d6c771da0（父业务提交1f035545fb6e5b1568788149d353eb2b08f22f34），独立execution分支干净，未推送；新事实引用模块/有序事实回执、只读引用票号、typed stop、原生票号排序。尚未cherry-pick到集成，不代表最终冻结或验收通过。
+- 复核中阻断与修复：1f原稿把引用票号覆盖既有明确目标，A同输入wrong-target探针证实基线SCOPE_MISMATCH、初稿SUCCESS。c3改成仅proof和scope均缺票号时补引用；先红后绿日志保留，A正做最终复核，不隐藏初稿回归。
+- B报告程序结果：修复后核心27/27；相关旧77项初稿9失败3错误 vs同环境基线6失败3错误，新增3项旧模型原文echo断言保留，精确记录已在evidence/B；最终来源小子集补验待落盘。未跑无目的全量。
 - 进行中任务：A限定diff只读复核；root核旧失败差异并独立集成回归。用户已明确授权本轮24物理请求/240000 total_tokens/每次输出2048，见evidence/AUTHORIZATION.json；旧轮结案不续用，当前新调用仍0。
 - 已知阻断：上轮通用正文抑制导致正确终止答复/展示顺序回退；引用票号来源拒绝、冲突范围模型误选、R1 SQL证据不闭合。不得整包盲合并上轮候选。
 - 初步方案：B实现有序工具事实引用/真实receipt契约，模型选工具、事实和次序，Harness绑定范围/标签/数值；A核实只读引用来源应与修改授权区分。不是最终实现或通过结论，完成后先定向验证与root审核。
