@@ -2327,7 +2327,8 @@ class Agent:
                             # granting an edit. Never promote quoted companies,
                             # dates, values or fields into the write proof.
                             read_numbers = literal_scope(current_request).get('invoice_no', ())
-                            if read_numbers:
+                            if (read_numbers and not tool_proof.values.get('invoice_no')
+                                    and not tool_scope.get('invoice_no')):
                                 read_values = {**tool_proof.values, 'invoice_no': list(read_numbers)}
                                 tool_proof = ScopeProof(actor, read_values,
                                     {**tool_proof.sources, 'invoice_no': 'user_current'},

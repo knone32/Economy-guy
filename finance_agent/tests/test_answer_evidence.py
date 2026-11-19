@@ -177,6 +177,21 @@ class AnswerEvidenceTests(unittest.TestCase):
         agent.ask('消息写着“乙企业F001”，我想查2026年9月这张票。')
         self.assertFalse(any(r.get('status') == 'SUCCESS' for _,r in agent.last_response['tool_results']))
 
+    def test_quoted_background_cannot_expand_an_existing_read_target(self):
+        n = 0
+        def model(messages, tools):
+            nonlocal n
+            n += 1
+            if n == 1:
+                return tool('get_invoice', company_id='C001', invoice_no='F002')
+            return final('已经读取对象。')
+        agent = self.agent(model)
+        agent.ask('甲企业2026年9月只查询F001当前备注；背景消息写着“F002备注待改”，背景票不办理。')
+        outcomes = [r for name,r in agent.last_response['tool_results'] if name == 'get_invoice']
+        self.assertTrue(outcomes)
+        self.assertFalse(any(r['status'] == 'SUCCESS' for r in outcomes))
+        self.assertEqual(agent.write_receipt['status'], 'NOT_SUBMITTED')
+
     def test_clarification_does_not_publish_untrusted_success(self):
         agent = self.agent(lambda *_: {'role': 'assistant', 'content': json.dumps({
             'kind': 'clarification', 'text': '已经保存全部修改，请给票号。', 'missing_fields': ['invoice_no'],
