@@ -1,14 +1,12 @@
 # 当前状态（仅主会话更新）
 
-- 阶段：R2-1，用户19:47明确续接第二轮，A/B正在两个新worktree并行实施；已读真实契约与两轮FAILURES原件，不依赖历史摘要。
-- 当前集成控制HEAD核实为30b8efed29184a113e81b193b5b39c29a0dd32e8，工作树初查干净；其finance_agent等同当前已知候选0638f8dcd34aa7a2debbcd19a2ed7d1369bb1ebe。原main8d70924、838/0638冻结目录均保留且干净，未推送或切换正式E:/beside。
-- 本轮唯一目标：模型语义候选→来源/待补状态→fresh读→可信提案/预览→确认→事务/审计→重启回读→完整交付。只改已确认链路，不重做R1—R3或全仓审计。
-- 已创建两个独立实施worktree/分支round2-intent(A)、round2-delivery(B)，均从续接契约ed9c385f43e6a74127f9dc6f5832f2a545e93ffa起步，业务内容等于0638。root仍唯一管理integration；A拥有意图/状态/dispatch/来源及必要tool schema，B拥有事实/回复/紧凑输入/预算，agent closing/input hook由root/A协调，禁止相互覆盖。
-- 已确认最新首错：0638新题金额比较原模型/SQL正确而末交付缺结论；明确新目标/新用途更正被propose拒绝，pending旧值；语义标准化来源仍挡正确企业/年份；收尾守卫最小预留52734超过旧余额45005，误报连接错误。原始证据保持。
-- 旧独立预算21请求/194995tokens已封账绝不修改。用户已明确授权本轮独立18请求/180000 total_tokens/输出2048，evidence-round2/AUTHORIZATION.json；当前新增API0。新账本round2-acceptance从1计新额度，不重置或复制成旧额度。
-- A接口进行中：amend/cancel来源span/pending/可信anchor，提案前应用有效事件并核fresh selection/字段/值；read-only model_read_candidate独立只读来源集合，不加入写SOURCES，不自动授权/确认。B进行中：有限有父事实/单位的subtract/compare、紧凑catalog、结构BudgetExceeded贯通与真实事实fallback；尚未集成或宣称完成。
-- root基础设施已0API验证真实两Python进程PID不同、SessionStore chat同一、fresh drafts/pending为空（仅空会话基础设施，不算业务重启闭环）；新driver支持预登记restart_before退出进程后--resume仅执行下一未执行输入，避免把新连接当进程重启。
-- 下一步：A/B交可运行切片→root协调接口/最小正反例与集成→完整SHA冻结→C独立新题及真实闭环。round2-acceptance/PROTOCOL.md已预登记3类最多7输入，无具体目标/自然题/真值，C尚未启动本轮。
-- 冻结目标仍23:30，不新增GUI/文件/Agent功能。重大安全回归不晋级；复杂问题留明日，不无限补丁。历史失败/未测/候选全保留。
-- 恢复入口：本文+MISSION.md+EVIDENCE.md；本轮证据evidence-round2，旧RESULT.md/NEXT-DECISION保留为前阶段记录，已被用户续接授权取代其停止状态。
-
+- 阶段：R2-2 集成前门禁；用户19:47续接第二轮，23:30停止扩大开发范围。恢复先读MISSION/STATE/EVIDENCE。
+- 当前集成HEAD：e68e12f43ff1c58e19c400f25c37a715dfb7c34f，尚未冻结。A业务9b7a35、B共享39f45+交付1b0f330已由root cherry-pick；原main8d70924、旧838/0638冻结runtime和失败/账本均保留，未推送/发布/写正式数据。
+- A/B独立round2-intent、round2-delivery实施；root唯一integration。A负责intent/dispatch/pending及有界收尾，B负责typed facts/transport/budget。只做本轮核心业务链，不开发GUI/文件等明日功能。
+- 已实施：逐槽来源的read/amend/cancel候选、执行前pending原子更新和fresh selection绑定；有父事实/指标/范围/单位的有限compare/subtract；紧凑catalog；typed发送前预算拒绝及原Loop硬限内一次无工具收尾。均不能授予权限/确认/提交真实性。
+- 程序证据：root联合核心43/43（ROOT-JOINT-CORE.log），A核心17+相关10、B核心28；均Mock/契约，零真实自然语言成绩。B更宽检查1旧Trace fixture错误已同基线复现，旧raw正文断言失败保留不归为通过。
+- 当前阻断：root独立发现旧pending.field与当前不同字段new_value被兼容infer误拼成错误预览；首红ROOT-FIELD-INHERITANCE-BEFORE.json保留，未写库。A正收紧兼容推断来源冲突并补正反例；修复及root独立复核前不冻结、不启动C。
+- 0API基础设施已确认真实新进程checkpoint/resume、不同PID、同chat、输入索引1/2不重放，见RESTART-RUNNER-CHECK.json；只测空业务存储，不算业务重启闭环。
+- 用户新独立预算18请求/180000 total_tokens/单次输出2048已授权（evidence-round2/AUTHORIZATION.json），本轮新增API=0。旧21请求/194995tokens封账不动。新账本仅round2-acceptance，不续花旧额度。
+- C未开始本轮，无具体新题。PROTOCOL预登记3类最多7输入；新完整SHA冻结后才独立抽目标、SQLite算真值、出自然表达并封存。共享存储只能称冻结后新题，不称严格盲测。
+- 下一步：A交字段来源修正→root独立首红复验及必要权限/确认/未知结果检查→冻结新完整SHA/runtime与依赖/profile/driver→C首次新题Live，优先更正→预览→可信UI模拟确认→事务/审计→真进程重启回读。重大安全失败立即停评分；不边修边重测。

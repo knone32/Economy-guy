@@ -47,3 +47,6 @@
 - 独立新增预算：evidence-round2/AUTHORIZATION.json，用户明确授权18请求/180000 total_tokens/单次输出2048；旧21/194995不动。本轮证据目录evidence-round2，验收目录round2-acceptance，不覆写旧文件。
 - 预登记：round2-acceptance/PROTOCOL.md，3类最多7输入，持续更正/合法预览批准/事务审计/真进程重启回读、取消安全、复杂比较；具体目标与问法只能完整代码冻结后由C生成。
 - 0API进程基础设施：evidence-round2/RESTART-INFRASTRUCTURE.json与其指向create/reopen.json，Python PID42360→57472、同chat、draft/pending为空；只测空会话进程/存储，不算实际业务重启或语言能力。driver支持checkpoint+--resume新进程，不重放旧输入；PTY硬检查与模拟审批前独立核草稿保留。
+- 第二轮集成：B共享39f45及交付1b0f330、A意图9b7a35已分别cherry-pick，当前e68e12f43ff1c58e19c400f25c37a715dfb7c34f，尚未冻结。evidence-round2/ROOT-JOINT-CORE.log独立43/43仅程序契约；A/REPORT.md和B/REPORT.md含首红、最终相关检查及局限，均API0。
+- root集成负例发现字段来源误拼：evidence-round2/ROOT-FIELD-INHERITANCE-BEFORE.json与probe_field_inheritance.py保留pending旧remark+当前purpose新值却产生remark草稿，audit0；A处理兼容桥冲突，修正前不冻结。
+- 实际验收runner零API检查：evidence-round2/RESTART-RUNNER-CHECK.json，不同Python PID、同chat、索引[1,2]、无错误；仅基础设施，非真实业务/自然语言验收。原两进程probe及日志均保留。
