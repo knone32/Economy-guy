@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 from .model_config import QWEN_PREFLIGHT, QWEN_SNAPSHOT, is_official_qwen
 from .thinking_protocol import ThinkingProtocol, is_official_deepseek_endpoint
 from .trace import redact, warn_trace_degraded
+from .request_budget import BudgetExceeded, budget_cause
 
 
 class ModelRequestError(RuntimeError):
@@ -40,6 +41,7 @@ _CATEGORY_LABELS = {
     "CONNECTION_ERROR": "无法连接服务，请核对地址和网络",
     "RESPONSE_PROTOCOL": "HTTP 成功，但回复格式不符合 Chat Completions 协议",
     "HTTP_ERROR": "服务商拒绝了请求", "SDK_OR_RESPONSE_ERROR": "SDK 请求或响应处理失败",
+    "BUDGET_EXCEEDED": "模型请求预算不足，尚未确认业务完成",
 }
 _PHASE_LABELS = {"agent": "对话请求", "connection": "基础连接", "function_calling": "工具检测"}
 
@@ -186,7 +188,10 @@ class ModelTransport:
         diagnose = stage == "agent" and self.diagnose_next_request
         if diagnose:
             self.diagnose_next_request = False
-        messages=self.protocol.wire(messages,bool(tools))
+        history_has_tools = any(m.get('role') == 'assistant' and m.get('tool_calls') for m in messages)
+        # Finalization may advertise no new tools, but real historical tool
+        # calls still require their actual bound DeepSeek reasoning fields.
+        messages=self.protocol.wire(messages, bool(tools) or history_has_tools)
         profile = self.connection.profile
         if profile.provider == "openai-compatible" and not self.official_deepseek:
             system = [message for message in messages if message["role"] == "system"]
@@ -302,6 +307,18 @@ class ModelTransport:
             return message
         except Exception as error:
             self.failures+=1
+            budget = budget_cause(error)
+            if budget is not None:
+                self.last_response = {**request, 'attempt': self.attempts, 'success': False,
+                    'http_category': 'NOT_SENT' if budget.before_http else 'BUDGET_REFUSED',
+                    'http_status': None, 'error_category': 'BUDGET_EXCEEDED',
+                    'usage': {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0}
+                             if budget.before_http else {'prompt_tokens': None, 'completion_tokens': None, 'total_tokens': None},
+                    'usage_status': 'NOT_SENT' if budget.before_http else 'UNKNOWN',
+                    'physical_request_sent': False if budget.before_http else None,
+                    'budget': budget.metadata(), 'latency_ms': round((time.perf_counter()-started)*1000, 3)}
+                self.emit('api.response', self.last_response)
+                raise budget from None
             status = getattr(error, "status_code", None)
             status = status if type(status) is int and 100 <= status <= 599 else http_status
             http_error = status is not None and not 200 <= status < 300
@@ -337,6 +354,8 @@ class ModelTransport:
         """At most two synthetic requests. Nothing invokes or registers the dummy function."""
         try:
             reply = self([{"role": "user", "content": "Reply OK."}], [], stage="connection")
+        except BudgetExceeded:
+            return '本次模型预算不足，连接探针未发送；这不是网络或密钥失败。'
         except ModelRequestError as error:
             return f"基础连接失败。{error}\n工具调用未检测。当前配置暂不适合启用 Agent。"
         content = reply.get("content")
@@ -355,6 +374,8 @@ class ModelTransport:
         try:
             reply = self([{"role": "user", "content": f"Call {name} with {{}} now. Otherwise reply in JSON."}],
                          tools, stage="function_calling")
+        except BudgetExceeded:
+            return basic + '\n本次模型预算不足，工具探针未发送。'
         except ModelRequestError as error:
             return f"{basic}\n工具调用检测失败。{error}\n当前配置暂不适合启用 Agent。"
         calls = reply.get("tool_calls")

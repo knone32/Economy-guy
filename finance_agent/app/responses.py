@@ -155,9 +155,18 @@ def reply_evidence_conflict(text, results, user_text, *, trusted_scope=None, act
     return "unbound_reply_literals" if literals(checked_text) - known else None
 
 
-FINAL_KEYS = {'kind', 'text', 'missing_fields', 'pending', 'pending_change', 'answer', 'turn_action'}
+FINAL_KEYS = {'kind', 'text', 'missing_fields', 'pending', 'pending_change', 'answer', 'turn_action', 'intent'}
 PENDING_KEYS = {'request_id', 'action', 'scope'}
 PENDING_SCOPE_KEYS = {'company_id', 'invoice_no', 'year', 'month', 'periods'}
+
+
+def valid_answer_item(value):
+    if type(value) is str:
+        return bool(value)
+    return (type(value) is dict and set(value) == {'op', 'left', 'right'}
+            and type(value['op']) is str and value['op'] in {'subtract', 'compare'}
+            and all(type(value[k]) is str and value[k] for k in ('left', 'right'))
+            and value['left'] != value['right'])
 
 
 def final_structure_diagnostic(content):
@@ -195,9 +204,11 @@ def parse_final(content):
     fields = {"kind", "text", "missing_fields"} if value["kind"] == "clarification" else {"kind", "text"}
     if not fields <= set(value) or not set(value) <= FINAL_KEYS or type(value.get("text")) is not str or not value["text"].strip():
         return None
+    if 'intent' in value and type(value['intent']) is not dict:
+        return None
     if 'answer' in value and (value['kind'] not in {'information', 'clarification'}
             or not isinstance(value['answer'], list) or not 1 <= len(value['answer']) <= 64
-            or any(type(ref) is not str or not ref for ref in value['answer'])):
+            or any(not valid_answer_item(ref) for ref in value['answer'])):
         return None
     if 'turn_action' in value and (value['kind'] != 'information' or value['turn_action'] != 'stop'):
         return None
