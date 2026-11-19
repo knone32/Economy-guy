@@ -27,4 +27,5 @@
 - 正式冻结：838569ef36b3d1352a3b9ffb5c696edc1663a704，detached model-first-20261119/frozen-runtime；全部tracked哈希/clean与33程序检查见evidence/CODE-FREEZE.json。此SHA冻结后才新启动sprint_c_acceptance（fork none）。
 - 新验收运行与题/真值/分项评分/预算将只记录model-first-20261119/acceptance。root本轮尚不读新题；C不参与开发，仍共享存储所以不是严格隐藏盲测。
 - 可运行入口辅助：model-first-20261119/RUN-CANDIDATE.ps1 固定frozen-runtime源码、现有Python/deps、独立manual-runtime虚构数据库，绝不指向正式业务库；仅现有Textual工作台，无新GUI。LAUNCHER-CHECK.json记录CLI help和脚本解析通过，未实际启动手工UI/未发API，不能当真人启动验收。
+- C首轮已暂停待终审：acceptance/budget.json 14请求/124400tokens；权限拒绝文案与当前权限/成功读取矛盾触发保守停测。原始题/真值/Trace不改。一个多轮case首轮后stdin EOF，后3轮未测，保留原记录，不择优重跑；末提交case停止未测。最终五项与分类以C报告及root复核为准。
 - 本轮环境、测试、修改、冻结和Live证据：主会话按阶段追加；新产物保存 model-first-20261119/evidence/，不混改历史目录。
