@@ -43,6 +43,7 @@ def describe(sql, columns, snapshot, tables, reads):
             raise Unsupported('read_set_mismatch')
         fields = [x.strip().split()[0] for x in tables[table_name].split(',')]
         qualifiers = {table_name, table.alias_or_name.lower()}
+        date_field = 'invoice_date' if table_name == 'invoices' else 'transaction_date'
 
         def field(node):
             if (not isinstance(node, exp.Column) or node.name.lower() not in fields
@@ -58,6 +59,16 @@ def describe(sql, columns, snapshot, tables, reads):
             return node.this if node.is_string else int(node.this)
 
         operations = {exp.EQ: '=', exp.NEQ: '!=', exp.GT: '>', exp.GTE: '>=', exp.LT: '<', exp.LTE: '<=', exp.Like: 'LIKE'}
+
+        def predicate_target(node):
+            if isinstance(node, exp.Substring):
+                name = field(node.this)
+                start, length = literal(node.args.get('start')), literal(node.args.get('length'))
+                if name != date_field or start != 1 or length not in (4, 7):
+                    raise Unsupported('unsupported_date_prefix')
+                return {'field': name, 'prefix_length': length}
+            return {'field': field(node)}
+
         def predicates(node):
             if isinstance(node, exp.Paren):
                 return predicates(node.this)
@@ -68,7 +79,7 @@ def describe(sql, columns, snapshot, tables, reads):
                 return [{'field': name, 'operator': '>=', 'value': literal(node.args['low'])},
                         {'field': name, 'operator': '<=', 'value': literal(node.args['high'])}]
             if isinstance(node, exp.In) and not node.args.get('query'):
-                return [{'field': field(node.this), 'operator': 'IN', 'value': [literal(v) for v in node.expressions]}]
+                return [{**predicate_target(node.this), 'operator': 'IN', 'value': [literal(v) for v in node.expressions]}]
             negated = isinstance(node, exp.Not)
             candidate = node.this if negated else node
             if isinstance(candidate, exp.Anonymous) and candidate.name.lower() == 'is_blank' and len(candidate.expressions) == 1:
@@ -80,10 +91,12 @@ def describe(sql, columns, snapshot, tables, reads):
             if isinstance(left, exp.Literal) and isinstance(right, exp.Column):
                 left, right = right, left
                 operator = {'>': '<', '>=': '<=', '<': '>', '<=': '>='}.get(operator, operator)
-            return [{'field': field(left), 'operator': operator, 'value': literal(right)}]
+            target = predicate_target(left)
+            if target.get('prefix_length') and operator != '=':
+                raise Unsupported('date_prefix_operator')
+            return [{**target, 'operator': operator, 'value': literal(right)}]
 
         conditions = predicates(tree.args['where'].this) if tree.args.get('where') else []
-        date_field = 'invoice_date' if table_name == 'invoices' else 'transaction_date'
         companies = tuple(snapshot['company_ids'])
         periods = (set(map(tuple, snapshot['periods'])) if snapshot.get('periods') else
                    {(snapshot['year'], m) for m in range(1, 13)})
@@ -96,6 +109,22 @@ def describe(sql, columns, snapshot, tables, reads):
                 values = value if isinstance(value, list) else [value]
                 companies = tuple(c for c in companies if c in values)
             if name != date_field:
+                continue
+            if condition.get('prefix_length'):
+                length = condition['prefix_length']
+                values = value if operator == 'IN' else [value]
+                if not values:
+                    raise Unsupported('empty_date_prefix')
+                accepted = set()
+                for prefix in values:
+                    pattern = r'[0-9]{4}' if length == 4 else r'[0-9]{4}-[0-9]{2}'
+                    if type(prefix) is not str or not re.fullmatch(pattern, prefix):
+                        raise Unsupported('date_prefix_format')
+                    y = int(prefix[:4])
+                    m = 1 if length == 4 else int(prefix[5:])
+                    date(y, m, 1)  # Reject invalid calendar components, never coerce.
+                    accepted.update((y, month) for month in (range(1, 13) if length == 4 else (m,)))
+                periods.intersection_update(accepted)
                 continue
             if operator == 'LIKE':
                 month = re.fullmatch(r'(\d{4})-(\d{2})-?%', value)

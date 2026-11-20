@@ -135,6 +135,54 @@ class DateGroupEvidenceTests(unittest.TestCase):
         # A grouping projection cannot use the other business object's date.
         self.assertEqual(data['query_scope']['columns'][0]['field'], 'transaction_date')
 
+    def test_month_prefix_predicates_narrow_actual_scope_with_arbitrary_aliases(self):
+        for predicate, expected in (
+            ("substr(invoice_date,1,7) IN ('2038-11','2038-12')", [12000, 25000]),
+            ("substring(invoice_date,1,7)='2038-12'", [25000]),
+        ):
+            with self.subTest(predicate=predicate):
+                data, facts = self.query("SELECT substr(invoice_date,1,7) ym, COUNT(*) cnt, "
+                                        "SUM(amount_cents) amt_cents FROM invoices WHERE company_id='C001' "
+                                        "AND " + predicate + " GROUP BY ym ORDER BY ym")
+                self.assertEqual(data['query_scope']['status'], 'VERIFIED', data['query_scope'])
+                amounts = [f for f in facts.values() if f['unit'] == 'cents']
+                self.assertEqual([f['value'] for f in amounts], expected)
+                self.assertEqual([f['value'] for f in facts.values() if f['unit'] == 'count'],
+                                 [2, 1] if len(expected) == 2 else [1])
+                self.assertEqual(data['query_scope']['scope']['periods'],
+                                 ((2038, 11), (2038, 12)) if len(expected) == 2 else ((2038, 12),))
+
+    def test_year_prefix_and_raw_date_conditions_intersect(self):
+        data, facts = self.query("SELECT SUM(amount_cents) total FROM invoices WHERE company_id='C001' "
+                                 "AND substr(invoice_date,1,4)='2038' AND invoice_date>='2038-12-01'")
+        self.assertEqual(data['query_scope']['status'], 'VERIFIED')
+        fact, = facts.values()
+        self.assertEqual(fact['value'], 25000)
+        self.assertEqual(fact['scope']['periods'], ((2038, 12),))
+
+    def test_unsupported_prefix_predicates_do_not_gain_verified_scope(self):
+        for predicate in (
+            "substr(invoice_date,2,7)='038-11-'",
+            "substr(invoice_date,1,5)='2038-'",
+            "substr(seller_name,1,7)='fiction'",
+            "substr(invoice_date,1,7)='2038-1'",
+            "substr(invoice_date,1,7)='2038-13'",
+            "substr(invoice_date,1,4)='0000'",
+            "substr(invoice_date,1,7)>='2038-11'",
+            "substr(invoice_date,1,7) IN ('2038-11','2038-13')",
+            "substr(invoice_date,1,7)='2038-11' OR company_id='C002'",
+        ):
+            with self.subTest(predicate=predicate):
+                data, facts = self.query('SELECT SUM(amount_cents) total FROM invoices WHERE ' + predicate)
+                self.assertEqual(data['query_scope']['status'], 'UNKNOWN')
+                self.assertFalse(facts)
+
+    def test_valid_prefix_outside_authorized_snapshot_does_not_gain_scope(self):
+        data, facts = self.query("SELECT SUM(amount_cents) total FROM invoices "
+                                 "WHERE substr(invoice_date,1,7)='2039-01'")
+        self.assertEqual(data['query_scope']['status'], 'UNKNOWN')
+        self.assertFalse(facts)
+
     def test_agent_entry_delivers_grouped_amounts_and_comparison(self):
         from app.agent import Agent
         from tests.test_answer_evidence import tool, final, facts
@@ -159,4 +207,29 @@ class DateGroupEvidenceTests(unittest.TestCase):
         self.assertIn('130.00 元', answer)
         self.assertIn('2038-11', answer)
         self.assertIn('2038-12', answer)
+        self.assertEqual(agent.last_response['delivery_source'], 'model_ordered_current_evidence')
+
+    def test_agent_prefix_filtered_sql_delivers_only_runtime_scalar_comparison(self):
+        from app.agent import Agent
+        from tests.test_answer_evidence import tool, final, facts
+        calls = 0
+
+        def model(messages, tools):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return tool('query_business_sql', sql=(
+                    "SELECT substr(invoice_date,1,7) ym, COUNT(*) cnt, SUM(amount_cents) amt_cents "
+                    "FROM invoices WHERE company_id='C001' "
+                    "AND substr(invoice_date,1,7) IN ('2038-11','2038-12') GROUP BY ym ORDER BY ym"))
+            amounts = [f['ref'] for f in facts(messages) if f.get('metric') == ['invoices', 'sum', 'amount_cents']]
+            self.assertEqual(len(amounts), 2)
+            return final(answer=[*amounts, {'op': 'subtract', 'left': amounts[1], 'right': amounts[0]}])
+
+        agent = Agent('U001', self.book, model, mode='mock', trace_path=self.book.with_suffix('.jsonl'))
+        answer = agent.ask('C001 2038年全年发票按月合计，仅比较11月与12月金额差额。')
+        self.assertEqual(calls, 2)
+        self.assertIn('120.00 元', answer)
+        self.assertIn('250.00 元', answer)
+        self.assertIn('130.00 元', answer)
         self.assertEqual(agent.last_response['delivery_source'], 'model_ordered_current_evidence')
