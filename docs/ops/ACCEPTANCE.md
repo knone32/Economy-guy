@@ -4,6 +4,8 @@
 
 后续证据能力分类：36项定向通过。实际Textual原SQL加合法但尚不归因算术谓词→SQL_EVIDENCE_UNSUPPORTED／dataNone／“统计核验能力受限”；精确卖方换广LIKE→SCOPE_MISMATCH／dataNone／范围不一致。两个首工具后停止，卡片与末答无统计数值，零API／业务零写。总项目根 k01-proof-classification/run-1795168283439703700 保存raw，旧文案harness误判记录保留，不当产品失败或真实Live成绩。
 
+7914d9a分类修复全量1038项／160FAIL／31ERROR，无新增失败／错误标题，仍不通过全套。隔离语义review新阶段未进入主候选：C2已实证CASE投影seller过滤漏检与重复JSON字段误接受，待修复后重新审查，不进入新陌生题Live。N01/N02仍SEALED_NOT_TESTED，旧K首FAIL保持不变。
+
 公开零API A/B/C程序对照通过，不等于陌生题通过。K01精确卖方正确SQL被runtime误拒；K02歧义简称跨卖方合计被放行，两题正式同版DeepSeek首执均FAIL。新增3物理请求／34835tokens，业务表零写入。证据 ../v3-c5-sealed/k01-k02-sealed/public/K-FIRST-92f708e-REPORT.json。
 
 首执披露后定位：月份OR触发sql_evidence unsupported_predicate，改成等价IN静态对照VERIFIED。后续OR修复及同题检查统一标AFTER_DISCLOSURE_SCRIPTED，不当Live或改首分；新版本正式Live尚未执行。K02用户关系约束仍是实际漏口。

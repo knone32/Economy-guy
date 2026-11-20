@@ -4,6 +4,12 @@
 
 证明能力与业务范围分类已分开：UNKNOWN归因返回SQL_EVIDENCE_UNSUPPORTED（不返回data），界面标题“统计核验能力受限”；已VERIFIED但实际卖方集合不一致仍SCOPE_MISMATCH。36项定向通过，B在原K01隔离fixture的两条实际Textual程序对照核实不同标题／末答、均无统计数值。证据总项目根 k01-proof-classification/run-1795168283439703700；外部harness旧文案断言false-negative原始记录保留，仅原raw另行复核，未重跑。全量检查已启动，结果另记；非Live，旧K分不改。
 
+分类修复7914d9a全量已完成：1038项／160FAIL／31ERROR／421.907秒，无新增失败／错误标题；旧Approval挂载错误本次缺席不当已修。日志 ../evidence-root/seller-evidence-classification-full.log，对照 SELLER-CLASSIFICATION-FULL-COMPARISON.json。本轮实际API为0，统一预算仍49请求／511727tokens／445084成本微元。
+
+语义复核隔离实现尚未整合：A报21项新程序控制通过；C2独立fresh实核输入隔离、模型槽、无槽停、工具ID配对，但发现两个仍能实际dispatch的缺陷：no_seller要求下SUM(CASE...)投影内seller条件漏检；重复decision/confidence JSON字段last-wins误接受。反例 v3-c2-acceptance/semantic-stage-interim-1795168701373588200 保留，A修复中，不能当就绪或语义证明。
+
+非SQL工具覆盖审查：静态路径确认get_finance_summary/list_invoices未核seller要求；唯一必要当前程序对照被NO_APPLICABLE_RULE提前阻断，未到目标接受点，无卡片。不得称动态已复现或seller保护通过。总项目根 d01-nonsql-seller-audit/REVIEW.md，未补规则／重排重跑；这仍是范围覆盖限制，不混作K02第二首错。
+
 实际分支 sprint/2026-11-20-contract-followup，保留27b024d之后提交。92f708e公开A/B/C程序对照通过：扩大查询拒绝；精确560元及分期金额张数可交付；明确模糊合计8560元仍可交付。该SHA全量1033项／159FAIL／31ERROR，非全绿。
 
 独立同版DeepSeek K01/K02首执均FAIL，原分不可改。K01合法完整身份SQL因月份OR谓词归因UNKNOWN而误拒；K02模型把简称的全部发票解释成跨销售方contains，真实卡片展示合计且未追问。故D01尚未修复完成，不晋级main。公开证据 ../v3-c5-sealed/k01-k02-sealed/public/K-FIRST-92f708e-REPORT.json。
