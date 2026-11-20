@@ -27,7 +27,7 @@ class SqlReadIdentityTests(unittest.TestCase):
         return (f"SELECT {columns} FROM invoices WHERE {condition} "
                 "AND invoice_date >= '2026-09-01' AND invoice_date < '2026-10-01' " + suffix)
 
-    def run_case(self, statements, *, target=('C001','QX-73195'), mutate=None, actor='U001',
+    def run_case(self, statements, *, target=('C001','QX-73195'), mutate=None, actor='U001', workspace=None,
                  request='查C001 2026年9月票号含731的发票，看看当前用途和备注。'):
         step = 0
         def model(messages, tools):
@@ -53,7 +53,7 @@ class SqlReadIdentityTests(unittest.TestCase):
             return result
         with closing(sqlite3.connect(self.book)) as db:
             before=db.execute('SELECT * FROM invoices ORDER BY company_id,invoice_no').fetchall()
-        with patch.object(runtime,'handle_tool',side_effect=dispatch): answer=agent.ask(request)
+        with patch.object(runtime,'handle_tool',side_effect=dispatch): answer=agent.ask(request,read_workspace=workspace)
         with closing(sqlite3.connect(self.book)) as db:
             self.assertEqual(before,db.execute('SELECT * FROM invoices ORDER BY company_id,invoice_no').fetchall())
             self.assertEqual(db.execute('SELECT count(*) FROM invoice_audit').fetchone()[0],0)
@@ -150,3 +150,29 @@ class SqlReadIdentityTests(unittest.TestCase):
     def test_current_explicit_unreadable_company_is_not_retargeted(self):
         _,_,r=self.run_case([self.sql()],actor='U002',request='查C002 2026年9月票号含731的发票当前备注。')
         self.assertTrue(r is None or r['status']!='SUCCESS')
+
+    def test_denied_background_does_not_block_independent_current_sql_detail(self):
+        with closing(sqlite3.connect(self.book)) as db, db:
+            db.execute("UPDATE companies SET name='北湾数据中心',short_name='北湾' WHERE company_id='C002'")
+        agent,_,r=self.run_case([self.sql()],actor='U002',workspace=('C001',2026,9),
+            request='北湾不查了，只看C001 2026年9月票号含731的发票当前用途和备注。')
+        self.assertEqual(r['status'],'SUCCESS')
+        self.assertEqual((r['data']['company_id'],r['data']['invoice_no']),('C001','QX-73195'))
+        self.assertEqual(self.proofs[-1].sources['invoice_no'],'controlled_read_scope')
+        self.assertNotIn('invoice_no',agent.context.proof().values)
+
+    def test_only_unreadable_company_cannot_borrow_selected_workspace_for_sql_detail(self):
+        with closing(sqlite3.connect(self.book)) as db, db:
+            db.execute("UPDATE companies SET name='北湾数据中心',short_name='北湾' WHERE company_id='C002'")
+        agent,_,r=self.run_case([self.sql()],actor='U002',workspace=('C001',2026,9),
+            request='查北湾2026年9月票号含731的发票当前用途和备注。')
+        self.assertEqual(agent.last_response['execution']['stop_reason'],'DENIED')
+        self.assertTrue(r is None or r['status']!='SUCCESS')
+        self.assertFalse(any(outcome['status']=='SUCCESS' for _,outcome in agent.last_response['tool_results']))
+
+    def test_only_unknown_company_cannot_borrow_selected_workspace_for_sql_detail(self):
+        agent,_,r=self.run_case([self.sql()],actor='U002',workspace=('C001',2026,9),
+            request='查C997 2026年9月票号含731的发票当前用途和备注。')
+        self.assertEqual(agent.last_response['execution']['stop_reason'],'SCOPE_MISMATCH')
+        self.assertTrue(r is None or r['status']!='SUCCESS')
+        self.assertFalse(any(outcome['status']=='SUCCESS' for _,outcome in agent.last_response['tool_results']))

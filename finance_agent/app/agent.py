@@ -2685,7 +2685,7 @@ class Agent:
                                 tool_proof, tool_scope = supplement_read_literals(tool_proof, tool_scope,
                                     read_literals, raw_sources=dict.fromkeys(
                                         ('company_id', 'invoice_no', 'year', 'month', 'periods'), 'controlled_read_scope'))
-                                if not current_read_denial:
+                                if not current_read_denial or has_current_read_target(fn):
                                     sql_identity = current_sql_invoice_identity(
                                         read_results, object_args, tool_proof, tool_scope)
                                     tool_proof, tool_scope = supplement_read_literals(tool_proof, tool_scope,
