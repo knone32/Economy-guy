@@ -1014,6 +1014,11 @@ class AgentWorkspace(ConversationUI, App):
             return
         try:
             self.ensure_agent()
+            from .assistant_config import refresh_assistant
+            refresh_assistant(self.agent)
+        except PermissionError as error:
+            self.note(str(error))
+            return
         except (OSError, ProfileError, ValueError, sqlite3.Error):
             self.update_header()
             self.note("暂时无法发送。请使用「配置 AI 模型」检查设置。")
