@@ -18,6 +18,12 @@ def contract_error(final, narrow):
     if type(missing) is not list or any(type(v) is not str or not v.strip() for v in missing):
         return 'invalid_missing_fields'
     event = final.get('pending')
+    # A question describes missing information. It does not create a server
+    # workflow, select a write object, or require the model to repeat an ID.
+    # Explicit legacy workflow/change proposals retain their separate checks.
+    if (missing and not event and not narrow and final.get('kind') == 'clarification'
+            and 'pending_change' not in final):
+        return None
     if missing and not event:
         return 'pending_event_required_for_waiting'
     if event and event.get('action') == 'cancel' and (missing or final.get('pending_change') or event.get('scope')):

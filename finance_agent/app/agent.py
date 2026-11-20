@@ -2119,13 +2119,16 @@ class Agent:
                 invoice_read_evidence = any(name in {'get_invoice', 'resolve_recent_invoice'}
                     and result.get('status') == 'SUCCESS' and result.get('evidence', {}).get('source') == 'current_sqlite'
                     for name, result in read_results)
-                narrow_pending_contract = (read_only and bool(active_pending or invoice_write and invoice_read_evidence)
+                narrow_pending_contract = (read_only and bool(
+                    active_pending and active_pending.get('change') or invoice_write and invoice_read_evidence)
                     and not (active_pending and active_pending.get('business_action') == 'single_invoice'))
                 if (active_pending and active_pending.get('business_action') == 'single_invoice'
                         and natural and any(k in natural for k in ('pending','pending_change'))):
                     execution.stop('INVALID_RESPONSE')
                     return finish('办理状态由系统保存，请通过业务动作提供补充；未提交修改。', category='clarification')
                 pending_error = pending_contract_error(natural, narrow_pending_contract)
+                plain_question = (natural is not None and natural.get('kind') == 'clarification'
+                    and not narrow_pending_contract and not any(k in natural for k in ('pending', 'pending_change')))
                 if pending_error:
                     self.trace('pending.contract_rejected', {'reason': pending_error, 'repair_used': pending_repair_used})
                     if not pending_repair_used:
@@ -2384,7 +2387,9 @@ class Agent:
                     company = (read_workspace or self.context.scope).get("company_id", [])
                     if "business_object" in fields and annual_year and len(company) == 1:
                         natural["missing_fields"] = [f for f in fields if f not in {"company_id", "year", "month"}]
-                    question = natural["text"]
+                    # Structured missing fields can ask for information, never
+                    # supply an execution/cancellation receipt in free prose.
+                    question = render_clarification(natural) if plain_question else natural["text"]
                     if invoice_reads:
                         matched = list(invoice_reads.values())
                         return finish(render_information(matched) + "\n" + question, store=False,
