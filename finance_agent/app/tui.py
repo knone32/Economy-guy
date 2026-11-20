@@ -1301,8 +1301,9 @@ class AgentWorkspace(ConversationUI, App):
             return ("年度银行收入流水", header + ("\n" + lines if lines else "\n本页没有记录。"))
         if tool == "check_missing_purpose":
             lines = AgentWorkspace.invoice_lines(data["missing_invoices"]) if data["missing_invoices"] else "没有缺项。"
+            rule = {**data['rule'], 'business_date':data.get('rule_business_date','')}
             return (f"用途检查 · {data['count']} 张",
-                    display_rule_amounts(data["rule"]["content"]) + AgentWorkspace.rule_source_text(data['rule']) + "\n" + lines)
+                    display_rule_amounts(data["rule"]["content"]) + AgentWorkspace.rule_source_text(rule) + "\n" + lines)
         if tool == "manage_task" and "task" in data:
             task = data["task"]
             state = TASK_STATUS.get(task["status"], "状态待核对")
