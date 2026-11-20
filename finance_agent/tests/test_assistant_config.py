@@ -43,6 +43,11 @@ class AssistantConfigTests(unittest.TestCase):
         self.put('tool','get_invoice',{},enabled=False)
         result=handle_tool('get_invoice',json.dumps({'company_id':'C001','invoice_no':'F006'}),'U001',self.path,allowed_tools=stale)
         self.assertEqual(result['status'],'DENIED')
+        self.put('assistant','query',{'name':'查询助手','tools':['use_skill'],'skills':[]},1)
+        result=handle_tool('get_invoice',json.dumps({'company_id':'C001','invoice_no':'F006'}),'U001',self.path,allowed_tools=stale,assistant_id='query')
+        self.assertEqual(result['status'],'DENIED')
+        result=handle_tool('use_skill',json.dumps({'company_id':'C001','skill_id':'missing'}),'U001',self.path,allowed_tools=stale,assistant_id='query')
+        self.assertEqual(result['status'],'DENIED')
 
     def test_assistant_and_actor_permissions_are_independent(self):
         self.assistants()
