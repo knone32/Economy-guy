@@ -133,4 +133,3 @@ class TicketCandidates:
             token = self._persist_candidate(db,pending,'PAUSED',self._turn_invoice_tokens.get(seq))
         self.invoice_token = token
         self._turn_invoice_tokens[seq] = token
-
