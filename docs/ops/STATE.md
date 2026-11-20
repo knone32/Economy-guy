@@ -2,6 +2,12 @@
 
 ## 当前只推进第一阶段：把同一件事办完
 
+本轮有限接口检查已收口，不再扩矩阵：统一 scope／seller／filter／metric 的来源声明；显式默认 update 无 quote 与省略同义，仍不允许删除旧条件或新增替换权限。当前源 owner 为 `1aa074670c627bd40534814816ae70e8428e974b0631e44d89789db2521828a7`，121项受影响／架构通过。六组实际Agent／Registry等价程序对照保留同一目标、范围、结果及零写；独立有限复核未发现新增业务阻断，身份／账簿／目录／错key／跨目标／范围冲突仍拒。原验收器一处过窄拒绝码期望差异保留并附语义说明，不改断言或重跑。
+
+两次公开Live失败分别属于df68496（scope来源对象被误作current）和8b61b25（显式默认update缺relation_quote在scope前被拒）；均只1 HTTP、0业务Handler／统计卡，后续办理未运行，原分不改。两份原content原样本地程序诊断成功，只支持接口修复，不是Live或泛化。新冻结版下一次Live仅问“选定销售方后能否实际交付统计”，cap3，统计后立即停止自动输入，不接恢复、补值或写入。
+
+原账当前61请求／608090tokens／691874微元峰价上界，unknown_usage=false；余3／91910／1508126，原64／700000／2.20元不变。真控制台成功启动只证明入口可运行；GUI可读、人眼看清、批准、保存、提交后重启均另列未验。证据：[有限独立复核](../../../v3-c2-acceptance/common-source-finite-independent-1795198637803908400/SEMANTIC-SUMMARY.public.json)、[121项检查](../../../evidence-root/common-source-integration-targeted.log)。下文为此前快照。
+
 最新：df68496 的公开同链混合 Live 诊断只发生 1 次 HTTP，选择销售方后未完成查询。模型正确保留企业、新期间、全名销售方、SUM／COUNT，但把 company_source／period_source 写为 Source 对象；绑定器只认字符串，错误落入 current 并以空 quote 报 AMBIGUOUS。没有统计首卡，末答仅拒绝，后续恢复／补值未运行，旧候选持久 PAUSED，草稿／批准／审计／业务写均0。原首错不改分。
 
 当前修订仅在原 bind 统一 token 与 Source 对象：严格类型、双 quote 冲突、非空 key 与该字段 Runtime 来源／已核前目标谱系核对；模型来源声明不提供权限或新事实。原公开模型 content 逐 UTF8 字节不变、只换该 owner，程序对照从拒绝到 3478.50 元／1 张，114 项受影响／架构通过。此为程序证据，修后 Live 尚未执行。现不新增业务接口、Loop 或状态 owner。

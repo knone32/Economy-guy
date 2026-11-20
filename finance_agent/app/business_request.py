@@ -8,6 +8,7 @@ from datetime import date
 from pathlib import Path
 from contextlib import closing
 import sqlite3
+import json
 
 from .seller_semantic_review import load_review, digest
 from .seller_read_scope import catalog as seller_catalog, full_mentions, SellerReadError, validate_source
@@ -224,22 +225,27 @@ DEFINITION = {
       'IN':{'value':'非空JSON列表；每个任意文本值均须有quote中的字面来源'},
       'LIKE':{'value':'SQL模式字符串；去掉%/_后的非空文本片段均须出现在quote'},
       'is_blank':{'value':'','meaning':'空值条件使用空字符串，不用null；仍须真实非空quote'}},
-   'filter_source':'每个filter须field/operator/value/quote；quote为当前条件连续原话。金额值按整数分归一，关系解释来自模型而非程序语义证明',
+   'filter_source':'每个filter须field/operator/value；current原话可由顶层quote或Source.quote承载，双有须一致。金额值按整数分归一，关系解释来自模型而非程序语义证明',
    'bank_direction':{'operators':['=','IN'],'values':['收入','支出'],
       'source':'必须有真实当前quote，允许模型将用户表达归一到有限枚举；不是关键词匹配证明',
       'sum':'单方向过滤，或group_by包含direction；IN同时含收入和支出时仍须按direction分组'},
    'metric_operations':['sum','count','details','min','max'],
    'metric_fields':{'invoices':['invoice_no','invoice_date','item_name','purpose','remark','amount_cents','*'],
       'bank_transactions':['transaction_no','transaction_date','direction','counterparty_name','remark','amount_cents','*']},
-   'metrics':'每项operation/field/quote；field限metric_fields中的本对象字段；张数用count(*)，明细用details(*)；金额sum(amount_cents)',
+   'metrics':'每项operation/field及可核来源；current原话由顶层quote或Source.quote承载；field限metric_fields中的本对象字段；张数用count(*)，明细用details(*)；金额sum(amount_cents)',
    'group_by':'只用groups中本对象实际字段或period，不传SQL表达式',
    'comparisons':'每项operation=subtract或compare，metric_operation/metric_field须已在同target.metrics中；left_period/right_period均在该target.periods内，quote须当前原话',
    'revision_relation':{'allowed':['update','replace','clarify'],'default':'update',
-      'source':'显式relation须有relation_quote当前连续原话',
+      'source':'update省略或显式声明且无relation_quote/空字符串完全同义，不新增替换权限；提供非空quote仍核当前原话；replace/clarify必须当前relation_quote',
       'replace':'必须提供previous_target_id，引用previous_requirement中实际旧目标；新目标仍须当前来源和权限核实；允许明确新查询不保留旧seller/filter',
       'update':'默认保持旧条件；不能静默删除旧seller/filter；clarify保留未决、不执行'},
+   'field_source':{'fields':['seller','filters','metrics'],'allowed_kinds':['current','context'],
+      'forms':['string_token','Source_object'],'default':'current',
+      'quote':'顶层quote与Source.quote是同一载体；双有冲突拒，current双缺拒，context有效quote须匹配Runtime旧来源',
+      'current':'只依据本轮原话核值；非空key只可匹配Runtime实际生成的该字段key',
+      'context':'先固定同object/company的previous_target_id或唯一旧target，再核同类型同语义值字段；key可为该字段规范引用或已核origin谱系，无key仅允许唯一匹配，不据key选择scope；实际Source由Runtime重建'},
    'context_source':{'kind':'context','key':'target_id.seller 或 target_id.filters.索引 或 target_id.metrics.索引'},
-   'context_source_rule':'seller/filter/metric继承时字段、关系和值必须与previous_requirement相同；quote可空，程序重取原来源；company_source/period_source按同一来源声明协议使用token或Source对象'},
+   'context_source_rule':'seller/filter/metric按field_source统一current/context；继承时字段、关系和值必须与选定前owner同类字段一致；quote可空，非空有效quote须与实际旧来源一致，程序重建Source；company_source/period_source亦接受token或Source对象'},
  'output':{'kind':'read','targets':[{'target_id':'i1','object':'invoices',
  'company_ids':['当前登记ID'],'company_quote':'当前原话或context来源',
  'periods':[[2026,9]],'period_quote':'当前账期原话',
@@ -302,7 +308,7 @@ def messages(request,current_catalog,*,trusted_scope=None,previous_request=None,
         '有效前文是不可变读取要求，不是历史金额；延续问题时不可删掉前文销售方、用途等筛选。'
         'seller/filter/metric可加source={kind:context,key:前目标ID.seller或前目标ID.filters.0或前目标ID.metrics.0}，'
         '字段和值须与有效前文一致；quote可以留空，由程序取原来源。目标可传previous_target_id。'
-        '默认relation=update保留旧筛选；用户明确新查询或替换要求时可relation=replace，但须relation_quote当前原话并指明previous_target_id；不清则clarify。'
+        '默认relation=update保留旧筛选，显式update无quote或空quote与省略同义、不增加权限；用户明确新查询或替换要求时可relation=replace，但须relation_quote当前原话并指明previous_target_id；不清则clarify。'
         '问候或一般知识可直接{"kind":"general","text":"回答"}；修改/管理走{"kind":"legacy"}，'
         '该route不授予业务读取或写入许可。业务对象或目标不清时用read+unresolved，不能擅自删目标。'},
         {'role':'user','content':__import__('json').dumps({'request':request,'read_catalog':current_catalog,
@@ -370,7 +376,7 @@ def _source(quote,request,slot):
     return Source('current',quote)
 
 
-def _scope_source_declaration(value, quote, slot):
+def _source_declaration(value, quote, slot):
     """Normalize syntax only; runtime source resolution remains authoritative."""
     if type(value) is str:
         declaration=Source(value,'',None)
@@ -427,23 +433,44 @@ def bind(content,*,actor,book,turn_id,request,revision=1,trusted_scope=None,prev
         previous_ids=tuple(sorted({c for t in previous.targets for c in t.company_ids}))
         if digest(read_catalog(book,actor,company_ids=previous_ids))!=previous.catalog_hash:
             raise BusinessRequestError('前文目录来源已经变化，请重新明确。','SCOPE_MISMATCH')
-    def inherited(body, expected_type):
-        source=body.get('source')
-        if source is None:return None
-        if type(source) is not dict or set(source)!={'kind','key'} or source['kind']!='context' or previous is None:
-            raise BusinessRequestError('没有可继承的可信读取要求。')
-        key=source['key']
-        if type(key) is not str:raise BusinessRequestError('前文来源引用无效。')
-        parts=key.split('.')
-        target=next((t for t in previous.targets if t.target_id==parts[0]),None)
-        if target is None:raise BusinessRequestError('前文目标不存在。')
-        value=None
-        if len(parts)==2 and parts[1]=='seller':value=target.seller
-        elif len(parts)==3 and parts[1] in {'filters','metrics'} and parts[2].isdigit():
-            values=getattr(target,parts[1]);index=int(parts[2])
-            if index<len(values):value=values[index]
-        if not isinstance(value,expected_type):raise BusinessRequestError('前文引用类型或位置不一致。')
-        return value,Source('context',value.source.quote,f'{previous.revision}/{previous.request_hash}/{key}')
+    def field_source(body, expected_type, signature, slot):
+        declaration,quote=_source_declaration(body.get('source','current'),body.get('quote'),slot)
+        if declaration.kind=='current':
+            return None,_source(quote,request,slot),declaration
+        owners=[target for target in previous.targets if target.object==obj
+                and target.company_ids==tuple(ids)
+                and (previous_id is None or target.target_id==previous_id)] if previous else []
+        if len(owners)!=1:
+            raise BusinessRequestError('没有唯一匹配的有效前文读取来源。','INVALID_ARGUMENTS',slot=slot)
+        owner=owners[0]
+        if expected_type is SellerRequirement:
+            entries=[(owner.target_id+'.seller',owner.seller)]
+        else:
+            collection='filters' if expected_type is ReadFilter else 'metrics'
+            entries=[(f'{owner.target_id}.{collection}.{index}',value)
+                     for index,value in enumerate(getattr(owner,collection))]
+        def identity(value):
+            if isinstance(value,SellerRequirement):return (value.mode,value.value)
+            if isinstance(value,ReadFilter):return (value.field,value.operator,value.value)
+            return (value.operation,value.field)
+        wanted=json.dumps(signature,ensure_ascii=False)
+        matched=[]
+        for key,value in entries:
+            if (not isinstance(value,expected_type) or not isinstance(value.source,Source)
+                    or json.dumps(identity(value),ensure_ascii=False)!=wanted):
+                continue
+            references={key,f'{previous.revision}/{previous.request_hash}/{key}'}
+            if value.source.key is not None:references.add(value.source.key)
+            if declaration.key is not None and declaration.key not in references:continue
+            if quote and quote!=value.source.quote:continue
+            matched.append((key,value))
+        if len(matched)!=1:
+            raise BusinessRequestError('上下文来源须匹配同类同值的实际前文字段及引用。','INVALID_ARGUMENTS',slot=slot)
+        key,value=matched[0]
+        return value,Source('context',value.source.quote,f'{previous.revision}/{previous.request_hash}/{key}'),declaration
+    def check_current_key(declaration,actual,slot):
+        if declaration.kind=='current' and declaration.key is not None and declaration.key!=actual.key:
+            raise BusinessRequestError('当前来源key不属于该字段Runtime来源。','INVALID_ARGUMENTS',slot=slot)
     trusted=trusted_scope or {};targets=[]
     for item in entries:
         allowed={'target_id','object','company_ids','company_quote','company_source','periods','period_quote','period_source',
@@ -457,8 +484,13 @@ def bind(content,*,actor,book,turn_id,request,revision=1,trusted_scope=None,prev
         if type(relation) is not str or relation not in {'update','replace','clarify'}:
             raise BusinessRequestError('读取要求修订关系无效。','INVALID_ARGUMENTS')
         relation_source=None
-        if 'relation' in item or 'relation_quote' in item:
-            relation_source=_source(item.get('relation_quote'),request,'relation')
+        relation_quote=item.get('relation_quote')
+        if 'relation_quote' in item and type(relation_quote) is not str:
+            raise BusinessRequestError('修订关系原话须为字符串。','INVALID_ARGUMENTS',slot='relation')
+        # Explicit default update is the same declaration as omitted update.
+        # It grants neither replacement nor deletion of existing conditions.
+        if relation!='update' or relation_quote:
+            relation_source=_source(relation_quote,request,'relation')
         previous_id=item.get('previous_target_id')
         if previous_id is not None and (type(previous_id) is not str or not previous_id):
             raise BusinessRequestError('被修订读取目标无效。','INVALID_ARGUMENTS')
@@ -509,7 +541,7 @@ def bind(content,*,actor,book,turn_id,request,revision=1,trusted_scope=None,prev
             if declaration.kind=='context' and declaration.quote and declaration.quote not in quotes:
                 raise BusinessRequestError('来源quote与该字段可信来源不一致。','INVALID_ARGUMENTS',slot=field)
             return actual
-        company_declaration,company_quote=_scope_source_declaration(
+        company_declaration,company_quote=_source_declaration(
             item.get('company_source','current'),item.get('company_quote'),'company_id')
         company_context=company_declaration.kind=='context'
         company_source=(Source('unresolved','','company_id') if not ids else
@@ -537,7 +569,7 @@ def bind(content,*,actor,book,turn_id,request,revision=1,trusted_scope=None,prev
         if not pairs_raw:unresolved.append(target_id+'.periods')
         pairs=tuple(_pair(v) for v in pairs_raw)
         if len(set(pairs))!=len(pairs):raise BusinessRequestError('目标账期重复。','INVALID_ARGUMENTS')
-        period_declaration,period_quote=_scope_source_declaration(
+        period_declaration,period_quote=_source_declaration(
             item.get('period_source','current'),item.get('period_quote'),'periods')
         period_context=period_declaration.kind=='context'
         period_source=(Source('unresolved','','periods') if not pairs else
@@ -615,15 +647,12 @@ def bind(content,*,actor,book,turn_id,request,revision=1,trusted_scope=None,prev
             raise BusinessRequestError('发票销售方条件不能用于银行流水。','SCOPE_MISMATCH')
         if obj=='invoices':
             body=item.get('seller')
-            if (type(body) is not dict or not {'mode','quote','value'}<=set(body)
+            if (type(body) is not dict or not {'mode','value'}<=set(body)
                     or set(body)-{'mode','quote','value','source'} or body.get('mode') not in {'single','set','ambiguous','none'}):
                 raise BusinessRequestError('须独立明确销售方关系，包括无销售方筛选。')
-            inherited_seller=inherited(body,SellerRequirement)
-            source=inherited_seller[1] if inherited_seller else _source(body['quote'],request,'seller')
             value=body['value'];mode=body['mode']
-            if inherited_seller and (mode,value)!=(inherited_seller[0].mode,inherited_seller[0].value):
-                raise BusinessRequestError('继承销售方不得同时改写其关系或值。','SCOPE_MISMATCH')
             if type(value) is not str or len(value)>2000:raise BusinessRequestError('销售方值无效。','INVALID_ARGUMENTS')
+            inherited_seller,source,declaration=field_source(body,SellerRequirement,(mode,value),'seller')
             names=tuple(sorted({n for c in ids for n in byid[c]['seller_names'] if isinstance(n,str) and n}))
             if mode!='none' and any(not byid[c]['seller_catalog_complete'] for c in ids):
                 raise BusinessRequestError('完整销售方目录超过能力边界，不能猜测唯一对象。','SQL_SCOPE_LIMIT')
@@ -642,19 +671,18 @@ def bind(content,*,actor,book,turn_id,request,revision=1,trusted_scope=None,prev
                 if mode=='set' and source.quote.strip()==value.strip():mode='ambiguous'
                 if not chosen:mode='ambiguous'
                 if mode=='ambiguous':unresolved.append(target_id+'.seller')
+            check_current_key(declaration,source,'seller')
             seller=SellerRequirement(mode,chosen,value,source)
         fields=({'invoice_no','invoice_date','item_name','purpose','remark','amount_cents'} if obj=='invoices'
                 else {'transaction_no','transaction_date','direction','counterparty_name','remark','amount_cents'})
         filters=[]
         for f in item.get('filters',[]):
-            if (type(f) is not dict or not {'field','operator','value','quote'}<=set(f)
+            if (type(f) is not dict or not {'field','operator','value'}<=set(f)
                     or set(f)-{'field','operator','value','quote','source'} or f['field'] not in fields
                     or f['operator'] not in {'=','!=','>','>=','<','<=','LIKE','IN','is_blank'}):
                 raise BusinessRequestError('筛选条件超出受控结构。','INVALID_ARGUMENTS')
-            inherited_filter=inherited(f,ReadFilter)
-            source=inherited_filter[1] if inherited_filter else _source(f['quote'],request,'filter');value=_scalar(f['value'])
-            if inherited_filter and (f['field'],f['operator'],value)!=(inherited_filter[0].field,inherited_filter[0].operator,inherited_filter[0].value):
-                raise BusinessRequestError('继承筛选不得更改其字段、关系或值。','SCOPE_MISMATCH')
+            value=_scalar(f['value'])
+            inherited_filter,source,declaration=field_source(f,ReadFilter,(f['field'],f['operator'],value),'filter')
             if obj=='bank_transactions' and f['field']=='direction':
                 directions=value if isinstance(value,tuple) else (value,)
                 if (f['operator'] not in {'=','IN'} or any(v not in {'收入','支出'} for v in directions)
@@ -671,17 +699,17 @@ def bind(content,*,actor,book,turn_id,request,revision=1,trusted_scope=None,prev
                         pieces=[part for part in literal.replace('%','\0').replace('_','\0').split('\0') if part]
                         if pieces and all(part in source.quote for part in pieces):continue
                     raise BusinessRequestError('筛选文字缺少当前原话。','SCOPE_MISMATCH')
+            check_current_key(declaration,source,'filter')
             filters.append(ReadFilter(f['field'],f['operator'],value,source))
         metrics=[]
         for m in item.get('metrics',[]):
-            if (type(m) is not dict or not {'operation','field','quote'}<=set(m)
+            if (type(m) is not dict or not {'operation','field'}<=set(m)
                     or set(m)-{'operation','field','quote','source'} or m['operation'] not in {'sum','count','details','min','max'}
                     or m['field'] not in ({'amount_cents','*'}|fields)):
                 raise BusinessRequestError('查询指标超出受控结构。','INVALID_ARGUMENTS')
-            inherited_metric=inherited(m,ReadMetric)
-            if inherited_metric and (m['operation'],m['field'])!=(inherited_metric[0].operation,inherited_metric[0].field):
-                raise BusinessRequestError('继承指标不得更改含义。','SCOPE_MISMATCH')
-            metrics.append(ReadMetric(m['operation'],m['field'],inherited_metric[1] if inherited_metric else _source(m['quote'],request,'metric')))
+            inherited_metric,source,declaration=field_source(m,ReadMetric,(m['operation'],m['field']),'metric')
+            check_current_key(declaration,source,'metric')
+            metrics.append(ReadMetric(m['operation'],m['field'],source))
         if not metrics:unresolved.append(target_id+'.metrics')
         group=item.get('group_by',[])
         if type(group) is not list or any(type(g) is not str for g in group) or len(set(group))!=len(group):

@@ -1,5 +1,9 @@
 # 架构职责决定
 
+## 收敛同一来源与默认值入口（2026-11-21）
+
+8b61首错说明显式默认update被当成需要新原话的关系变更；同帧seller.current Source对象也与旧context-only解析不一致。仅复用同一声明解析器覆盖scope/seller/filter/metric，当前quote两个载体一致且仍核原话，context先固定同对象／企业的前owner，再核同类同值字段与引用／谱系。默认update无quote不新增替换权；非默认关系原来源检查保留。旧scope顶层quote兼容行为不扩，比较、SQL、Loop、草稿owner均未改。有限检查结束后冻结，仅一次统计Live，不据程序绿扩大业务范围。
+
 ## 单一入口规范化来源表示（2026-11-21）
 
 df68496 真实选择全名回合的业务解释正确，Source对象却被字符串比较误当current，随后空quote被报成用户歧义。前文metadata本来就展示Source对象，继续追加问法提示不能解决这处接口差异。仅在原bind将current/context token与受控Source对象规范化；quote当前来源、key字段／目标／修订／hash及谱系仍核对，实际Source由Runtime重建，声明不创建权限。无key只是旧context token的同义表示；错形态为INVALID_ARGUMENTS，真实范围冲突与证明能力限制仍分开。沿用原Loop、一次结构重述上限、草稿和确认owner。
