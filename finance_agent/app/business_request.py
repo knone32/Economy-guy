@@ -117,6 +117,9 @@ class BusinessRequest:
     catalog_hash: str
     targets: tuple
     unresolved: tuple = ()
+    context_transition: str = 'continue'
+    previous_request_revision: int | None = None
+    previous_request_hash: str | None = None
 
     def __post_init__(self):
         _freeze_fields(self,'targets','unresolved')
@@ -124,6 +127,10 @@ class BusinessRequest:
             raise TypeError('要求必须持有受控的不可变来源和目标')
         if type(self.revision) is not int or self.revision<1:
             raise TypeError('要求修订号无效')
+        if (type(self.context_transition) is not str or self.context_transition not in {'continue','pending_to_read'}
+                or self.previous_request_revision is not None and type(self.previous_request_revision) is not int
+                or self.previous_request_hash is not None and type(self.previous_request_hash) is not str):
+            raise TypeError('读取过渡只可保存不可变类型的来源引用')
 
     def metadata(self):
         return {**asdict(self),'interpretation':'model_with_current_user_sources',
@@ -242,8 +249,14 @@ DEFINITION = {
  'unresolved':[]}}
 
 
-def messages(request,current_catalog,*,trusted_scope=None,previous_request=None):
-    return [{'role':'system','content':
+def _validate_context_transition(value):
+    if type(value) is not str or value not in {'continue','pending_to_read'}:
+        raise BusinessRequestError('读取上下文过渡参数无效。','INVALID_ARGUMENTS')
+
+
+def messages(request,current_catalog,*,trusted_scope=None,previous_request=None,context_transition='continue'):
+    _validate_context_transition(context_transition)
+    output = [{'role':'system','content':
         '先独立解释当前要求，不生成SQL、不调用工具，不看拟执行方案。仅JSON。'
         'read顶层仅kind、targets、unresolved，禁止额外type等标签；unresolved仅字符串列表，无未决项用[]，不能用对象列表。'
         'seller.value在ambiguous时也必须是当前原话简称字符串，不传候选列表；候选由Runtime目录生成。'
@@ -265,6 +278,13 @@ def messages(request,current_catalog,*,trusted_scope=None,previous_request=None)
         {'role':'user','content':__import__('json').dumps({'request':request,'read_catalog':current_catalog,
             'trusted_scope':trusted_scope or {},'previous_requirement':previous_request.metadata() if previous_request else None,
             'business_definition':DEFINITION},ensure_ascii=False)}]
+    if context_transition=='pending_to_read':
+        output[0]['content']+=('当前由运行时从暂停办理转入新的独立读取要求。'
+            '有效前文仅供用户明确指代时按来源引用；旧单张发票范围、销售方及用途等筛选不能自动保留。'
+            '仅根据当前原话和明确有效引用重新解释全部读取对象、范围、条件与指标；缺来源时保留未决。'
+            '不要从旧intent目标、失败回复、SQL或工具提案补出要求。'
+            '这是运行时边界；输出JSON不得添加context_transition或其他协议外字段。')
+    return output
 
 
 
@@ -324,7 +344,9 @@ def _scalar(value):
     raise BusinessRequestError('筛选值不是受控有限字面值。')
 
 
-def bind(content,*,actor,book,turn_id,request,revision=1,trusted_scope=None,previous_request=None):
+def bind(content,*,actor,book,turn_id,request,revision=1,trusted_scope=None,previous_request=None,
+         context_transition='continue'):
+    _validate_context_transition(context_transition)
     try:raw=load_review(content) if isinstance(content,str) else content
     except (ValueError,TypeError,RecursionError):
         raise BusinessRequestError('读取要求JSON结构无效或字段重复。','INVALID_ARGUMENTS') from None
@@ -568,7 +590,7 @@ def bind(content,*,actor,book,turn_id,request,revision=1,trusted_scope=None,prev
                          and (old_id is None or t.target_id==old_id))]
             if len(candidates)==1:old=candidates[0]
             elif old_id is not None:raise BusinessRequestError('前文对象或企业不一致。','SCOPE_MISMATCH')
-        if old and relation!='replace':
+        if old and relation!='replace' and context_transition!='pending_to_read':
             if old.seller and old.seller.mode!='none' and seller and seller.mode=='none':
                 unresolved.append(target_id+'.previous_seller_not_replaced')
             old_filters={(f.field,f.operator,f.value) for f in old.filters}
@@ -580,5 +602,6 @@ def bind(content,*,actor,book,turn_id,request,revision=1,trusted_scope=None,prev
     if len({t.target_id for t in targets})!=len(targets):raise BusinessRequestError('读取目标标识重复。','INVALID_ARGUMENTS')
     selected=tuple(sorted({c for t in targets for c in t.company_ids}))
     req=BusinessRequest(actor,str(Path(book).resolve()),turn_id,revision,Source('current',request),digest(request),
-                        digest(read_catalog(book,actor,company_ids=selected)),tuple(targets),tuple(dict.fromkeys(unresolved)))
+                        digest(read_catalog(book,actor,company_ids=selected)),tuple(targets),tuple(dict.fromkeys(unresolved)),
+                        context_transition,previous.revision if previous else None,previous.request_hash if previous else None)
     return req

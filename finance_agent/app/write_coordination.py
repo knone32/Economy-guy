@@ -9,7 +9,7 @@ from .updates import UpdateSession, confirm_draft, commit_invoice_update, inspec
 from .trace import warn_trace_degraded
 from .responses import request_scope as explicit_scope, scope_mismatch
 from .tasks import task_progress
-from .updates import current_target_matches
+from .updates import current_target_matches, Draft
 
 class WriteCoordinator:
     def __init__(self, user_id, db_path, trace):
@@ -38,6 +38,27 @@ class WriteCoordinator:
             values = scope.get(field)
             if not isinstance(values, (list, tuple)) or len(values) != 1 or arguments.get(field) != values[0]:
                 return None
+        # A stale allow_prepare flag is not an active edit lifecycle.
+        pending=self.pending
+        pending_live=(self.receipt.get('status') in {'NOT_SUBMITTED','AMBIGUOUS'}
+            and isinstance(pending,dict) and pending.get('user_id')==actor
+            and pending.get('explicit_edit_only') is True and pending.get('scope')==scope
+            and isinstance(pending.get('inputs'),list) and bool(pending['inputs'])
+            and all(type(text) is str for text in pending['inputs'])
+            and '\n'.join(pending['inputs'])==session.source_request)
+        draft_live=False
+        if self.receipt.get('status')=='WAITING_CONFIRMATION':
+            data=self.receipt.get('data') or {}
+            request_id=data.get('request_id') if isinstance(data,dict) else None
+            draft=session.drafts.get(request_id) if isinstance(request_id,str) else None
+            draft_live=(isinstance(draft,Draft) and draft.request_id==request_id
+                and draft.session_id==session.session_id and draft.turn_id==session.turn_id
+                and draft.actor==actor and draft.source_request==session.source_request
+                and draft.company_id==scope['company_id'][0] and draft.invoice_no==scope['invoice_no'][0]
+                and scope.get('field') in ([draft.field],(draft.field,))
+                and scope.get('new_value') in ([draft.new_value],(draft.new_value,))
+                and data.get('fingerprint')==draft.fingerprint())
+        if not (pending_live or draft_live):return None
         return {'kind':'invoice_update_session', 'actor':actor,
                 'session_id':session.session_id, 'turn_id':session.turn_id,
                 'company_id':scope['company_id'][0], 'invoice_no':scope['invoice_no'][0],

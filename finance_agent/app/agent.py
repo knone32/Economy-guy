@@ -609,6 +609,8 @@ class Agent:
         business_format_repair_used = False
         business_format_error = None
         business_entry = None
+        business_context_transition = 'continue'
+        business_handoff = None
         current_request = text
         self.paused_invoice_candidate = None
         self.ticket_preview_candidate = None
@@ -1465,6 +1467,10 @@ class Agent:
                 response['single_query_partial']=bool(facts) and not delivery['complete']
             if business_entry is not None:
                 response['business_request_entry']=dict(business_entry)
+            if business_handoff is not None:
+                response['business_request_handoff']={**business_handoff,
+                    'requirement_revision':self.business_request.revision if self.business_request else None,
+                    'requirement_hash':self.business_request.request_hash if self.business_request else None}
             if goal_coverage:
                 response["goal_coverage"] = goal_coverage
             if page_read:
@@ -1608,6 +1614,11 @@ class Agent:
                     text = '\n'.join(filter(None, (text, notice)))
                 self.last_response.update(text=text, chat_notice=text, assistant_text=text, system_notice=text,
                                           budget_refusal=budget_refusal, budget_close_used=budget_close_used)
+            if business_handoff is not None:
+                notice='原单票修改已暂挂，尚未保存；可从待续单票恢复，恢复后需重新预览和确认。'
+                text='\n'.join(filter(None,(text,notice)))
+                self.last_response.update(text=text,chat_notice=text,system_notice=text)
+                if self.last_response.get('assistant_text') is not None:self.last_response['assistant_text']=text
             if store:
                 self.messages.append({"role": "assistant", "name":"harness_output", "content": text})
             self.trace("turn.finished", {"answer": text, "tools_attempted": execution.actual_tools, "write_receipt": self.write_receipt,
@@ -2173,7 +2184,8 @@ class Agent:
                     if previous_business_request is not None:
                         previous_business_request.require_context(actor,self.db_path)
                     context = request_messages(current_request,request_catalog(self.db_path,actor),
-                        trusted_scope=business_trusted,previous_request=previous_business_request)
+                        trusted_scope=business_trusted,previous_request=previous_business_request,
+                        context_transition=business_context_transition)
                     if business_format_error:
                         from .business_request import schema_restatement_messages
                         context = schema_restatement_messages(context, error_code=business_format_error)
@@ -2273,7 +2285,7 @@ class Agent:
                 try:
                     route=load_review(reply.get('content'))
                     if type(route) is not dict:raise BusinessRequestError('读取要求结构无效。')
-                    if business_format_repair_used and route.get('kind') != 'read':
+                    if (business_format_repair_used or business_context_transition=='pending_to_read') and route.get('kind') != 'read':
                         raise BusinessRequestError('读取要求结构补正不能切换为其他业务路径。','INVALID_ARGUMENTS')
                     if route.get('kind')=='legacy' and set(route)=={'kind'}:
                         business_phase=False
@@ -2295,7 +2307,7 @@ class Agent:
                         revision=previous_business_request.revision+1 if isinstance(previous_business_request,BusinessRequest) else 1
                         req=bind_business_request(reply.get('content'),actor=actor,book=self.db_path,turn_id=self.trace_id,
                             request=current_request,revision=revision,trusted_scope=business_trusted,
-                            previous_request=previous_business_request)
+                            previous_request=previous_business_request,context_transition=business_context_transition)
                         self.business_request=req
                         self._last_business_request=req
                         self.trace('business_request.bound',req.metadata())
@@ -2438,6 +2450,47 @@ class Agent:
                     if candidate.action == 'read':
                         if read_results and (read_intent is None or read_intent.target != candidate.target):
                             raise IntentContractError('本轮已取得其他范围的结果，请另轮明确新只读范围。', status='SCOPE_MISMATCH')
+                        if active_pending and self.business_request is None:
+                            # The old intent is a transition proposal, never the
+                            # definition or authorization of the new read. Retire
+                            # execution state with its existing owner and retain
+                            # only the unapproved native candidate for the UI store.
+                            if active_pending.get('business_action')!='single_invoice':
+                                raise IntentContractError('当前待补尚不能安全暂挂，请先明确保留或取消该办理。')
+                            old_pending=active_pending
+                            self.pause_invoice_update()
+                            business_handoff={'from_owner':'single_invoice','from_request_id':old_pending.get('request_id'),
+                                'to':'business_request','authorization':False,'old_execution_retired':True}
+                            self.trace('business_request.handoff',business_handoff)
+                            active_pending=bound_intent=read_intent=None
+                            if sql_workspace is not None:sql_workspace.close()
+                            sql_workspace=sql_context=None
+                            # No old invoice key, period, edit value or generator
+                            # target is an implicit requirement of this new query.
+                            expected_scope={}
+                            reference=reference_context=hint=comparison=None
+                            recent_invoices={};recent_context={};recent_tool_scope=None
+                            invoice_chain=chain=None
+                            read_workspace=None;previous_directory=None
+                            previous_facts={};followup=None;pending_from=None
+                            confirmed_invoice_edit=scoped_edit=None
+                            invoice_write=False
+                            business_trusted={key:list(old_pending.get('scope',{}).get(key,()))
+                                for key in ('company_id','year') if len(old_pending.get('scope',{}).get(key,()))==1}
+                            business_context_transition='pending_to_read'
+                            business_phase=business_preflight=True
+                            self._business_contract_required=True
+                            business_entry['handoff_entered']=True
+                            # Pair every ID before entering the same loop's
+                            # independent step; none of this packet executes.
+                            for deferred_call in calls:
+                                execution.requested_tools+=1
+                                outcome=tool_result('NOT_READY',evidence={'source':'business_request_handoff'},
+                                    error='已暂挂原办理；须先独立核实新查询要求，本消息工具尚未执行。')
+                                self.messages.append({'role':'tool','tool_call_id':deferred_call['id'],
+                                                      'content':json.dumps(outcome,ensure_ascii=False)})
+                                self.trace('tool_result',{'request':deferred_call,'result':outcome})
+                            continue
                         read_intent = candidate
                         if sql_workspace is not None:
                             self.trace('intent.sql_scope_not_promoted',{
