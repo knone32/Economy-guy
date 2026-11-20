@@ -11,3 +11,5 @@
 V3核验补充：官方中文价格页 https://api-docs.deepseek.com/zh-cn/quick_start/pricing/ 已核峰价0.04/2/8元每百万（命中输入/未命中输入/输出），离峰减半。当前guard全部按峰价计保守上界，不将其宣称实际账单；未知历史42元仍不当零。官方GET余额已成功，只证明当前可用，不能反推期初充值与累计费用；非敏感证据../evidence-root/V3-ENVIRONMENT.json，不把账户余额提交Git。
 
 根新授权../evidence-root/V3-AUTHORIZATION-1819a5b.json绑定冻结1819、原budget_id、13条前缀hash和真实配置hash；C01–C08各8/8/4/4/8/8/4/4物理请求、输出每次8192，合48请求，另3保留，不再逐批向用户申请。阶段总上限完全不变。HTTP guard及副本零网络核账证据../evidence-root/V3-GUARD-OFFLINE-PREFLIGHT.json。正式费用余额始终从原账inspect读取，不能以本页旧快照替代。
+
+R2正式首执后原账核对：累计25次/249911tokens/228819微元（CNY0.228819峰价上界），新12次/114636tokens/94341微元，全部complete，原13前缀完全不变；余39次/450089tokens/1.971181元。原R2数据所有业务表零写。任何新题仍走同一budget_id/原账，新授权需保留全部25条前缀，不得清零。C2新36次/350000tokens只是根认可的内部最大分配建议，尚未发正式执行AUTH；不视为新的额度池或增加2.20总限。

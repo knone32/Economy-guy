@@ -24,3 +24,15 @@ C正式Live只用标准AgentWorkspace→Profile/WindowsVault→Agent.ask→Model
 
 ## V3-008 配置读取不得创建业务账簿
 assistant_config各普通读取使用既有库只读连接；未配置legacy库返回无配置而不迁移。显式管理初始化仍可在既有业务库增表，但不能因路径错误创建空业务库。复用open_existing和原配置/ACL/revision机制，消除所有普通能力检查的路径副作用；未放宽任何原断言。
+
+## V3-009 原话对象来源与业务关系分责
+当前ACL目录中的登记全名/short_name/ID及实际票号字面证据，由同一business_object_sources核实，不再要求模型把已唯一指出的对象翻译回固定甲乙/F前缀。模型仍决定业务动作与关系；元数据匹配不创建动作许可。唯一企业+发票后复用fresh get_invoice核ACL与真实日期，补齐缺失年月，再复用既有BoundIntent/plan/正式preview/真人批准。已明确日期冲突、实际重名、值内引用反向造目标仍拒绝。对应5b的C03通用失败，非该简称/票号特判。
+
+## V3-010 普通追问不等于持久办理事件
+SYSTEM已允许kind=clarification+missing_fields，但pending_contract曾要求额外pending事件，导致有效问题被拒/额外模型补正。普通只读问题现在不需要模型生成内部请求ID；Harness可保存只读待补历史（不含change/批准），跨轮继续问。显式旧pending/change提案保留严格校验，业务单票继续用change_invoice增量。缺失字段由可信渲染器形成问题，不让任意正文自称保存或取消。先前部分synthetic“结构不完整”不能全部归测试器：有效普通追问的拒绝经新原入口测试确认是产品接口冲突；原日志不改。
+
+## V3-011 可信调用上下文早于配置读取
+SQL actor/path/no-workspace属于调用身份绑定，应在读取任何目标库能力配置前拒绝。否则合法来源拒绝被错误路径ERROR掩盖，甚至过去会创建空库。复用原有DENIED检查并只前移，不改变SQL sandbox或允许范围。
+
+## V3-012 Agent对象框架不得覆盖已核来源
+只读早期对象判断、UI所选企业冲突判断、get_invoice来源补充，复用同一当前ACL对象解析。完整登记票号的数字不再二次解释为年份月份；不因旧F前缀正则丢弃已核的明确票号。Context来源按真实原话而非caller已补全的explicit参数确定，防止caller把controlled_read_scope升为写来源。invoice handler仍每次fresh核事实/ACL；年度读取使用READ_SOURCES，写入继续SOURCES。仅对象数据起源归程序，不增自然语言关键词判断。
