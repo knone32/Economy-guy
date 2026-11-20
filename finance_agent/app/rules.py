@@ -77,19 +77,48 @@ def _change_result(changed, unchanged):
     return {"status": "SUCCESS_CHANGED" if changed else "NO_CHANGE", "changed": changed, "unchanged": unchanged}
 
 
-def import_rules(path, rules, capabilities=frozenset(), *, actor="trusted_python_rule_manager", operation="import"):
+def import_rules(path, rules, capabilities=frozenset(), *, actor="trusted_python_rule_manager", operation="import",
+                 source_ref=None, supersedes=None):
     """独立 rule.manage 授权，整批规则与成功审计原子提交。"""
     if "rule.manage" not in capabilities:
         raise PermissionError("缺少独立 rule.manage 权限")
     if operation not in {"seed", "import"}:
         raise RuleError("规则导入操作无效")
     records = [_validated(rule) for rule in rules]
+    if source_ref is not None and len(records) != 1:
+        raise RuleError("一次资料发布必须恰好一条规则")
+    if supersedes is not None and source_ref is None:
+        raise RuleError("截止旧版必须绑定发布资料")
     changed = 0
     connection = open_existing(path)
     try:
         with connection:
             connection.execute("BEGIN IMMEDIATE")
             _require_rule_audit(connection)
+            if source_ref is not None:
+                from .materials import get_paragraph
+                if type(source_ref) is not dict or set(source_ref) != {"material_id", "version", "paragraph_id"}:
+                    raise RuleError("资料引用必须精确指定版本原段")
+                paragraph = get_paragraph(connection, actor, **source_ref)
+                if paragraph["company_id"] != records[0][3] or records[0][5] != "ACTIVE":
+                    raise RuleError("发布规则必须启用且与资料企业一致")
+                if not paragraph["text"].strip():
+                    raise RuleError("不能发布空白原段")
+                # Publishing establishes an explicit human-managed association; no LLM inference.
+                existing_source = connection.execute("SELECT material_id,version,paragraph_id FROM rule_material_sources WHERE rule_id=? AND rule_version=?", records[0][:2]).fetchone()
+                if existing_source and dict(existing_source) != source_ref:
+                    raise RuleError("同号同版资料引用冲突")
+                if supersedes is not None:
+                    old_rule = connection.execute("SELECT r.*,s.effective_to FROM rules r JOIN rule_material_sources s ON r.rule_id=s.rule_id AND r.version=s.rule_version WHERE r.rule_id=? AND r.version=?", tuple(supersedes)).fetchone()
+                    new = records[0]
+                    if (old_rule is None or old_rule["rule_id"] != new[0] or old_rule["version"] == new[1]
+                            or old_rule["company_scope"] != new[3] or old_rule["rule_type"] != new[6]
+                            or old_rule["effective_from"] >= new[4]
+                            or old_rule["effective_to"] not in (None, new[4])):
+                        raise RuleError("旧版截止关系无效或冲突")
+                    if existing_source is not None and old_rule["effective_to"] is None:
+                        raise RuleError("既有发布不可事后更改旧版有效区间")
+                    connection.execute("UPDATE rule_material_sources SET effective_to=? WHERE rule_id=? AND rule_version=?", (new[4], *supersedes))
             for record in records:
                 if record[3] != "*" and not connection.execute("SELECT 1 FROM companies WHERE company_id=?", (record[3],)).fetchone():
                     raise RuleError("规则企业不存在")
@@ -104,9 +133,23 @@ def import_rules(path, rules, capabilities=frozenset(), *, actor="trusted_python
                     raise RuleError("数据库未写入规则，已撤销本次变更")
                 _audit_rule_change(connection, actor, operation, record[0], record[1], None, record[5])
                 changed += 1
+            if source_ref is not None and existing_source is None:
+                if not changed:
+                    raise RuleError("不能为既有规则事后替换来源；请发布新版本")
+                connection.execute("INSERT INTO rule_material_sources (rule_id,rule_version,material_id,version,paragraph_id) VALUES (?,?,?,?,?)",
+                                   (*records[0][:2], source_ref["material_id"], source_ref["version"], source_ref["paragraph_id"]))
     finally:
         connection.close()
     return _change_result(changed, len(records) - changed)
+
+
+def publish_material_rule(path, rule, source_ref, capabilities=frozenset(), *, actor, supersedes=None):
+    """Trusted explicit management entry; upload alone cannot activate a rule.
+
+    supersedes names an older published version and closes its interval at the
+    new effective_from (exclusive). Without it overlapping ACTIVE rules conflict.
+    """
+    return import_rules(path, [rule], capabilities, actor=actor, source_ref=source_ref, supersedes=supersedes)
 
 
 def disable_rule(path, rule_id, version, capabilities=frozenset(), *, actor="trusted_python_rule_manager"):
@@ -154,6 +197,7 @@ class RuleDecision:
     content: str
     # 兼容补充官方限制，不覆盖持久化同号同版正文或执行参数。
     explanation: tuple[str, ...] = ()
+    source: dict | None = None
 
 
 OFFICIAL_NOTES = {
@@ -185,6 +229,11 @@ def resolve_rule(connection, user_id, company_id, rule_type, business_date):
         raise RuleError("business_date必须为严格YYYY-MM-DD日期")
     rows = connection.execute("""SELECT * FROM rules WHERE (company_scope=? OR company_scope='*')
         AND rule_type=? AND status='ACTIVE' AND effective_from<=?""", (company_id, rule_type, business_date)).fetchall()
+    sources = {}
+    if connection.execute("SELECT 1 FROM sqlite_master WHERE name='rule_material_sources' AND type='table'").fetchone():
+        sources = {(r["rule_id"], r["rule_version"]): dict(r) for r in connection.execute("SELECT * FROM rule_material_sources")}
+        rows = [row for row in rows if not sources.get((row["rule_id"], row["version"]), {}).get("effective_to")
+                or business_date < sources[(row["rule_id"], row["version"])]["effective_to"]]
     if not rows:
         raise RuleError("NO_APPLICABLE_RULE")
     if len(rows) != 1:
@@ -193,7 +242,12 @@ def resolve_rule(connection, user_id, company_id, rule_type, business_date):
     params = json.loads(row.pop("params_json"))
     if row.pop("status") != "ACTIVE" or row["content"] != canonical_content(rule_type, params):
         raise RuleError("RULE_CONFLICT")
-    return RuleDecision(**row, params=params, explanation=OFFICIAL_NOTES[rule_type])
+    source = sources.get((row["rule_id"], row["version"]))
+    if source:
+        source = {key: source[key] for key in ("material_id", "version", "paragraph_id")}
+        # Executable rules use enterprise read ACL; opening private originals
+        # independently rechecks ownership in materials.get_paragraph.
+    return RuleDecision(**row, params=params, explanation=OFFICIAL_NOTES[rule_type], source=source)
 
 
 def missing_required_purpose(params, invoice):
