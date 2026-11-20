@@ -1,5 +1,11 @@
 # 架构职责决定
 
+## 只读澄清复用已核要求（2026-11-21）
+
+native 修改暂挂时应清掉旧票的临时 scope；这不应清掉已经独立绑定的新查询要求。原 native→歧义→全名对照表明，要求仍在，绑定器却只看空 trusted_scope，首先丢失企业来源。复用现有 `company_source=context`／`period_source=context`：可信槽空时，可精确引用已核 actor、账簿、原话 hash、目录及同对象的唯一前目标，记前修订与字段来源。已有可信值冲突不回退，多目标不猜，账期集合必须完整相等，ACL、旧 seller／filter 保留规则照旧。局部 ScopeProof 只供既有校验，不写回全局 Context，不恢复旧票范围、不提供批准。
+
+这次不新增 Schema、Loop、草稿 owner 或自然语言关键词。恢复修改继续由原 SessionStore／WriteCoordinator 的候选认领、fresh 预览和真人确认承担；先闭合业务再做泛化。
+
 ## R5 当前只读证据与重复展示
 get_invoice可以在同ask中借本轮实际SQL原列身份补缺槽，但必须当前runtime-owned结果、同SQL哈希、VERIFIED、完整未分页未截断、invoices原列，全部合格身份联合键并集唯一且与模型完整目标相等。保持已有字面/期范围/现权冲突；仅call-local controlled_read_scope，不写Context/不入写SOURCES。真实get_invoice仍fresh鉴权读取。默认TRIM只归因业务文本列并将ASCII空格变换保留在条件/口径，不归一化身份/日期/金额。
 

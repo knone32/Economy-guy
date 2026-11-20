@@ -1,4 +1,17 @@
-# V3当前状态（总控权威；上海2026-11-20）
+# V3当前状态（总控权威；上海2026-11-21）
+
+## 当前只推进第一阶段：把同一件事办完
+
+- 成功基线为 `6937c3e1219d3a55d1293ad113076b396e45841f`。同版 DeepSeek S01 正确交付唯一销售方的新期间金额、张数；S02 展示真实两候选并明确追问，旧修改均由原 owner 暂挂且持久为 PAUSED，业务零写。S02 原评分把“请先明确”漏出措辞匹配，独立语义复核追加 DELIVERY 1→2；原分、原始回包均保留，没有重跑。该对只支持一次新查询／消歧，不支持选择后续办、保存或全面泛化。
+- 当前最小修订只改 `business_request.py`：真实 native 待补→新查询歧义→仅回答全名时，已核上一份要求含企业／期间，但临时 trusted_scope 已清空，原绑定器因此拒绝。现在仅在对应可信槽空时精确继承同 actor／账簿／目录、同业务对象的唯一前目标；已有冲突、扩大或缩小前账期均不能回退。来源保留前修订／原话 hash／目标字段，不写回 Context，不给修改授权。原提案原样程序对照从拒绝变为 3478.50 元／1 张；108 项受影响与架构检查通过。独立另造公开场景核实首结果／末答及旧用途过滤完整、原候选持久 PAUSED、零写；期间冲突和过期目录均零 Handler 拒绝。验收器原 tuple/list 直接比较误判保留，按原 JSON 状态追加纠正，没有重跑或改业务断言。
+- 下一项仅沿同一公开虚构案例继续：选择销售方→统计→原 `/pending`、`/resume` 恢复暂挂候选→补值→fresh 原预览→真人确认→提交→重启回读。草稿、批准、CAS 和审计仍归现有 owner；纯自然语言自动选择 PAUSED 候选尚无签收证据。外置脚本模型只作程序控制，不算自然语言 Live。
+- 真人批准／保存／提交后重启回读仍 NOT_TESTED。旧独立 F002 预览不算同链完成；桌面 Node helper 和另一窗口读取通道均初始化失败，尚无可见窗口观察，不以 headless 挂载代替真人界面。
+- 统一原账当前 59 请求／593310 tokens／612638 微元峰价保守上界，余 5 请求／106690 tokens／1587362 微元；原 64／700000／2.20 元限和历史累计 UNKNOWN 保持。S 共 4 个 HTTP，额外程序控制 API0。不重放 S／R／O，不把旧成绩迁到修订后源码。
+- 现在不新增 Skill／Tool、不扩 SQL、不做大重构。最近完整回归仍为 d45b829 的 1166 项／468 FAIL／203 ERROR，不通过；本修订只跑受影响检查。D07 与整行引用相减另记。不得晋级 main、推送或改变正式业务库。
+
+证据：[S 首执](../../../v3-c2-acceptance/S-PAIR-FIRST-SEMANTIC-REVIEW-APPENDIX.public.json)、[修复前后对照](../../../d01-semantic-review-work/artifacts/6937-ambiguous-continuation/PREVIOUS-SCOPE-PATCH-MANIFEST.json)、[108 项日志](../../../evidence-root/previous-scope-integration-targeted.log)、[独立续办复核](../../../v3-c2-acceptance/stage1-previous-scope-independent-1795192971427102900/STAGE1-BOUNDED-RESULT.public.json)。以下各节均为当时的历史快照，旧“尚未首执”和余额不再代表当前状态。
+
+---
 
 ## R真实首执后的统一入口修订（待新同版自然语言验收）
 

@@ -204,10 +204,10 @@ DEFINITION = {
       'unresolved':'JSON字符串列表list[str]，无未决项用[]；不能放对象、字段描述字典或布尔值'},
    'company_source':{'allowed':['current','context'],'default':'current',
       'current':'company_quote为当前原话连续片段，登记对象须与company_ids一致',
-      'context':'仅可引用trusted_scope中唯一企业；company_quote可为空'},
+      'context':'仅可引用trusted_scope中唯一企业；槽空时可精确引用已核身份/账簿/来源/目录的previous_requirement同对象唯一目标，previous_target_id用于明确目标；已有可信槽冲突不能回退；company_quote可为空'},
    'period_source':{'allowed':['current','context'],'default':'current',
       'current':'period_quote为当前原话连续片段，periods须逐对对应；完整年月允许无记录',
-      'context':'periods须等于当前trusted_scope.periods；period_quote可为空',
+      'context':'periods须等于当前trusted_scope.periods；槽空时可精确引用已核previous_requirement同对象唯一目标的全部periods，已有可信日期冲突不能回退；period_quote可为空',
       'annual':'Agent已将可信完整年度规范为12个月时，使用period_source=context并逐对列出这12个月；不从目录补年'},
    'seller':{'required_for':'invoices；bank_transactions省略或null',
       'modes':['single','set','ambiguous','none'],
@@ -296,7 +296,7 @@ def messages(request,current_catalog,*,trusted_scope=None,previous_request=None,
         '银行金额收入与支出分算；sum(amount_cents)须单方向过滤或按direction分组，不能混为总额。'
         '每个quote必须是当前原话连续片段，数值和关系由你解释但不是程序已证明。'
         '完整字段约定见business_definition.protocol；IN用列表，LIKE文本片段须有原话，is_blank的value用空串而非null。'
-        'company_source/period_source可明确context，只有已给唯一可信scope才允许继承。'
+        'company_source/period_source可明确context，只有已给唯一可信scope才允许继承；可信槽空时可用已核previous_requirement同对象的唯一目标，必要时指明previous_target_id且企业/全部账期必须精确相等，已有可信槽冲突不可回退。'
         '若可信全年已规范trusted_scope.periods为12个月，列出这12个月并用period_source=context，不将全年原话冒作逐月字面。'
         '有效前文是不可变读取要求，不是历史金额；延续问题时不可删掉前文销售方、用途等筛选。'
         'seller/filter/metric可加source={kind:context,key:前目标ID.seller或前目标ID.filters.0或前目标ID.metrics.0}，'
@@ -453,13 +453,34 @@ def bind(content,*,actor,book,turn_id,request,revision=1,trusted_scope=None,prev
         if any(c not in byid for c in ids):raise BusinessRequestError('当前账号没有目标企业读取权限。','DENIED')
         if not ids:unresolved.append(target_id+'.company_id')
         if len(set(ids))!=len(ids):raise BusinessRequestError('企业目标重复。','INVALID_ARGUMENTS')
+        context_anchor={}
+        prior_context_target=None
+        def previous_scope_target():
+            nonlocal prior_context_target
+            if prior_context_target is None:
+                candidates=[target for target in previous.targets if target.object==obj
+                    and target.company_ids==tuple(ids)
+                    and (previous_id is None or target.target_id==previous_id)] if previous else []
+                if len(candidates)!=1:
+                    raise BusinessRequestError('没有唯一匹配的有效前文读取目标。',
+                        'SCOPE_MISMATCH' if previous_id is not None else 'AMBIGUOUS')
+                prior_context_target=candidates[0]
+            return prior_context_target
         company_context=item.get('company_source','current')=='context'
         company_source=(Source('unresolved','','company_id') if not ids else
             Source('context','', 'scope.company_id') if company_context else _source(item.get('company_quote'),request,'company_id'))
         if not ids:pass
         elif company_context:
-            if len(trusted.get('company_id',()))!=1 or tuple(ids)!=tuple(trusted['company_id']):
-                raise BusinessRequestError('没有唯一可信企业上下文。')
+            if trusted.get('company_id'):
+                if len(trusted['company_id'])!=1 or tuple(ids)!=tuple(trusted['company_id']):
+                    raise BusinessRequestError('没有唯一可信企业上下文。')
+            else:
+                prior=previous_scope_target()
+                if len(prior.company_ids)!=1 or tuple(ids)!=prior.company_ids:
+                    raise BusinessRequestError('前文企业尚未唯一确定。')
+                context_anchor['company_id']=list(prior.company_ids)
+                company_source=Source('context',prior.company_source.quote if prior.company_source else '',
+                    f'{previous.revision}/{previous.request_hash}/{prior.target_id}.company_ids')
         else:
             quote=_source(item.get('company_quote'),request,'company_id').quote
             found={m['company_id'] for m in registered_company_mentions(quote,frame['companies'])}
@@ -475,8 +496,19 @@ def bind(content,*,actor,book,turn_id,request,revision=1,trusted_scope=None,prev
             Source('context','', 'scope.periods') if period_context else _source(item.get('period_quote'),request,'periods'))
         if not pairs:pass
         elif period_context:
-            if set(pairs)!=set(map(tuple,trusted.get('periods',()))):
-                raise BusinessRequestError('账期不能由目录或历史数值自行补出。')
+            if trusted.get('periods'):
+                if set(pairs)!=set(map(tuple,trusted['periods'])):
+                    raise BusinessRequestError('账期不能由目录或历史数值自行补出。')
+            else:
+                prior=previous_scope_target()
+                years={y for y,m in prior.periods};months={m for y,m in prior.periods}
+                if (set(pairs)!=set(prior.periods)
+                        or trusted.get('year') and set(trusted['year'])!=years
+                        or trusted.get('month') and set(trusted['month'])!=months):
+                    raise BusinessRequestError('前文账期与本次目标或已有可信日期冲突。','SCOPE_MISMATCH')
+                context_anchor.update(periods=list(prior.periods),year=sorted(years),month=sorted(months))
+                period_source=Source('context',prior.period_source.quote if prior.period_source else '',
+                    f'{previous.revision}/{previous.request_hash}/{prior.target_id}.periods')
         else:
             period_quote=_source(item.get('period_quote'),request,'periods').quote
             literal_period=request_scope(period_quote)
@@ -509,6 +541,7 @@ def bind(content,*,actor,book,turn_id,request,revision=1,trusted_scope=None,prev
                     wanted={(literal['year'][0],m) for m in literal.get('month',())}
                 if wanted!=set(pairs):raise BusinessRequestError('当前日期来源尚不能唯一核实，请明确年月。')
         anchor_values={key:list(values) for key,values in trusted.items() if isinstance(values,(tuple,list))}
+        anchor_values.update(context_anchor)
         if anchor_values.get('periods'):
             anchor_values.setdefault('year',sorted({y for y,m in anchor_values['periods']}))
             anchor_values.setdefault('month',sorted({m for y,m in anchor_values['periods']}))
