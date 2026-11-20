@@ -165,7 +165,12 @@ def verify(path, actor, scope, request, binding, query, reads):
         else:
             notice += '当前可读企业目录没有可核实的销售方名称。'
         raise SellerReadError(notice, evidence=_evidence(names))
-    if query.get('status') != 'VERIFIED' or not conditions:
+    if query.get('status') != 'VERIFIED':
+        raise SellerReadError('当前证据核验尚不支持此查询形式，未交付统计；尚不能判断销售方条件是否一致。',
+                              'SQL_EVIDENCE_UNSUPPORTED', evidence=_evidence(sorted(expected),
+                                  query_evidence_status=query.get('status'),
+                                  query_evidence_reason=query.get('reason'), **source))
+    if not conditions:
         raise SellerReadError('无法核实查询是否完整保留您指定的销售方，尚未交付统计。', 'SCOPE_MISMATCH',
                               evidence=_evidence(sorted(expected), **source))
     actual = _matching(names, conditions)

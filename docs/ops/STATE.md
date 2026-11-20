@@ -2,6 +2,8 @@
 
 ## D01 当前判定（92f708e 后续修复中）
 
+证明能力与业务范围分类已分开：UNKNOWN归因返回SQL_EVIDENCE_UNSUPPORTED（不返回data），界面标题“统计核验能力受限”；已VERIFIED但实际卖方集合不一致仍SCOPE_MISMATCH。36项定向通过，B在原K01隔离fixture的两条实际Textual程序对照核实不同标题／末答、均无统计数值。证据总项目根 k01-proof-classification/run-1795168283439703700；外部harness旧文案断言false-negative原始记录保留，仅原raw另行复核，未重跑。全量检查已启动，结果另记；非Live，旧K分不改。
+
 实际分支 sprint/2026-11-20-contract-followup，保留27b024d之后提交。92f708e公开A/B/C程序对照通过：扩大查询拒绝；精确560元及分期金额张数可交付；明确模糊合计8560元仍可交付。该SHA全量1033项／159FAIL／31ERROR，非全绿。
 
 独立同版DeepSeek K01/K02首执均FAIL，原分不可改。K01合法完整身份SQL因月份OR谓词归因UNKNOWN而误拒；K02模型把简称的全部发票解释成跨销售方contains，真实卡片展示合计且未追问。故D01尚未修复完成，不晋级main。公开证据 ../v3-c5-sealed/k01-k02-sealed/public/K-FIRST-92f708e-REPORT.json。

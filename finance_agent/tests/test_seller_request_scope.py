@@ -129,6 +129,25 @@ class SellerRequestScopeTests(unittest.TestCase):
                     "seller_name='青屿会展有限公司' OR seller_name='青屿设备有限公司'")
         self.assertEqual(caught.exception.status, 'SCOPE_MISMATCH')
 
+    def test_unsupported_evidence_is_not_reported_as_user_scope_conflict(self):
+        import json
+        from app.tool_registry import handle_tool
+        from app.responses import render_tool_failure
+        from app.scheduler import TurnExecution, BudgetPolicy
+        w = self.workspace('C001 2026年9月，查青屿会展有限公司。')
+        sql = ("SELECT COUNT(*) FROM invoices WHERE seller_name='青屿会展有限公司' "
+               "AND amount_cents+0>0")
+        result = handle_tool('query_business_sql', json.dumps({'sql': sql}), 'U002', self.book,
+                             sql_workspace=w)
+        self.assertEqual(result['status'], 'SQL_EVIDENCE_UNSUPPORTED')
+        self.assertIsNone(result['data'])
+        self.assertEqual(result['evidence']['seller_scope']['query_evidence_status'], 'UNKNOWN')
+        self.assertIn('尚不支持', render_tool_failure(result['status'], 'query_business_sql', result))
+        self.assertNotIn('不一致', result['error'])
+        execution = TurnExecution(BudgetPolicy())
+        execution.observe('query_business_sql', {'sql': sql}, result)
+        self.assertEqual(execution.stop_reason, 'SQL_EVIDENCE_UNSUPPORTED')
+
     def test_only_identical_target_equality_unions_gain_attribution(self):
         snapshot = {'company_ids': ('C001',), 'periods': ((2026, 9), (2026, 10))}
         for condition in (

@@ -1447,7 +1447,9 @@ class AgentWorkspace(ConversationUI, App):
         for tool, outcome in results:
             if (tool == "query_business_sql" and outcome["status"] not in {"SUCCESS", "NO_DATA"}
                     and outcome.get("evidence", {}).get("source") == "seller_request_scope"):
-                self.business_message("销售方范围待核实", outcome["error"], [])
+                title = ("统计核验能力受限" if outcome["status"] == "SQL_EVIDENCE_UNSUPPORTED"
+                         else "销售方范围待核实")
+                self.business_message(title, outcome["error"], [])
             if outcome["status"] not in {"SUCCESS", "NO_DATA", "NO_CHANGE"}:
                 continue
             evidence = outcome["evidence"]
