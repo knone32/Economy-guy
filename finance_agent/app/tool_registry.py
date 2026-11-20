@@ -22,11 +22,13 @@ from copy import deepcopy
 from .provenance import ANNUAL, MONTHLY, ScopeProof, is_annual_query, validate_scope
 from .business_sql import BusinessSQLError
 from .invoice_binding import WRITE_SCOPE_SCHEMA, validate_write_scope
+from .controlled_read_scope import READ_SCOPE_SCHEMA, validate_shape as validate_read_scope
 
 YEAR = {"company_id": "string", "year": "integer"}
 MONTH = {**YEAR, "month": "integer"}
 DIRECTORY_SORT_FIELDS = {"sort_by": ("date", "amount", "invoice_no"), "sort_order": ("asc", "desc")}
 OPTIONAL_FIELDS = {
+    "query_business_sql": {"read_scope"},
     "change_invoice": {"company_id", "invoice_no", "year", "month", "field", "new_value", "relation", "value_ref"},
     "list_bank_transactions": {"direction"},
     "list_invoice_directory": DIRECTORY_SORT_FIELDS.keys(),
@@ -38,7 +40,7 @@ REGISTRY = {
     "open_material_reference": (None, {"material_id":"string", "version":"integer", "paragraph_id":"integer"}),
     "use_skill": (None, {"company_id":"string", "skill_id":"string"}),
     "change_invoice": (None, {"company_id":"string", "invoice_no":"string", "year":"integer", "month":"integer", "field":"string", "new_value":"string", "relation":"string", "value_ref":"string"}),
-    "query_business_sql": (None, {"sql": "string"}),
+    "query_business_sql": (None, {"sql": "string", "read_scope":"object"}),
     "list_invoices": (queries.list_invoices, MONTH),
     "list_invoice_directory": (queries.invoice_directory, {**MONTH, "page": "integer", "sort_by": "string", "sort_order": "string"}),
     "get_invoice": (queries.get_invoice, {"company_id": "string", "invoice_no": "string"}),
@@ -108,6 +110,7 @@ DESCRIPTIONS = {
     "set_schedule":"仅真正多步依赖时提出本轮粗计划；不是长期任务或授权。再次调用为一次显式重规划，不创造进展或预算。简单查询直接调用业务工具。",
 }
 PARAMETERS = {"relation":"本次要求与上一办理的业务关系，不是权限或内部状态。",
+              "read_scope":"可选。仅当前可信范围缺失时，与SQL同次提交只读归一化候选：规范企业和年月、当前原话中的企业及日期quote。企业quote须与read_catalog中登记的编号/全称/简称精确唯一对应；两位年须由该企业账期目录唯一核实。不会授权修改，无法唯一绑定时追问。",
               "value_ref":"本次填写内容的语义来源，由系统验证实际出处。",
               "sql":"单条 SELECT 或只读 WITH 查询。严格遵守运行时给出的企业、账期与投影字段。",
               "company_id":"企业编号，例如C001；不能凭空猜测。", "year":"明确的业务年份。",
@@ -147,6 +150,9 @@ for tool in TOOLS:
         if tool["function"]["name"] == "list_invoice_directory" and key in {"year", "month"}:
             schema["description"] += " 年度目录只将月份设为0；全账簿目录年份和月份都设为0。"
 for tool in TOOLS:
+    if tool['function']['name']=='query_business_sql':
+        tool['function']['parameters']['properties']['read_scope'] = {**READ_SCOPE_SCHEMA,'description':PARAMETERS['read_scope']}
+        tool['function']['description'] += ' 当前企业或年月尚未合法绑定时，可在同一次调用用read_scope按当前read_catalog给出可精确核验的原话候选；不能从SQL里的编号或日期自行取得范围。未登记简称或多义年份需追问。'
     if tool["function"]["name"] == "count_invoice_fields":
         selector = tool["function"]["parameters"]["properties"]["selector"]
         selector["enum"] = list(queries.INVOICE_FIELD_LABELS)
@@ -228,6 +234,8 @@ def validate_arguments(name, raw_arguments, partial=False, *, directory_sort=Non
         for key, upper in (('year',9999), ('month',12)):
             if key in args and not 1 <= args[key] <= upper:
                 raise ValueError('办理日期无效')
+    if name=='query_business_sql' and 'read_scope' in args:
+        validate_read_scope(args['read_scope'])
     if name == "propose_invoice_changes" and not partial:
         if "write_scope" in args:
             validate_write_scope(args["write_scope"])
@@ -475,6 +483,8 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
                 if rejection:
                     return rejection
             try:
+                if 'read_scope' in args:
+                    sql_workspace.bind_read_scope(args['read_scope'])
                 scope, data, keys = sql_workspace.query(args["sql"])
             except BusinessSQLError as error:
                 evidence = {"missing_fields": list(error.missing)} if error.missing else {}
@@ -483,7 +493,8 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
                 data["selection_id"] = register_invoice_selection(invoice_selections, keys, scope, name)
             status = "SUCCESS" if data["rows"] or data["truncated"] else "NO_DATA"
             return tool_result(status, data, {"scope": scope, "query_scope": data.pop("query_scope"),
-                                              "source": "current_sqlite"})
+                                              "source": "current_sqlite",
+                                              **({'read_scope_binding':sql_workspace.read_binding} if sql_workspace.read_binding else {})})
         if name == "resolve_recent_invoice":
             if execution:
                 rejection = execution.guard(name, args)

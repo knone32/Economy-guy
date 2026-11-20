@@ -11,6 +11,7 @@ from .provenance import ANNUAL, SOURCES, ScopeProof
 from .permissions import check_permission
 from .rules import RuleError, resolve_rule
 from .stage2_schema import open_existing
+from .controlled_read_scope import catalog as read_catalog
 
 
 RELATIVE_PERIOD = r"本月|今年|去年|上个月|下个月|上月|下月|最近"
@@ -440,6 +441,11 @@ class ContextBuilder:
             data["personal_display"] = {"reply_detail": self.personal_detail,
                                         "usage": "个人表达习惯。当前明确要求优先。"}
         data['scope_provenance']=self.proof().metadata()
+        try:
+            data['read_catalog'] = read_catalog(self.db_path,self.user_id)
+            data['origins']['read_catalog'] = 'sqlite.companies/current_permissions/current_periods'
+        except (OSError,ValueError,sqlite3.Error):
+            data['read_catalog'] = {'status':'UNAVAILABLE','read_only':True}
         if len(companies)==1:
             company = companies[0]
             try:

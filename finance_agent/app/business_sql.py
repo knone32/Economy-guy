@@ -1,5 +1,6 @@
 """Bounded, permission-scoped SQLite snapshots for model-authored reads."""
 from contextlib import closing
+from dataclasses import replace
 from datetime import date, timedelta
 from decimal import Decimal
 import json
@@ -257,9 +258,33 @@ def _scope(proof, actor):
 class BusinessSQL:
     """One lazy in-memory snapshot owned by a single Agent turn."""
 
-    def __init__(self, path, actor, proof):
+    def __init__(self, path, actor, proof, *, request=None):
         self.path, self.actor, self.proof = path, actor, proof
+        self.request = request
+        self.read_binding = None
         self.connection = None
+
+    def bind_read_scope(self,binding):
+        from .controlled_read_scope import catalog, bind, ReadBindingError
+        if not isinstance(self.proof,ScopeProof) or self.proof.actor!=self.actor:
+            raise BusinessSQLError('DENIED','当前查询没有可信会话身份')
+        try:
+            values = bind(binding,self.request,catalog(self.path,self.actor))
+        except ReadBindingError as error:
+            raise BusinessSQLError(error.status,str(error)) from None
+        prior = {**self.proof.values,**(self.proof.read_workspace or {})}
+        if self.proof.annual_year is not None or any(
+                prior.get(key) and not set(map(tuple,items) if key=='periods' else items).issubset(
+                    set(map(tuple,prior[key]) if key=='periods' else prior[key]))
+                for key,items in values.items()):
+            raise BusinessSQLError('SCOPE_MISMATCH','只读候选与本轮已有可信范围不一致')
+        proof = replace(self.proof,values=values,sources=dict.fromkeys(values,'controlled_read_scope'),read_workspace=None)
+        if self.connection is not None and _scope(proof,self.actor)!=self.scope():
+            raise BusinessSQLError('SCOPE_MISMATCH','本轮SQL快照已建立，不能替换企业或账期')
+        self.proof = proof
+        self.read_binding = {'source':'current_authorized_catalog','values':values,
+                             'company_quote':binding['company_quote'],'period_quote':binding['period_quote'],
+                             'authorization':False}
 
     def close(self):
         if self.connection is not None:

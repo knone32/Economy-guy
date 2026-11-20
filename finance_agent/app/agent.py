@@ -53,7 +53,7 @@ SQL_ANSWER_TOOLS = {
     "list_rule_versions", "resolve_invoice_reference", "resolve_recent_invoice",
 }
 
-SYSTEM = """你是财税助手。甲企业=C001，乙企业=C002。需要业务事实时调用工具，不能凭历史结果猜金额。
+SYSTEM = """你是财税助手。企业编号、登记名称与可读账期以当前 context_data.read_catalog 为准，不假设固定企业映射。需要业务事实时调用工具，不能凭历史结果猜金额。
 企业、年份、月份缺失且对话没有明确依据时先追问，不默认当前月份。不能改变身份。
 用户只补充企业或年月时，应继续最近未完成的查询目标，不能把原目标缩减成明细。
 context_data的prior_query_tools只是历史查询类型线索：当前轮仅更正范围时可延续查询目标，不能继承旧金额、范围或修改许可。
@@ -129,7 +129,7 @@ propose_invoice_changes保留给批量/规则/复杂选集及兼容调用；其s
 当前单票办理的known是系统保存的来源可追溯业务候选，不代表已执行或已授权；missing_fields由系统计算，不是模型要维护的状态机。change_invoice只传本轮明确新增或更正的业务槽位，省略已在known且本轮未改的企业、年月、字段和内容；运行时合并未变槽位。不要在最终JSON另写pending/pending_change或amend意图。用户暂缓、稍后继续用turn_action=pause；明确取消、不要办了用turn_action=stop，两者都不撤销历史事务。
 更正关系由你判断：change_invoice默认relation=update补充当前办理；用户撤销旧要求重新定义时用replace，未确定字段和内容的对应关系时用clarify，不代选。field只表示当前要修改的字段，保留不动的字段不传。新内容照录当前原话；沿用上一有效内容可省略new_value，同字段由系统继承；换字段沿用旧内容或显式重传历史值须value_ref=previous。明确清空用value_ref=clear；字段变更不自动串用旧值。系统验证原文/有效待补来源，不以标点、词序判断语义；这些动作均不授予写入许可。
 查询最终JSON使用kind/text/answer，answer只引用本轮有指标/范围/单位的事实或已支持的compare/subtract。未知事实不能声称已验证，未完成不能声称完成。
-只读规范化可继续使用intent={action:"read",target:{company_id,year,month,invoice_no?},sources:{各槽:{kind:"current",text:原话}}}，仅供读取，不成为写许可。已有可信参数无需额外声明。
+其他只读接口的规范化可继续使用intent={action:"read",target:{company_id,year,month,invoice_no?},sources:{各槽:{kind:"current",text:原话}}}，不成为写许可。query_business_sql只接受read_scope补充尚缺的SQL范围，不能用旧intent的model_read_candidate建立SQL快照；已有合法可信范围时仍可只传sql。
 """
 
 
@@ -1017,7 +1017,7 @@ class Agent:
         sql_context = None
         if sql_analysis:
             sql_workspace = BusinessSQL(self.db_path, self.user_id, self.context.proof(
-                read_workspace, annual_year=annual_year))
+                read_workspace, annual_year=annual_year),request=current_request)
             turn_resources.callback(sql_workspace.close)
             execution.unscheduled_sql = True
             try:
@@ -1860,7 +1860,9 @@ class Agent:
                 context.append({"role": "system", "content": (
                     "复杂只读组合、跨企业合并排序或多字段排序用 query_business_sql；单企业普通目录和分页用 list_invoice_directory，"
                     "规则定义的完整用途缺项用 check_missing_purpose。只读证据够用即回答，不重复相同查询。"
-                    "日期和企业以以下可信范围为限，缺少范围时追问。执行时按当前账号重新鉴权。"
+                    "日期和企业以以下可信范围为限。范围缺失但可由当前read_catalog精确唯一核验时，"
+                    "可在同一次query_business_sql中传read_scope及本轮原话quote，由程序核验后创建只读范围。"
+                    "未登记简称、目录不足或多义时追问，不能从SQL自证范围。执行时按当前账号重新鉴权。"
                     "SQL 的 amount_cents 和以 _cents 结尾的金额列均为整数分。问金额最高或最低的记录时，比较逐笔原始金额，"
                     "保留同额并列记录；只有用户要求按月比较时才先按月汇总。derived 中数字键是零起点列索引，"
                     "对应已格式化的元金额。需要百分比时用整数 numerator、denominator 列；分母为零无法求比例。"
@@ -2040,8 +2042,8 @@ class Agent:
                             raise IntentContractError('本轮已取得其他范围的结果，请另轮明确新只读范围。', status='SCOPE_MISMATCH')
                         read_intent = candidate
                         if sql_workspace is not None:
-                            sql_workspace.proof, _ = intent_read_proof(candidate, self.context.proof(), expected_scope,
-                                actor=actor, book=self.db_path, turn_id=self.trace_id, request=current_request)
+                            self.trace('intent.sql_scope_not_promoted',{
+                                'reason':'SQL范围补充只接受原生read_scope受控目录核验','authorization':False})
                     elif candidate.action == 'amend':
                         bound_intent = candidate
                         active_pending = apply_intent_pending(candidate, active_pending)
@@ -2448,7 +2450,7 @@ class Agent:
                         tool_scope = expected_scope
                         recent_read_bound = False
                         tool_proof = self.context.proof(read_workspace, annual_year=annual_year)
-                        if read_intent is not None and fn.get('name') in READ_TOOLS:
+                        if read_intent is not None and fn.get('name') in READ_TOOLS and fn.get('name')!='query_business_sql':
                             tool_proof, tool_scope = intent_read_proof(read_intent, tool_proof, tool_scope,
                                 actor=actor, book=self.db_path, turn_id=self.trace_id, request=current_request)
                         if all_invoices:
