@@ -63,6 +63,10 @@ def describe(sql, columns, snapshot, tables, reads):
                 return predicates(node.this)
             if isinstance(node, exp.And):
                 return predicates(node.this) + predicates(node.expression)
+            if isinstance(node, exp.Between) and not node.args.get('symmetric'):
+                name = field(node.this)
+                return [{'field': name, 'operator': '>=', 'value': literal(node.args['low'])},
+                        {'field': name, 'operator': '<=', 'value': literal(node.args['high'])}]
             if isinstance(node, exp.In) and not node.args.get('query'):
                 return [{'field': field(node.this), 'operator': 'IN', 'value': [literal(v) for v in node.expressions]}]
             negated = isinstance(node, exp.Not)

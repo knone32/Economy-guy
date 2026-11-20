@@ -54,6 +54,78 @@ class EvidenceContractTests(unittest.TestCase):
         self.assertIn('1280.50', json.dumps(data['derived']))
         self.assertIn('1000.01', json.dumps(data['derived']))
 
+    def test_literal_between_keeps_original_sql_and_inclusive_conditions(self):
+        # Public R2Q.1's first correctly executed read was downgraded to UNKNOWN.
+        sql = ("SELECT company_id, transaction_no, transaction_date, amount_cents FROM bank_transactions "
+               "WHERE company_id IN ('C001','C002') AND direction = '收入' "
+               "AND transaction_date >= '2026-09-01' AND transaction_date <= '2026-09-20' "
+               "AND amount_cents BETWEEN 50000 AND 150000 AND transaction_no <> 'T003' "
+               "ORDER BY company_id, transaction_no")
+        values = {'company_id': ['C001', 'C002'], 'periods': [(2026, 9)]}
+        proof = ScopeProof('U001', values, dict.fromkeys(values, 'user_current'))
+        workspace = BusinessSQL(self.book, 'U001', proof)
+        self.addCleanup(workspace.close)
+        _, data, _ = workspace.query(sql)
+        self.assertEqual(data['rows'], [])
+        self.assertEqual(data['sql'], sql)
+        self.assertEqual(data['query_scope']['status'], 'VERIFIED')
+        for operator, value in (('>=', 50000), ('<=', 150000)):
+            self.assertIn({'field': 'amount_cents', 'operator': operator, 'value': value},
+                          data['query_scope']['conditions'])
+        # A different table, qualified field and date bounds use the same AST path.
+        bounded = self.query("SELECT invoice_no,amount_cents FROM invoices i "
+            "WHERE i.invoice_date BETWEEN '2026-09-01' AND '2026-09-20' "
+            "AND i.amount_cents BETWEEN 50000 AND 100000 ORDER BY invoice_no")
+        explicit = self.query("SELECT invoice_no,amount_cents FROM invoices i "
+            "WHERE i.invoice_date>='2026-09-01' AND i.invoice_date<='2026-09-20' "
+            "AND i.amount_cents>=50000 AND i.amount_cents<=100000 ORDER BY invoice_no")
+        self.assertEqual(bounded['rows'], explicit['rows'])
+        self.assertEqual(bounded['query_scope']['conditions'], explicit['query_scope']['conditions'])
+        self.assertIn(('F001', 50000), bounded['rows'])
+        self.assertIn(('F005', 100000), bounded['rows'])
+
+    def test_unsupported_between_expressions_remain_unknown(self):
+        for predicate in ("amount_cents NOT BETWEEN 50000 AND 100000",
+                          "amount_cents BETWEEN 50000 AND amount_cents",
+                          "amount_cents BETWEEN 50000 AND 100000 OR invoice_no='F001'"):
+            with self.subTest(predicate=predicate):
+                data = self.query('SELECT invoice_no,amount_cents FROM invoices WHERE ' + predicate)
+                self.assertEqual(data['query_scope']['status'], 'UNKNOWN')
+                self.assertIsNone(data['query_scope']['scope'])
+
+    def test_agent_delivers_zero_comparison_from_current_between_aggregates(self):
+        from app.agent import Agent
+        from tests.test_answer_evidence import tool, final, facts
+
+        stage = 0
+        def model(messages, tools):
+            nonlocal stage
+            stage += 1
+            if stage <= 2:
+                company = ('C001', 'C002')[stage - 1]
+                return tool('query_business_sql', sql=(
+                    "SELECT COUNT(*) AS cnt, COALESCE(SUM(amount_cents),0) AS total_cents "
+                    f"FROM bank_transactions WHERE company_id='{company}' AND direction='收入' "
+                    "AND transaction_date BETWEEN '2026-09-01' AND '2026-09-20' "
+                    "AND amount_cents BETWEEN 50000 AND 150000 AND transaction_no<>'T003'"))
+            fs = facts(messages)
+            counts = [f['ref'] for f in fs if f.get('metric') == ['bank_transactions', 'count_rows', None]]
+            totals = [f['ref'] for f in fs if f.get('metric') == ['bank_transactions', 'sum', 'amount_cents']]
+            return final(answer=[*counts, *totals, {'op': 'compare', 'left': totals[0], 'right': totals[1]}])
+
+        agent = Agent('U001', self.book, model, mode='mock', trace_path=self.book.with_suffix('.jsonl'))
+        answer = agent.ask('甲企业与乙企业2026年9月1日到20日银行收入，单笔500至1500元含边界，'
+                           '排除T003。分别给笔数和小计，再比较两家小计。')
+        self.assertIn('C001', answer)
+        self.assertIn('C002', answer)
+        self.assertEqual(answer.count('银行流水数量 0 笔'), 2)
+        self.assertEqual(answer.count('银行流水金额合计 0.00 元'), 2)
+        self.assertIn('相同，差额 0.00 元', answer)
+        self.assertIn('按交易日期归属账期', answer)
+        self.assertEqual(stage, 3)
+        self.assertEqual(agent.last_response['delivery_source'], 'model_ordered_current_evidence')
+        self.assertEqual(agent.write_receipt['status'], 'NOT_SUBMITTED')
+
     def test_window_count_has_page_and_full_set_distinction(self):
         data = self.query("SELECT company_id,invoice_no,invoice_date,amount_cents,COUNT(*) OVER() AS total_count FROM invoices WHERE company_id='C001' AND invoice_date>='2026-01-01' AND invoice_date<'2027-01-01' ORDER BY invoice_no LIMIT 10", annual=True)
         self.assertIsNotNone(data['query_scope']['scope'])

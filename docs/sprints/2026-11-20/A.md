@@ -22,6 +22,14 @@
 
 ## 已知比较失败与未验
 
-公开旧证据 `model-first-20261119/round2-acceptance/REPORT.md` 的 R2Q.1（45 行起）、`FAILURES.json`：模型正确 SQL 使用金额 BETWEEN，SQLite 返回空集符合独立真值；归属器返回 UNKNOWN/unsupported_predicate，随后扩大读取与预算截断，未完整交付每企业 0 笔/0.00 及相同结论。本切片尚未修改 SQL AST 归属器；此项继续保留失败。
+公开旧证据 `model-first-20261119/round2-acceptance/REPORT.md` 的 R2Q.1（45 行起）、`FAILURES.json`：模型正确 SQL 使用金额 BETWEEN，SQLite 返回空集符合独立真值；归属器返回 UNKNOWN/unsupported_predicate，随后扩大读取与预算截断，未完整交付每企业 0 笔/0.00 及相同结论。第一切片未修改 SQL AST 归属器；原 Live 失败不改分。
 
 未验：本轮真实模型自然语言、新 Dot 原 Trace、真实人类 GUI 接受、全量回归完成。规则历史版本仍按旧路径展示，不将停用版本升为当前依据。
+
+## 第二切片：标准 BETWEEN 的事实归属
+
+第一切片提交 `a5a5bfb95a8c40a5e2845de97d1b2bc4d7949f47` 后，使用公开 R2Q.1 原 SQL 在正式 BusinessSQL 路径复现：空集正确但归属 UNKNOWN。首红 `artifacts/a-query/between-before.log`。`sql_evidence.predicates` 增加四行标准 AST 支持：正 `BETWEEN(列,字面下界,字面上界)` 归属为已有 `>=` 和 `<=` 条件。不重写或代跑 SQL，不读自然语言，不更改权限快照，不合成空组或假造零值。
+
+程序正例保留原 SQL 和空集，跨表、别名、日期区间及金额上下边界与显式比较等价；NOT BETWEEN、动态列上界、OR 继续 UNKNOWN。正式 Agent 使用两条当前企业聚合（COUNT 与 COALESCE(SUM,0)）后，模型脚本选出各企业 0 笔/0.00 的事实并选择 compare，程序交付相同与差额 0.00，保留交易日期和原筛选条件。这是显式查询结果的机制回归，**不是声称旧空 GROUP BY 结果会自动补出各企业零行，也不是 NLU/Live 通过**。
+
+相同定向命令最终 **40/40 PASS**，`artifacts/a-query/between-agent-final.log`；覆盖第一切片工作台与事实保护。`between-after.log` 保留新增测试把原生 tuple 错写为 list 的断言失败，修正测试行类型后再验。未扩大 SQL 解析范围或继续全仓回归。
