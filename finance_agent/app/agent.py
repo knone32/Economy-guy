@@ -50,12 +50,8 @@ from .responses import confirmed_task_creation
 from .stage2_schema import open_existing
 import sqlite3
 
-SQL_ANSWER_TOOLS = {
-    "query_business_sql", "get_finance_summary", "get_annual_finance_summary", "get_invoice",
-    "list_invoices", "list_invoice_directory", "list_bank_transactions", "list_annual_bank_income",
-    "count_invoice_fields", "list_annual_blank_purpose", "check_missing_purpose", "get_applicable_rules",
-    "list_rule_versions", "resolve_invoice_reference", "resolve_recent_invoice",
-}
+from .tool_contracts import TOOL_SPECS, FINANCIAL_TOOLS, ANSWER_TOOLS
+SQL_ANSWER_TOOLS = ANSWER_TOOLS
 
 SYSTEM = """你是财税助手。企业编号、登记名称与可读账期以当前 context_data.read_catalog 为准，不假设固定企业映射。需要业务事实时调用工具，不能凭历史结果猜金额。
 企业、年份、月份缺失且对话没有明确依据时先追问，不默认当前月份。不能改变身份。
@@ -415,10 +411,9 @@ class Agent:
 
     def dispatch_tool(self, *args, **kwargs):
         name=args[0] if args else kwargs.get('name')
-        financial = name in {'query_business_sql','get_finance_summary','get_annual_finance_summary',
-            'get_invoice','list_invoices','list_invoice_directory','list_bank_transactions','list_annual_bank_income',
-            'count_invoice_fields','list_annual_blank_purpose','invoice_total','bank_income_total',
-            'bank_expense_total','summary','resolve_recent_invoice','resolve_invoice_reference','check_missing_purpose'}
+        if name not in TOOL_SPECS:
+            return tool_result('DENIED',evidence={'source':'tool_contract'},error='工具未登记有效的业务契约。')
+        financial = name in FINANCIAL_TOOLS
         req=self.business_request
         read_basis = None
         if financial and req is None:

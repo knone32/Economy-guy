@@ -9,16 +9,7 @@ from datetime import date
 import json
 
 
-CAPABILITIES = {
-    'query_business_sql': ('invoices', 'bank_transactions'),
-    'get_finance_summary': ('invoices', 'bank_transactions'),
-    'get_annual_finance_summary': ('invoices', 'bank_transactions'),
-    'list_invoices': ('invoices',),
-    'get_invoice': ('invoices',),
-    'list_bank_transactions': ('bank_transactions',),
-}
-SUPPORT_TOOLS = frozenset({'get_applicable_rules', 'list_rule_versions', 'list_materials',
-                           'open_material_reference', 'use_skill', 'set_schedule', 'list_tasks'})
+from .tool_contracts import TOOL_SPECS, CAPABILITIES, SUPPORT_TOOLS
 
 
 class RequestDeliveryError(ValueError):
@@ -81,7 +72,7 @@ def preflight(request, name, args, actor, book):
             return
         raise RequestDeliveryError('该工具尚未登记本轮业务要求的结果契约，未执行。',
                                    'TOOL_CAPABILITY_MISMATCH')
-    if name == 'query_business_sql':
+    if TOOL_SPECS[name].result_adapter == 'sql':
         scope = args.get('read_scope')
         if scope:
             actual = {'company_id': scope['company_id'],
@@ -93,11 +84,11 @@ def preflight(request, name, args, actor, book):
     companies, periods = _companies(args), _periods(args)
     applicable = [t for t in request.targets if t.object in CAPABILITIES[name]
                   and companies and companies <= set(t.company_ids)
-                  and (name == 'get_invoice' or periods and periods <= set(t.periods))]
+                  and (TOOL_SPECS[name].read_mode == 'invoice' or periods and periods <= set(t.periods))]
     if not applicable:
         raise RequestDeliveryError('该工具返回的业务对象不属于当前要求。')
     for target in applicable:
-        if name in {'get_finance_summary', 'get_annual_finance_summary'}:
+        if TOOL_SPECS[name].result_adapter == 'summary':
             supported_groups = {'period', 'company_id'}
             if target.object == 'bank_transactions':
                 supported_groups.add('direction')
@@ -105,13 +96,13 @@ def preflight(request, name, args, actor, book):
                 raise RequestDeliveryError('此汇总工具不能提供本轮要求的分组，未执行该统计。',
                                            'TOOL_CAPABILITY_MISMATCH', target_id=target.target_id)
         seller = target.seller
-        if name != 'get_invoice' and (seller is not None and seller.mode != 'none' or target.filters):
+        if TOOL_SPECS[name].condition_mode != 'row' and (seller is not None and seller.mode != 'none' or target.filters):
             # Whole-month tools cannot acquire filter support merely because
             # the generator picked them instead of SQL.
             allowed = (seller is None and target.filters
                        and all(_directions(f)
-                               and (name in {'get_finance_summary', 'get_annual_finance_summary'}
-                                    or name == 'list_bank_transactions' and _directions(f) == {args.get('direction')})
+                               and (TOOL_SPECS[name].condition_mode == 'direction'
+                                    or TOOL_SPECS[name].condition_mode == 'direction_arg' and _directions(f) == {args.get('direction')})
                                for f in target.filters))
             if not allowed:
                 raise RequestDeliveryError('此工具不能落实本轮附加筛选，请使用支持该条件的查询。',
@@ -364,6 +355,60 @@ def _identity_targets(request, query, fact, actor, book):
     return matches
 
 
+def _project_detail_result(request, original, actor, book):
+    """Discard only scalar display expressions from proven source-row details."""
+    query=original['evidence']['query_scope']
+    columns=query.get('columns',())
+    if (query.get('row_shape')!='detail'
+            or not query.get('row_shape_evidence',{}).get('preserves_filtered_source_rows')
+            or any(c.get('kind')=='unattributed' and c.get('row_effect')!='scalar' for c in columns)):
+        return original
+    targets=[t for t in _targets(request,query.get('table'),query['scope'])
+             if any(m.operation=='details' for m in t.metrics)]
+    if not targets:return original
+    keep=[i for i,c in enumerate(columns) if c.get('kind')=='column']
+    fields={columns[i]['field'] for i in keep}
+    identity={'company_id','invoice_no','invoice_date'} if query['table']=='invoices' else {
+        'company_id','transaction_no','transaction_date'}
+    if not identity<=fields:return original
+    # Scope/filters are proved before even a partial card is released. Removing
+    # a display expression cannot conceal a broader seller or a date restriction.
+    ids=[];matched=[];errors=[]
+    for target in targets:
+        try:
+            _check_date_coverage(target,query['scope'],query.get('conditions',()))
+            _check_conditions(target,query.get('conditions',()),actor,book)
+        except RequestDeliveryError as error:
+            errors.append(error)
+        else:
+            ids.append(target.target_id);matched.append(target)
+    if not matched:raise errors[0]
+    data=original['data'];old_names=list(data['columns'])
+    data['columns']=[old_names[i] for i in keep]
+    data['rows']=[tuple(row[i] for i in keep) for row in data['rows']]
+    data['derived']=[{str(j):row[str(i)] for j,i in enumerate(keep) if str(i) in row}
+                     for row in data.get('derived',[])]
+    data['request_projection']={'original_columns':old_names,'source_column_indices':keep,
+        'source_columns':deepcopy(columns),'source_projection_complete':query.get('projection_complete'),
+        'source_query_set_complete':query.get('query_set_complete'),
+        'source_row_indices':list(range(len(data['rows']))),'identity_only':False,'detail_columns_only':True}
+    query['columns']=[columns[i] for i in keep];query['projection_complete']=True
+    # Render genuine raw invoice fields with their existing cents formatter;
+    # an arbitrary SQL alias or the omitted conversion supplies no unit proof.
+    if query['table']=='invoices' and 'amount_cents' in fields:
+        data['invoice_projection']={c['field']:i for i,c in enumerate(query['columns'])}
+    accepted=annotate(original,request,ids)
+    if (query.get('query_set_complete') and not query.get('limited') and data.get('truncated') is False):
+        from .business_sql import TABLES
+        all_fields={part.strip().split()[0] for part in TABLES[query['table']].split(',')}
+        accepted['evidence']['business_request']['measures']=[{
+            'target_id':target.target_id,'operation':'details','field':metric.field,
+            'scope':deepcopy(query['scope']),'dimensions':{},'conditions':deepcopy(query.get('conditions',())),
+            'all_groups':True,'source_columns':sorted(fields)} for target in matched for metric in target.metrics
+            if metric.operation=='details' and (all_fields<=fields if metric.field=='*' else metric.field in fields)]
+    return accepted
+
+
 def project_sql_result(request, result, actor, book):
     """Retain requested measures, or only identity clues for finer groupings.
 
@@ -377,7 +422,7 @@ def project_sql_result(request, result, actor, book):
         return original
     facts = sql_scalars(original, 'unpublished', '')
     if not facts:
-        return original
+        return _project_detail_result(request,original,actor,book)
     columns = query['columns']
     source_projection_complete = query.get('projection_complete')
     requested = {int(key.rsplit('.', 1)[1]) for key, (_, fact) in facts.items()
@@ -514,7 +559,7 @@ def check_dedicated(request, name, result, actor, book):
     _frame(request, actor, book)
     evidence, data = result.get('evidence') or {}, result.get('data')
     scope = evidence.get('scope') or {}
-    if name in {'get_finance_summary', 'get_annual_finance_summary'}:
+    if TOOL_SPECS[name].result_adapter == 'summary':
         fields, target_ids = _summary_fields(request, scope)
         if not isinstance(data, dict) or not fields or not fields <= data.keys():
             raise RequestDeliveryError('该汇总没有本轮要求的完整指标证据。', 'TOOL_CAPABILITY_MISMATCH')
@@ -573,7 +618,7 @@ def check_dedicated(request, name, result, actor, book):
 def accept_result(request, name, result, actor, book):
     if result.get('status') not in {'SUCCESS', 'NO_DATA'} or name not in CAPABILITIES:
         return result
-    if name == 'query_business_sql':
+    if TOOL_SPECS[name].result_adapter == 'sql':
         _frame(request, actor, book)
         projected = project_sql_result(request, canonical_sql_result(result), actor, book)
         if projected.get('data', {}).get('request_projection'):
@@ -687,7 +732,7 @@ def assess_selection(request, answer, facts, results):
             for proof in measures:
                 target = next((t for t in request.targets if t.target_id == proof['target_id']), None)
                 dimensions = proof.get('dimensions') or {}
-                if name in {'get_finance_summary', 'get_annual_finance_summary'}:
+                if TOOL_SPECS[name].result_adapter == 'summary':
                     dimensions = {k: v for k, v in dimensions.items() if k != 'direction'}
                 if (target is not None and metric[0] == target.object
                         and (operation, metric[2] or '*') == (proof['operation'], proof['field'])
@@ -736,6 +781,15 @@ def assess_selection(request, answer, facts, results):
         meta = copied.setdefault('evidence', {}).setdefault('business_request', {})
         meta['measures'] = [proof for ref in selected for source_index, proof in proven.get(ref, ())
                             if source_index == index]
+        # Detail rows are delivered by the actual whole-result fact. Scalar
+        # arithmetic or an unselected available table cannot certify them.
+        result_selected=any(ref in selected and fact.get('type')=='result'
+                            and ref.rsplit(':',1)[-1]==f'r{index}.result' for ref,fact in facts.items())
+        original_meta=(result.get('evidence') or {}).get('business_request') or {}
+        if (result_selected and original_meta.get('request_hash')==request.request_hash
+                and original_meta.get('revision')==request.revision):
+            meta['measures'].extend(proof for proof in original_meta.get('measures',())
+                                    if proof.get('operation')=='details')
         selected_results.append((name, copied))
     assessment = assess_results(request, selected_results)
     # The ordinary axes above have known request domains. Other actual business

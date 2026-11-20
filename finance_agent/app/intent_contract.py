@@ -11,7 +11,7 @@ import json
 from contextlib import closing
 
 from .permissions import check_permission
-from .provenance import ScopeProof, SOURCES, READ_SOURCES
+from .provenance import ScopeProof, SOURCES, READ_SOURCES, READ_ONLY_TOOLS
 from .responses import request_scope, explicit_scope, _QUOTED_DATA
 from .stage2_schema import open_existing
 from .controlled_read_scope import catalog as read_catalog
@@ -20,10 +20,7 @@ from .business_object_sources import amendment_sources, registered_company_menti
 SCOPE_KEYS = ('company_id','invoice_no','year','month')
 WRITE_KEYS = (*SCOPE_KEYS, 'field','new_value')
 FIELD_LABELS = {'purpose': ('purpose','用途'), 'remark': ('remark','备注')}
-READ_TOOLS = frozenset({'get_invoice','query_business_sql','get_finance_summary','get_annual_finance_summary',
-    'list_invoices','list_invoice_directory','list_bank_transactions','list_annual_bank_income',
-    'count_invoice_fields','check_missing_purpose','get_applicable_rules','list_rule_versions',
-    'list_annual_blank_purpose','invoice_total','bank_income_total','bank_expense_total','summary'})
+READ_TOOLS = READ_ONLY_TOOLS
 
 
 def _field_origins(plain):

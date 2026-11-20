@@ -26,7 +26,7 @@ class Unsupported(ValueError):
 
 def describe(sql, columns, snapshot, tables, reads, *, allow_partial_projection=False):
     base = {'scope': None, 'filters': (), 'conditions': [], 'columns': [],
-            'sql_sha256': hashlib.sha256(sql.encode()).hexdigest(), 'status': 'UNKNOWN'}
+            'sql_sha256': hashlib.sha256(sql.encode()).hexdigest(), 'status': 'UNKNOWN','row_shape':'unknown'}
     try:
         trees = sqlglot.parse(sql, read='sqlite')
         if len(trees) != 1 or not isinstance(trees[0], exp.Select):
@@ -229,9 +229,32 @@ def describe(sql, columns, snapshot, tables, reads, *, allow_partial_projection=
                 return attribution(node.this)
             raise Unsupported('unattributed_projection')
 
+        # Cardinality follows the AST, never whether an output value has units.
+        # Unknown functions can be user-defined aggregates/row generators.
+        def validate_projection(node):
+            for part in node.walk():
+                if isinstance(part, exp.Column):
+                    if isinstance(part.this, exp.Star):
+                        if part.table and part.table.lower() not in qualifiers:
+                            raise Unsupported('unknown_column')
+                    else:
+                        field(part)
+                if isinstance(part, exp.Anonymous):
+                    # This exact deterministic helper already belongs to the
+                    # snapshot runtime and predicate attribution contract.
+                    if part.name.lower()!='is_blank' or len(part.expressions)!=1:
+                        raise Unsupported('unknown_projection_function')
+                    field(part.expressions[0])
+                if isinstance(part, (exp.UDTF, exp.Explode, exp.GenerateSeries)):
+                    raise Unsupported('row_expanding_projection')
+
+        aggregate = any(isinstance(part, exp.AggFunc) and part.find_ancestor(exp.Window) is None
+                        for expression in tree.expressions for part in expression.walk())
+        window = any(expression.find(exp.Window) is not None for expression in tree.expressions)
         projected = []
         for expression in tree.expressions:
             node = expression.this if isinstance(expression, exp.Alias) else expression
+            validate_projection(node)
             if isinstance(node, exp.Star) or isinstance(node, exp.Column) and isinstance(node.this, exp.Star):
                 projected.extend({'name': name, **attribution(exp.column(name))} for name in fields)
             else:
@@ -240,10 +263,14 @@ def describe(sql, columns, snapshot, tables, reads, *, allow_partial_projection=
                 except Unsupported as error:
                     if not allow_partial_projection:
                         raise
+                    if node.find(exp.Window) is not None:
+                        raise Unsupported('unsupported_window_projection')
                     # Only the request-bound adapter may retain independently
                     # attributed columns and discard this unproved expression.
                     # WHERE, grouping and set completeness still need proof.
-                    meta = {'kind':'unattributed','unit':None,'reason':str(error)}
+                    meta = {'kind':'unattributed','unit':None,'reason':str(error),
+                            'row_effect':('aggregate' if any(isinstance(part,exp.AggFunc)
+                                and part.find_ancestor(exp.Window) is None for part in node.walk()) else 'scalar')}
                 projected.append({'name': expression.alias_or_name, **meta})
         if len(projected) != len(columns) or len(set(columns)) != len(columns):
             raise Unsupported('projection_columns')
@@ -273,7 +300,11 @@ def describe(sql, columns, snapshot, tables, reads, *, allow_partial_projection=
             else:
                 meta = attribution(expression)
             groups.append(dimension(meta))
-        aggregate = any(p['kind'] not in dimension_kinds and not p.get('extent') for p in projected)
+        projection_complete = all(p['kind'] != 'unattributed' for p in projected)
+        distinct = bool(tree.args.get('distinct'))
+        if distinct and not projection_complete:
+            # Dropping an output expression must not conceal DISTINCT's row key.
+            raise Unsupported('partial_distinct_projection')
         if (aggregate or groups) and any(dimension(p) not in groups
                                          for p in projected if p['kind'] in dimension_kinds):
             raise Unsupported('ungrouped_column')
@@ -281,7 +312,11 @@ def describe(sql, columns, snapshot, tables, reads, *, allow_partial_projection=
         return {**base, 'status': 'VERIFIED', 'scope': {'company_ids': companies, 'periods': tuple(actual_periods)},
                 'conditions': conditions, 'filters': filters, 'date_field': date_field, 'table': table_name,
                 'columns': projected, 'limited': bool(tree.args.get('limit') or tree.args.get('offset')),
-                'projection_complete':all(p['kind'] != 'unattributed' for p in projected),
+                'projection_complete':projection_complete,
+                'row_shape':('distinct' if distinct else 'grouped' if groups else
+                             'aggregate' if aggregate else 'window' if window else 'detail'),
+                'row_shape_evidence':{'has_aggregate':aggregate,'has_window':window,'has_distinct':distinct,
+                                      'preserves_filtered_source_rows':not bool(aggregate or groups or distinct)},
                 'query_set_complete': not bool(tree.args.get('limit') or tree.args.get('offset'))}
     except (Unsupported, ValueError, TypeError, OverflowError, sqlglot.errors.ParseError) as error:
         return {**base, 'reason': str(error)}
