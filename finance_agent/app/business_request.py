@@ -7,6 +7,7 @@ from dataclasses import dataclass, asdict, is_dataclass
 from datetime import date
 from pathlib import Path
 from contextlib import closing
+import sqlite3
 
 from .seller_semantic_review import load_review, digest
 from .seller_read_scope import catalog as seller_catalog, full_mentions, SellerReadError, validate_source
@@ -254,8 +255,36 @@ def _validate_context_transition(value):
         raise BusinessRequestError('读取上下文过渡参数无效。','INVALID_ARGUMENTS')
 
 
-def messages(request,current_catalog,*,trusted_scope=None,previous_request=None,context_transition='continue'):
+
+def native_pending_context(pending, *, actor=None, book=None):
+    """Read-only, source-only view of an existing runtime native candidate.
+
+    This is not a bound read source, a restored draft, or another state owner.
+    Invalid old state contributes no business values to the semantic input.
+    """
+    if pending is None or type(actor) is not str or not actor or book is None:
+        return None
+    try:
+        from .business_sources import recover_candidate
+        from .invoice_action import public_state
+        state=recover_candidate(pending,actor=actor,book=Path(book).resolve())
+        public=public_state(state)
+        return {'status':'unsubmitted_business_context',
+                'source':{'kind':'native_user_request','quote':state['source_request']},
+                'known':public['known'],'missing_fields':public['missing_fields']}
+    except (ValueError,TypeError,PermissionError,OSError,sqlite3.Error):
+        return None
+
+def messages(request,current_catalog,*,trusted_scope=None,previous_request=None,context_transition='continue',
+             native_pending=None,actor=None,book=None):
     _validate_context_transition(context_transition)
+    scope=trusted_scope or {}
+    native=None
+    if native_pending is not None:
+        native=native_pending_context(native_pending,actor=actor,book=book)
+        # The reserved view is derived here, never accepted from an old payload.
+        scope={k:v for k,v in scope.items() if k!='native_invoice_candidate'}
+        if native is not None:scope['native_invoice_candidate']=native
     output = [{'role':'system','content':
         '先独立解释当前要求，不生成SQL、不调用工具，不看拟执行方案。仅JSON。'
         'read顶层仅kind、targets、unresolved，禁止额外type等标签；unresolved仅字符串列表，无未决项用[]，不能用对象列表。'
@@ -276,8 +305,19 @@ def messages(request,current_catalog,*,trusted_scope=None,previous_request=None,
         '问候或一般知识可直接{"kind":"general","text":"回答"}；修改/管理走{"kind":"legacy"}，'
         '该route不授予业务读取或写入许可。业务对象或目标不清时用read+unresolved，不能擅自删目标。'},
         {'role':'user','content':__import__('json').dumps({'request':request,'read_catalog':current_catalog,
-            'trusted_scope':trusted_scope or {},'previous_requirement':previous_request.metadata() if previous_request else None,
+            'trusted_scope':scope,'previous_requirement':previous_request.metadata() if previous_request else None,
             'business_definition':DEFINITION},ensure_ascii=False)}]
+    if native_pending is not None:
+        if native is None:
+            output[0]['content']+=('旧办理上下文不可核实，不据其补范围，续办需重新明确。'
+                '当前新读取仍按当前原话与授权目录判断，不因无效旧状态伪造来源。')
+        else:
+            output[0]['content']+=('当前有原运行时持有的尚未提交单票业务上下文，见trusted_scope.native_invoice_candidate。'
+                '其中source是原用户来源、known是已给业务槽、missing_fields是待补项，不是当前读取范围或权限。'
+                '仅帮助判断当前要求：新查询输出read，按当前原话和有效读取来源独立建立要求，'
+                '旧票号和旧填写内容不得自动变成新查询的目标或筛选；'
+                '继续或更正原事项输出legacy，回到原协调器重核来源与实际对象；一般对话仍可general。'
+                '此输入本身不暂停、不提交、不批准事项，不创建草稿；不要新增输出字段或另一套intent，仍仅用原route协议。')
     if context_transition=='pending_to_read':
         output[0]['content']+=('当前由运行时从暂停办理转入新的独立读取要求。'
             '有效前文仅供用户明确指代时按来源引用；旧单张发票范围、销售方及用途等筛选不能自动保留。'

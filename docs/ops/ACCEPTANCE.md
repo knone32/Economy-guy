@@ -1,5 +1,31 @@
 # 验收（V3；不同SHA不拼接）
 
+## R真实首执后的统一入口修订（待新同版自然语言验收）
+
+- R01/R02确已在冻结 `d45b829` 各首执一次，合计2个真实HTTP；均未完成交付，原首分永久保留。R01查询提案的目标销售方、新期、SUM/COUNT经独立真值核对正确；R02是分组候选探索，未完成澄清，后续歧义语义为UNKNOWN，不能说已误合并或完全理解。共同首断点：native pending绕过独立要求阶段，天然SQL提案未带旧intent.read，ReqNone被分发安全拒绝；首卡失败，末答无请求事实，旧pending仍active、零写/草稿/批准。
+- 封存前SCHEMA-ONLY的live_executed=false是历史快照，不是当前状态。最新入口见 `v3-c2-acceptance/sealed-r01-r02-v1/public/CURRENT-STATUS.public.json`；实际HTTP输入类别附录纠正：当时只发送invoice_change的known/missing，未发送原native原句或两家seller目录，不把模型未见信息算漏判。
+- 当前修订只统一普通自然语言的首语义入口，pending不再关闭preflight。原read/legacy/general输出schema不增加：有效read绑定后Runtime才暂停原native owner，legacy继续原协调器。失效旧状态不供语义来源、不泄漏值、不阻当前明确新读；有效原用户source、有限known/missing只作上下文，不是新读scope或授权。SQL及工具提案不进入该阶段，bind/首卡证据门、草稿/批准owner不改。
+- 148项受影响定向/架构组合通过。独立最小检查：read绑定后pause、legacy保留、坏来源不提前pause；6项helper来源边界通过。旧正例的金额、范围、零写、待补保持断言保留，去除固定四轮/旧sidecar必经夹具；兼容负例仍逐ID配对并拒绝跳回写路径。不增请求块或额度，不重复完整回归。本修订尚无真实模型通过结论。
+- 上次R准备曾由根把预算owner误写C2，SharedBudget在HTTP前拒绝。独立确认零HTTP/零原题发送/零凭据读取，原AUTH/claim/run全保全，另记INVALID_PREPARATION，不算模型首错；更正为原契约owner=C后才发生上述两次真实首执。产品和题未改来绕过护栏。
+- 当前预算55请求/565682tokens/553394微元峰价上界，余9请求/134318tokens，原64/700000/2.20元与未知历史费保留。接下来冻结修订，由独立验收另封S01/S02（各至多4、共8；不要求实际次数），不重放R、不改题措辞。即便通过，只证明既有待补中的一次新查询/消歧，不能证明追问后续办或旧票恢复批准保存。
+
+---
+
+## d45b829 冻结验证：先真实模型，不再扩接口
+
+- 代码冻结：`d45b829134f75608fa37c43ad34ded7b52a1dfe5`，`frozen-read-handoff-d45b829` 与根 315 个 tracked 文件逐字节一致；63 个 app 文件摘要 `e21fc4ba6bc6e1fe0ef4049dc3b53d91bf626d3304d99cdc09f2e7cd1a84f010`。后续文档变动不算产品改版。
+- 待补原生单票转查询已复用原协调器暂挂、同 Loop 独立绑定新要求；旧票号、月份及修改字段不自动继承。草稿和批准生命周期未复制。普通明细行语义与列事实资格分开，未知聚合/窗口不当展示列丢弃；原 `is_blank(单个原字段)` 保留。工具注册声明集中，原 10 组集合保持等价，六项适配能力未扩大。
+- 程序证据：140 项定向/架构通过；独立投影 10 项通过；真实挂载 Workspace 程序链首卡/末答为新月 9046.35 元、10 张，旧候选 PAUSED、草稿/批准/audit0。独立 SessionStore 进程恢复另有证据。均为 API0，不能替代真实模型或真人签收。
+- 冻结版全量：1166 项、468 FAIL、203 ERROR、462.400 秒。相对上一 1136 项，消除函数地址差异后新增/消失失败 header 均 0；仍不通过，不折算业务失败率。保留原日志，当前不重复全量。
+- 用户最新决定：先验当前冻结版真实模型，允许不同合法回复、SQL 和调用次数。独立 R01/R02 已封存，只变销售方全名唯一/简称两家这一条件，固定明确企业、同一新账期、金额和张数、旧 native 待补状态及可见结果。旧待补以真实 Agent 非 Live 准备，陌生新问才为模型首执；不得强迫 intent/SQL/四次回包。R 私题与真值不供根或模型读取。
+- R 尚未收费执行。统一账本仍 53 请求 / 544661 tokens / 522563 微元峰价上界，未知历史费用不记零。R 分配各至多 5、合计至多 10，仍原 64 / 700000 / 2.20 元总限；AUTH 仅准备，须 runner 审查及自动审批后启动。重复 O 授权不增执行次数，O01 FAIL、O02 PASS、整对 FAIL 原分不改。
+- 公共 runner 审查先发现 setup 顺序会由切模型取消候选，已仅改测试胶合为先切模型再持久/恢复真实 native 状态；未收费、不算模型 FAIL、不改产品。继续审标准 Workspace→Agent.ask→ModelTransport，原题单次原样送入，无输出清洗或预定路径。
+- 剩余缺口：旧通用 pending 安全交接、显式准备会话汇总后草稿、同版自然语言泛化、真实人批准/提交/重启回读未过。额外新 Tool alias 实验在 DESCRIPTIONS 登记处失败，属额外改版证据；按用户最新要求仅记账，不为假想失败扩冻结接口。D07、整行引用相减分别记录。不得晋级 main。
+
+证据入口：`evidence-root/READ-HANDOFF-d45b829-FREEZE.json`、`READ-HANDOFF-d45b829-FULL-RESULT.json`；`v3-c2-acceptance/detail-projection-independent-1795185671065246100/SUMMARY.public.json`；项目根 `pending-read-workspace-check/run-1795185801170679900/UI-HANDOFF-REVIEW.json`；`v3-c2-acceptance/sealed-r01-r02-v1/public/SEAL-MANIFEST.public.json`。
+
+---
+
 ## 普通请求入口与分发闭环候选（O 原分保持）
 
 用户已核实单位“金额换成元”触发旧 invoice_intent_source，导致 O 两题跳过独立要求。根另以公开虚构“金额以元显示／金额换算为元”在 05b 动态复现同类入口分歧；证据 `../evidence-root/unit-display-entry-1795179080837136600/RESULT.json`。当前改动让普通只读轮进入要求阶段，不再依据旧修改关键词跳过；读取期间推导亦不取该关键词判断。已绑定读取要求后，由该要求持有当前动作解释。
