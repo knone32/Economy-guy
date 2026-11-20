@@ -314,8 +314,11 @@ class ContextBuilder:
         if focus:
             self.prior_query_tools=focus
         groups = []
+        unreferenceable_sql = False
         directories = {}
         for name,outcome in results:
+            if name == 'query_business_sql' and outcome['status'] != 'SUCCESS':
+                unreferenceable_sql = True
             if outcome["status"] != "SUCCESS":
                 continue
             data = outcome["data"]
@@ -333,6 +336,29 @@ class ContextBuilder:
                 rows = data["missing_invoices"]
             elif name in {"get_invoice","resolve_invoice_reference"}:
                 rows = [data]
+            elif name == 'query_business_sql':
+                evidence = outcome.get('evidence', {})
+                scope = evidence.get('scope', {})
+                query = evidence.get('query_scope', {})
+                identity = data.get('invoice_display_identity', {})
+                coverage = data.get('invoice_coverage', {})
+                # Only an actually displayed, complete singleton of original
+                # invoice identities becomes a reference. SQL selections keep
+                # their existing stricter two-column contract.
+                if (evidence.get('source') != 'current_sqlite' or query.get('status') != 'VERIFIED'
+                        or query.get('table') != 'invoices' or not query.get('query_set_complete')
+                        or data.get('truncated') is not False or len(data.get('rows', ())) != 1
+                        or coverage.get('sql_paginated') is not False
+                        or coverage.get('display_truncated') is not False
+                        or not {'company_id', 'invoice_no'} <= identity.keys()
+                        or not all(scope.get(key) for key in ('company_id', 'year', 'month'))):
+                    unreferenceable_sql = True
+                    continue
+                row = data['rows'][0]
+                if row[identity['company_id']] != scope['company_id']:
+                    unreferenceable_sql = True
+                    continue
+                rows = [{'company_id': scope['company_id'], 'invoice_no': row[identity['invoice_no']]}]
             else:
                 rows = []
             if rows:
@@ -344,6 +370,9 @@ class ContextBuilder:
             groups.append({"scope": scope, "source": "list_invoice_directory",
                            "keys": [{"company_id": row["company_id"], "invoice_no": row["invoice_no"]}
                                     for row in rows]})
+        if unreferenceable_sql:
+            self.references_blocked = True
+            return []
         if not groups:
             return []
         if self.references_blocked:

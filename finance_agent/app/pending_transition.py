@@ -140,7 +140,7 @@ class PendingRequestError(PendingTransitionError):
 
 
 def request_change(args, previous, *, actor, book, current_id, current_request,
-                   business_continuation=False):
+                   business_continuation=False, target_origin=None):
     """Start an incomplete invoice request; no selection, draft or authority.
 
     Model supplies business slots only. Runtime owns identity, request ID and
@@ -148,7 +148,8 @@ def request_change(args, previous, *, actor, book, current_id, current_request,
     """
     if business_continuation:
         from .business_sources import bind_request
-        return bind_request(args,previous,actor=actor,book=book,current_id=current_id,current_request=current_request)
+        return bind_request(args,previous,actor=actor,book=book,current_id=current_id,current_request=current_request,
+                            target_origin=target_origin)
     from contextlib import closing
     from .responses import request_scope, _QUOTED_DATA
     from .intent_contract import FIELD_LABELS, _field_origins

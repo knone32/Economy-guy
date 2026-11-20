@@ -8,7 +8,7 @@ from copy import deepcopy
 from contextlib import closing
 from hashlib import sha256
 
-from .business_object_sources import amendment_sources
+from .business_object_sources import amendment_sources, unreadable_company_mentions
 from .permissions import check_permission
 from .stage2_schema import open_existing
 from .pending_transition import PendingRequestError
@@ -96,7 +96,18 @@ def suspend(previous, request, current_id, *, actor, book, reason):
     return state
 
 
-def bind_request(args, previous, *, actor, book, current_id, current_request):
+def bind_request(args, previous, *, actor, book, current_id, current_request, target_origin=None):
+    from .intent_contract import BoundIntent
+    reference_scope = {}
+    if target_origin is not None:
+        if (not isinstance(target_origin, BoundIntent) or target_origin.action != 'read'
+                or (target_origin.actor, target_origin.workbook, target_origin.turn_id, target_origin.request)
+                   != (actor, str(book), current_id, current_request)
+                or target_origin.sources.get('source') != 'runtime_display_reference'):
+            raise PendingRequestError('展示对象来源不属于本轮可信会话。', 'DENIED')
+        reference_scope = {key: [target_origin.target[key]]
+                           for key in ('company_id', 'invoice_no', 'year', 'month')}
+        reference_scope['periods'] = [(target_origin.target['year'], target_origin.target['month'])]
     if previous and (previous.get('actor'),previous.get('workbook')) != (actor,str(book)):
         raise PendingRequestError('当前办理不属于这个账号或账簿，请重新发起。','DENIED')
     # A read clarification or arbitrary model pending is not a change source.
@@ -135,6 +146,15 @@ def bind_request(args, previous, *, actor, book, current_id, current_request):
     current, value_scope, ambiguous_literal = amendment_sources(current_request, literal,
         actor=actor, book=book, invoice_candidates=[args.get('invoice_no'), *prior_scope.get('invoice_no', ())],
         metadata=object_origins)
+    if reference_scope:
+        source_text = current_request
+        if literal and source_text.count(literal) == 1:
+            start = source_text.index(literal)
+            source_text = source_text[:start] + ' ' * len(literal) + source_text[start + len(literal):]
+        if (unreadable_company_mentions(source_text, actor=actor, book=book)
+                or any(current.get(key) and list(current[key]) != reference_scope[key]
+                       for key in ('company_id', 'invoice_no', 'year', 'month', 'periods'))):
+            reference_scope = {}
     old_target = prior_scope.get('invoice_no')
     mentioned_invoices = current.get('invoice_no', ())
     # A unique literal may refer to another invoice or frame as data. When
@@ -187,25 +207,31 @@ def bind_request(args, previous, *, actor, book, current_id, current_request):
         fail('同样的未引用内容也出现在办理范围中。请分别说明发票目标和填写文字。',
              'value_scope_overlap','AMBIGUOUS')
     scope_patch = {}
+    scope_origins = {}
     for key, arg in (('company_id','company_id'),('year','target_year'),('month','target_month'),('invoice_no','invoice_no')):
         if arg in args:
-            available = current.get(key) or prior_scope.get(key,())
+            available = current.get(key) or prior_scope.get(key,()) or reference_scope.get(key, ())
             if args[arg] not in available:
                 fail('请明确本次要办理的企业、账期或发票，参数缺少可核对的来源。','object_source')
             if key in {'company_id', 'invoice_no'} and current.get(key) and current[key] != [args[arg]]:
                 fail('尚未唯一选定发票，请明确目标，不会从提及或读取的票据中代选。','object_ambiguity','AMBIGUOUS')
             scope_patch[key] = [args[arg]]
-            state['provenance'][key] = (_origin(current_request,current_id,'current_identifier',str(args[arg]))
+            scope_origins[key] = (_origin(current_request,current_id,'current_identifier',str(args[arg]))
                 if args[arg] in current.get(key,()) else
-                {'kind':'verified_pending_scope','request_id':(previous or {}).get('request_id')})
+                {'kind':'verified_pending_scope','request_id':previous['request_id']} if previous else
+                {'kind':'trusted_reference','reference':deepcopy(target_origin.sources['reference'])})
             if key == 'company_id' and args[arg] in current.get(key, ()):
                 origins = [item for item in object_origins['company_mentions'] if item['company_id'] == args[arg]]
-                state['provenance'][key].update(kind='current_authorized_catalog', literals=origins)
+                scope_origins[key].update(kind='current_authorized_catalog', literals=origins)
         elif key != 'invoice_no' and len(current.get(key,())) == 1:
             scope_patch[key] = list(current[key])
-            state['provenance'][key] = _origin(current_request,current_id,'current_scope')
+            scope_origins[key] = _origin(current_request,current_id,'current_scope')
         elif current.get(key) and len(current[key]) != 1:
             fail('当前提及多个企业、账期或发票，请明确本次办理目标。','object_ambiguity','AMBIGUOUS')
+        elif not prior_scope.get(key) and reference_scope.get(key):
+            scope_patch[key] = list(reference_scope[key])
+            scope_origins[key] = {'kind': 'trusted_reference',
+                                       'reference': deepcopy(target_origin.sources['reference'])}
     if 'invoice_no' not in scope_patch and old_target_conflicts:
         # A different mention is not authorization to select the new key;
         # neither is the omission permission to resurrect the old key.
@@ -213,14 +239,18 @@ def bind_request(args, previous, *, actor, book, current_id, current_request):
     if any(key in scope_patch and scope_patch[key] != prior_scope.get(key)
            for key in ('company_id','year','month')):
         retire_invoice()
-        if 'invoice_no' in args and current.get('invoice_no') != [args['invoice_no']]:
+        if ('invoice_no' in args and current.get('invoice_no') != [args['invoice_no']]
+                and reference_scope.get('invoice_no') != [args['invoice_no']]):
             fail('企业或账期改变后，请重新明确目标发票。','object_frame')
     state['scope'].update(scope_patch)
+    state['provenance'].update(scope_origins)
     if _one(state['scope'],'year') and _one(state['scope'],'month'):
         pair = (_one(state['scope'],'year'),_one(state['scope'],'month'))
         allowed = {tuple(p) for p in current.get('periods',())}
         if not current.get('periods'):
             allowed.update(tuple(p) for p in prior_scope.get('periods',()))
+            if not prior_scope.get('periods'):
+                allowed.update(reference_scope.get('periods', ()))
             if len(prior_scope.get('periods',())) == 1:
                 prior_year, prior_month = prior_scope['periods'][0]
                 if len(current.get('year',())) == 1 and not current.get('month'):

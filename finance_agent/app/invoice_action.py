@@ -14,6 +14,7 @@ from .tool_registry import tool_result
 from .intent_contract import BoundIntent
 from .invoice_batch import plan_invoice_change
 from .tui_intent import excluded_invoice_ids
+from .references import resolve_reference
 
 
 BUSINESS_KEYS = ('company_id', 'invoice_no', 'year', 'month', 'field', 'new_value')
@@ -31,9 +32,24 @@ def public_state(pending):
 def change_invoice(agent, args, previous, request):
     """Return result, pending state, candidate and actual runtime read evidence."""
     try:
+        target_origin = None
+        displays = agent.context.display_ids
+        if (previous is None and all(key in args for key in ('company_id', 'invoice_no'))
+                and not agent.context.references_blocked
+                and isinstance(displays, list) and displays):
+            resolved = resolve_reference(agent.db_path, agent.user_id, None, display_ids=displays)
+            if resolved['status'] == 'SUCCESS':
+                scope = resolved['evidence']['scope']
+                if all(key not in args or args[key] == scope[key]
+                       for key in ('company_id', 'invoice_no', 'year', 'month')):
+                    target_origin = BoundIntent('read', agent.user_id, str(agent.db_path), agent.trace_id,
+                        request, dict(scope), {'source': 'runtime_display_reference',
+                                              'reference': resolved['evidence']['reference']})
+                    agent.trace('business.target_reference', resolved['evidence'])
         internal_args = {({'year':'target_year','month':'target_month'}.get(k,k)):v for k,v in args.items()}
         candidate = request_change(internal_args, previous, actor=agent.user_id, book=agent.db_path,
-            current_id=agent.trace_id, current_request=request, business_continuation=True)
+            current_id=agent.trace_id, current_request=request, business_continuation=True,
+            target_origin=target_origin)
     except PendingTransitionError as error:
         return tool_result(getattr(error, 'status', 'SCOPE_MISMATCH'), error=str(error), evidence={
             'source':'harness_business_action','user_message':str(error),
