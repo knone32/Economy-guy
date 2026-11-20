@@ -29,6 +29,54 @@ def _origin(message, message_id, kind, value=None):
     return result
 
 
+def recover_candidate(pending, *, actor, book):
+    """Recheck saved runtime business data; never restore approval or a draft.
+
+    The caller supplies SessionStore-owned metadata, not transcript/model text.
+    Every continuation still goes through bind_request and fresh invoice reads.
+    """
+    if (type(pending) is not dict or pending.get('business_action') != 'single_invoice'
+            or pending.get('model_managed') is not True
+            or (pending.get('actor'), pending.get('workbook')) != (actor, str(book))):
+        raise ValueError('单票候选的账号或账簿不匹配，请重新发起。')
+    allowed = {'request_id','actor','workbook','request','source_request','scope','change',
+               'model_managed','business_action','provenance','missing_fields','superseded',
+               'on_hold','blocked_reason'}
+    if (set(pending) - allowed or any(type(pending.get(key)) is not str or not pending[key]
+            for key in ('request_id','request','source_request'))
+            or pending['request'] != pending['source_request']
+            or type(pending.get('provenance')) is not dict
+            or type(pending.get('missing_fields')) not in (list,tuple)
+            or not all(type(key) is str for key in pending['missing_fields'])):
+        raise ValueError('未提交的单票候选来源不完整，请重新发起。')
+    for name, keys in (('scope', {'company_id','invoice_no','year','month','periods'}),
+                       ('change', {'field','new_value'})):
+        values = pending.get(name)
+        if type(values) is not dict or set(values) - keys:
+            raise ValueError('单票候选范围无效，请重新发起。')
+        for key, items in values.items():
+            if type(items) not in (list,tuple) or len(items) > 1:
+                raise ValueError('单票候选不唯一，请重新明确。')
+            if key == 'periods':
+                if any(type(pair) not in (list,tuple) or len(pair) != 2
+                       or any(type(value) is not int for value in pair) for pair in items):
+                    raise ValueError('单票候选账期无效。')
+            elif any(type(value) is not (int if key in {'year','month'} else str) for value in items):
+                raise ValueError('单票候选参数无效。')
+    field = _one(pending['change'],'field')
+    if field is not None and field not in {'purpose','remark'}:
+        raise ValueError('单票候选字段无效。')
+    with closing(open_existing(book,readonly=True)) as db:
+        if not db.execute('SELECT 1 FROM users WHERE user_id=?',(actor,)).fetchone():
+            raise PermissionError('当前账号不存在，未恢复单票候选。')
+        for company in pending['scope'].get('company_id',()):
+            if not all(check_permission(db,actor,company,operation).allowed for operation in ('read','modify')):
+                raise PermissionError('当前账号缺少企业读改权限，未恢复单票候选。')
+    state = deepcopy(pending)
+    state['missing_fields'] = tuple(state['missing_fields'])
+    return state
+
+
 def suspend(previous, request, current_id, *, actor, book, reason):
     """Keep the old record for clarification; never execute it by default."""
     if not previous or (previous.get('actor'),previous.get('workbook')) != (actor,str(book)):

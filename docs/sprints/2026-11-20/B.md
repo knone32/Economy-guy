@@ -72,3 +72,26 @@ Ran 1 test in 1.982s ... OK
 ```
 
 0 模型 HTTP、0 付费调用。未重跑 61 项或全量。渲染 SVG 截图和实际 UI 字符/独立 SQL 抓取保存在工作区本地 `business-20261120/b-ticket-ui-evidence/`，不提交验收产物：`01-program-preview`、`02-unknown-visible`、`03-restarted-login`、`04-restarted-original-record`（各有 `.svg` 和 `.json`）。本次证据 request_id 为 `9ab732964a29409bb90c904c763fe13e`。
+
+## P1 修复：未提交单票候选跨进程续办
+
+用户六项第 4 项明确要求继续未完单票，因此把首切片观察到的“待补重启丢失”作为业务缺口修复。开始前合并主控 `30cb025`（无冲突），未改 A 模块或 Agent.ask 主循环。
+
+**首红**：真正子进程通过 Workbench 生成甲企业 2026-09、备注“跨重启待复核”、缺票号的 Runtime 待补并退出；新 App 登录只有原历史“请补充发票编号”，没有活动候选恢复。`test_real_process_restart_recovers_source_then_requires_fresh_preview` 在期望可见“未提交的单票候选”处失败。根因是 SessionStore 原来不保存 Runtime pending，ensure_agent 没有候选恢复入口；不能用历史正文或已提交审计代替它。
+
+最小改动：
+
+- SessionStore 加法迁移 `chats.invoice_pending`，保存 Runtime 单票 pending 原槽位、source_request 和 provenance，封装 actor、稳定 workbook identity、chat。与本轮 finish 的历史记录在同一事务更新；不是模型可调用入口，也没有序列化 draft/confirmation。一次只恢复当前同一对话的唯一候选，不从其他聊天挑选。
+- 只读插话正常结束仍保存同一候选。`begin` 先清除上一快照；若最新轮已经开始但未完成，重开标记中断，不把可能被最新原话撤销的上一快照恢复成活动要求。该保守策略可能要求用户重新明确中断前内容。
+- TUI 登录时按当前身份/账簿重新核对候选结构及企业 read/modify 权限，再解释已知槽和缺项；权限变化则拒绝并撤下候选。用户本轮明确继续且模型选择 `change_invoice` 后才沿原来源核对、对象/ACL、fresh read 和全新正式预览办理。Agent 新增的专用恢复方法只填候选数据，不恢复草稿、确认或自动执行。
+- ask 外的取消同步持久撤下候选：未建 Agent 的 `/cancel`、F4、Agent reset、新对话/切历史、模型上下文分界、进入任务。新对话先撤下旧对话候选再切换，避免清错目标聊天。普通 App 退出/重开保留已结束回合的候选。
+
+实际跨进程 UI 显示：“已找回未提交的单票候选。企业：C001；年：2026；月：9；字段：备注；新内容：跨重启待复核…仍需补充：票号…尚未保存。” 先插入乙企业只读，候选及来源仍逐项相等；随后仅补 F006，预览显示独立新连接改过的“原值　重启后独立原值”和“新值　跨重启待复核”。没有自动批准，测试拒绝预览，成功审计为 0。
+
+新增 3 个测试：真正子进程退出重开+来源不丢+只读插话+fresh 预览；取消反例的 5 个子例（未建 Agent、F4、新对话后重开旧对话、进入预置夹具任务、begin 未 finish 中断）；read/modify 分别撤销及不同 actor 不能恢复。任务由隔离 SQL 预置，不称模型保存或人工管理批准。
+
+最终定向检查：新增 `PendingTicketRecoveryTests` 3 项通过；既有本轮连续补充 7 项、故障 UI 1 项、架构 2 项也通过。开发中一次元组/JSON 规范化导致候选拒存已修正；一次新对话测试过早关闭未 mount 的弹窗，改为等待真实 mount 后通过。未重跑 61 项或全量，原基线失败台账仍保留。
+
+本地公开截图/字符及原候选来源对照：`business-20261120/b-ticket-pending-ui-evidence/05-pending-restored-after-process.{svg,json}`、`06-restored-fresh-preview.{svg,json}`。0 模型 HTTP、0 付费，恢复正例未批准发票。
+
+范围限制：本补丁恢复**已结束回合的 active 单票待补候选**。在正式确认弹窗尚未结束时关闭/崩溃，不把当时的完整 draft、批准或未完成 turn 恢复为可执行要求；需要用户重新明确。未做任意自然语言 NLU 或真人确认验收，也未建立通用长期记忆框架。

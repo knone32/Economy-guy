@@ -191,6 +191,17 @@ class Agent:
         except (OSError, ValueError, sqlite3.Error):
             return False
 
+    def restore_invoice_candidate(self, candidate):
+        """Trusted session adapter only: restore data, never a draft/approval."""
+        from .business_sources import recover_candidate
+        self._check_identity()
+        if (self._active or self._retired or self.pending_intent is not None
+                or self.update_session.drafts or self.update_session.confirmations
+                or self.coordinator.unverified_draft is not None or not self.workbook_available()):
+            raise ValueError('当前会话不能恢复旧单票候选，请重新明确办理要求。')
+        self.pending_intent = recover_candidate(candidate, actor=self.user_id, book=self.db_path)
+        return invoice_business_state(self.pending_intent)
+
     @property
     def update_session(self):
         return self.coordinator.session

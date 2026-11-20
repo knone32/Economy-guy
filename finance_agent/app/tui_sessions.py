@@ -9,6 +9,8 @@ from .responses import explicit_scope, render_reference_error
 from .session_store import SessionBusyError, SessionStore
 from .tasks import task_details
 from .updates import inspect_request
+from .business_sources import recover_candidate
+from .invoice_action import public_state as invoice_business_state
 
 
 BUSINESS_RECORD = "业务记录 / "
@@ -83,6 +85,7 @@ class ConversationUI:
 
     def clear_conversation_history(self):
         self.resumed, self.resume_displays, self.resume_focus = [], [], None
+        self.resume_invoice_pending = None
         self.has_saved_history = False
         self.saved_records = []
 
@@ -173,11 +176,34 @@ class ConversationUI:
             self.resumed.append({'request': '', 'reference_state': reference_state})
         self.resume_displays = self.resume_displays[-64:]
         self.saved_records = self.saved_records[-20:]
+        self.resume_invoice_pending = None
+        if history.get('invoice_pending') is not None:
+            try:
+                self.resume_invoice_pending = recover_candidate(history['invoice_pending'], actor=self.user, book=self.db)
+            except (OSError, ValueError, PermissionError, sqlite3.Error) as error:
+                self.conversation.set_invoice_pending(None)
+                self.chat_message('会话状态', str(error))
+            else:
+                state = invoice_business_state(self.resume_invoice_pending)
+                labels = {'company_id':'企业','year':'年','month':'月','invoice_no':'票号',
+                          'field':'字段','new_value':'新内容','change_choice':'字段及内容',
+                          'invoice_selection':'目标核验'}
+                known = '；'.join(f'{labels[key]}：' + ({'purpose':'用途','remark':'备注'}.get(value,value)
+                    if key == 'field' else str(value)) for key,value in state['known'].items())
+                missing = '、'.join(labels.get(key,key) for key in state['missing_fields'])
+                self.chat_message('会话状态', '已找回未提交的单票候选。' + known + '\n仍需补充：' + missing
+                    + '。请明确继续或更正；之后会重新核权、读取当前发票并给出新的确认预览。尚未保存。')
         if self.has_saved_history:
             for selector in ("#chat-log", "#business-log"):
                 self.workspace_widget(selector).scroll_end(animate=False)
             self.note("已继续上次对话。当前业务状态将在查询时重新读取。")
         return self.has_saved_history
+
+    def retire_invoice_candidate(self):
+        """Persist trusted out-of-turn cancellation, even before Agent creation."""
+        self.resume_invoice_pending = None
+        if self.conversation:
+            self.conversation.set_invoice_pending(None)
 
     def remember_focus(self):
         if self.conversation:
@@ -211,7 +237,9 @@ class ConversationUI:
             evidence = [{**call, "id": self.storage_text(call["id"]),
                          "error": self.storage_text(call["error"]) if call.get("error") else None} for call in calls]
             self.conversation.finish(self.turn_seq, self.turn_display, evidence, self.agent.trace_id, hint, state,
-                                     operation=operation)
+                                     operation=operation,
+                                     invoice_pending=(self.agent.pending_intent if self.agent.pending_intent
+                                         and self.agent.pending_intent.get('business_action') == 'single_invoice' else None))
             self.has_saved_history = True
         except (OSError, ValueError, sqlite3.Error):
             self.notify("本轮历史保存失败。请检查执行记录与当前业务状态。", severity="warning")

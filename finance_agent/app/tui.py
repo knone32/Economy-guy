@@ -160,6 +160,7 @@ class AgentWorkspace(ConversationUI, App):
         self.resume_displays = []
         self.has_saved_history = False
         self.saved_records = []
+        self.resume_invoice_pending = None
         self.session_keys = {}
         self.profile_options = {"template": template, "local": local}
         self.trace_path = trace_path
@@ -393,7 +394,9 @@ class AgentWorkspace(ConversationUI, App):
             return verification
         return None
 
-    def reset_agent(self, *, clear_log):
+    def reset_agent(self, *, clear_log, retire_candidate=True):
+        if retire_candidate:
+            self.retire_invoice_candidate()
         if clear_log:
             self._model_update_verification = None
         elif self.agent and self.agent.coordinator.unverified_draft is not None:
@@ -664,6 +667,18 @@ class AgentWorkspace(ConversationUI, App):
             self.agent.context.restored_turns = list(self.resumed)
             self.agent.context.restore_query_hints(self.resumed)
             self.agent.context.personal_detail = self.conversation.personal_detail()
+            if self.resume_invoice_pending is not None:
+                try:
+                    self.agent.restore_invoice_candidate(self.resume_invoice_pending)
+                except (OSError, ValueError, PermissionError, sqlite3.Error) as error:
+                    self.retire_invoice_candidate()
+                    self.note(str(error))
+                else:
+                    self.agent.messages[0]['content'] += (
+                        '\n当前单票状态来自同账号、同账簿、同对话的未提交业务候选，不是草稿或批准。'
+                        '仅当用户本轮明确继续或更正这一候选时，使用change_invoice表达业务动作；'
+                        '查询或其他话题不要擅自继续。系统仍会重新核权、fresh读取并生成新预览。')
+                    self.resume_invoice_pending = None
         if self.agent.transport:
             trace = self.agent.transport.trace
 
@@ -803,11 +818,12 @@ class AgentWorkspace(ConversationUI, App):
             self.request_new_chat()
         elif chat and self.conversation and self.can_change_conversation():
             try:
+                self.retire_invoice_candidate()
                 self.conversation.switch_chat(chat)
             except (OSError, ValueError, sqlite3.Error):
                 self.note("无法切换对话，请先结束本轮操作或重新打开账簿。")
                 return
-            self.reset_agent(clear_log=True)
+            self.reset_agent(clear_log=True, retire_candidate=False)
             self.clear_conversation_history()
             self.company = self.period = self.read_workspace = None
             self.task_route = self.invoice_route = None
@@ -841,12 +857,13 @@ class AgentWorkspace(ConversationUI, App):
                     and self.can_change_conversation(discard_local_draft=local_only)):
                 if self.conversation:
                     try:
+                        self.retire_invoice_candidate()
                         self.conversation.new_chat(self.read_workspace)
                     except (OSError, ValueError, sqlite3.Error):
                         self.note("无法保存新对话，请重新打开账簿。")
                         return
                 self.clear_conversation_history()
-                self.reset_agent(clear_log=True)
+                self.reset_agent(clear_log=True, retire_candidate=False)
                 prompt.value = ""
                 self.show("chat")
                 self.note("已开始新对话。可输入问题，按 Enter 发送。")
@@ -876,8 +893,13 @@ class AgentWorkspace(ConversationUI, App):
             self.exit()
 
     def action_cancel_edit(self):
+        if not self.busy and self.resume_invoice_pending is not None and self.agent is None:
+            self.retire_invoice_candidate()
+            self.note('已取消当前未提交的单票候选。')
+            return
         if self.agent and not self.busy:
             receipt = self.agent.cancel_update()
+            self.retire_invoice_candidate()
             if self.conversation and self.conversation.chat:
                 try:
                     self.conversation.set_reference_state(self.agent.context.reference_state_snapshot())
@@ -1813,6 +1835,7 @@ class AgentWorkspace(ConversationUI, App):
                     if yes else None)
                 return
             pending_edit = bool(self.agent.pending_edit)
+            self.retire_invoice_candidate()
             outcome = self.agent.focus_task(*route)
         except (ValueError, OSError, sqlite3.Error):
             self.push_screen(Choices("无法恢复待办", [("请核对当前工作库和账号，再重新打开待办。", None)]))

@@ -1,4 +1,4 @@
-"""Independent local transcript store. Business authority stays in the workbook."""
+"""Local transcript and unapproved candidate store; business facts stay in SQLite."""
 from contextlib import closing, contextmanager
 from hashlib import sha256
 import json
@@ -111,7 +111,8 @@ class SessionStore:
                   created TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                   updated TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                   state TEXT NOT NULL DEFAULT 'ACTIVE' CHECK(state IN ('ACTIVE','ARCHIVED')),
-                  focus TEXT, task TEXT, boundary INTEGER NOT NULL DEFAULT 0, reference_state TEXT);
+                  focus TEXT, task TEXT, boundary INTEGER NOT NULL DEFAULT 0, reference_state TEXT,
+                  invoice_pending TEXT);
                 CREATE UNIQUE INDEX IF NOT EXISTS active_chat
                   ON chats(workbook,actor) WHERE state='ACTIVE';
                 CREATE TABLE IF NOT EXISTS turns(
@@ -129,6 +130,8 @@ class SessionStore:
             # The old v1 store is upgraded additively in this same transaction.
             if 'reference_state' not in {r['name'] for r in db.execute('PRAGMA table_info(chats)')}:
                 db.execute('ALTER TABLE chats ADD COLUMN reference_state TEXT')
+            if 'invoice_pending' not in {r['name'] for r in db.execute('PRAGMA table_info(chats)')}:
+                db.execute('ALTER TABLE chats ADD COLUMN invoice_pending TEXT')
             self.chat = self._active(db)
             db.execute("UPDATE turns SET state='INTERRUPTED' WHERE chat=? AND state='RUNNING'", (self.chat,))
 
@@ -216,7 +219,7 @@ class SessionStore:
             seq = db.execute("INSERT INTO turns(chat,state,request,display) VALUES (?,'COMPLETED','',?)",
                              (self.chat, json.dumps([["会话分界",message]], ensure_ascii=False))).lastrowid
             retired = _reference_state_json({'version':1,'retired':True,'invoice_query':None})
-            db.execute("UPDATE chats SET boundary=?,task=NULL,reference_state=?,updated=CURRENT_TIMESTAMP WHERE id=?",
+            db.execute("UPDATE chats SET boundary=?,task=NULL,reference_state=?,invoice_pending=NULL,updated=CURRENT_TIMESTAMP WHERE id=?",
                        (seq,retired,self.chat))
 
     def begin(self, request, mode):
@@ -224,8 +227,32 @@ class SessionStore:
         with self.connection() as db:
             seq = db.execute("INSERT INTO turns(chat,state,request,mode) VALUES (?,'RUNNING',?,?)",
                              (self.chat,redact(request),mode)).lastrowid
-            db.execute("UPDATE chats SET updated=CURRENT_TIMESTAMP WHERE id=?", (self.chat,))
+            # An interrupted new turn must not resurrect a superseded/cancelled
+            # older candidate. A completed turn atomically saves its new state.
+            db.execute("UPDATE chats SET invoice_pending=NULL,updated=CURRENT_TIMESTAMP WHERE id=?", (self.chat,))
             return seq
+
+    def _invoice_pending_json(self, pending):
+        if pending is None:
+            return None
+        pending = json.loads(json.dumps(pending,ensure_ascii=False))
+        if (type(pending) is not dict or pending.get('business_action') != 'single_invoice'
+                or (pending.get('actor'),pending.get('workbook')) != (self.actor,str(self.workbook))
+                or redact(pending) != pending):
+            raise ValueError('Invalid runtime invoice candidate')
+        return json.dumps({'version':1,'actor':self.actor,'workbook':self.identity,
+                           'chat':self.chat,'pending':pending}, ensure_ascii=False)
+
+    def set_invoice_pending(self, pending):
+        """Trusted runtime/idle-cancel setter; never exposed as a model tool."""
+        self.validate()
+        encoded = self._invoice_pending_json(pending)
+        with self.connection() as db:
+            changed = db.execute('''UPDATE chats SET invoice_pending=?,updated=CURRENT_TIMESTAMP
+                WHERE id=? AND workbook=? AND actor=? AND state='ACTIVE' ''',
+                (encoded,self.chat,self.identity,self.actor)).rowcount
+            if changed != 1:
+                raise ValueError('Invoice candidate is outside the active chat')
 
     def set_reference_state(self, state):
         """Trusted UI/backend setter, including idle cancellation with no turn.
@@ -252,7 +279,7 @@ class SessionStore:
             if changed != 1:
                 raise ValueError("Turn is no longer active")
 
-    def finish(self, seq, display, calls, trace, hint, state="COMPLETED", *, operation=None):
+    def finish(self, seq, display, calls, trace, hint, state="COMPLETED", *, operation=None, invoice_pending=None):
         self.validate()
         if state not in {"COMPLETED","INTERRUPTED","UNKNOWN_OUTCOME"}:
             raise ValueError("Invalid terminal turn state")
@@ -267,6 +294,7 @@ class SessionStore:
             evidence = {"tools": evidence, "operation": operation}
         reference_state = (_reference_state_json(hint['reference_state'])
                            if type(hint) is dict and 'reference_state' in hint else None)
+        candidate = self._invoice_pending_json(invoice_pending) if state == 'COMPLETED' else None
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             if not db.execute("SELECT 1 FROM chats WHERE id=? AND workbook=? AND actor=? AND state='ACTIVE'",
@@ -280,12 +308,12 @@ class SessionStore:
                 raise ValueError('Turn is no longer active')
             if reference_state is not None:
                 db.execute('UPDATE chats SET reference_state=? WHERE id=?', (reference_state,self.chat))
-            db.execute("UPDATE chats SET updated=CURRENT_TIMESTAMP WHERE id=?", (self.chat,))
+            db.execute("UPDATE chats SET invoice_pending=?,updated=CURRENT_TIMESTAMP WHERE id=?", (candidate,self.chat))
 
     def history(self):
         self.validate()
         with self.connection() as db:
-            chat = db.execute("SELECT focus,task,boundary,reference_state FROM chats WHERE id=? AND workbook=? AND actor=? AND state='ACTIVE'",
+            chat = db.execute("SELECT focus,task,boundary,reference_state,invoice_pending FROM chats WHERE id=? AND workbook=? AND actor=? AND state='ACTIVE'",
                               (self.chat,self.identity,self.actor)).fetchone()
             if chat is None:
                 raise ValueError('Conversation is outside the active actor/workbook')
@@ -302,8 +330,15 @@ class SessionStore:
         reference_state = json.loads(chat['reference_state']) if chat['reference_state'] else None
         if reference_state is not None:
             _reference_state_json(reference_state)
+        candidate = json.loads(chat['invoice_pending']) if chat['invoice_pending'] else None
+        if candidate is not None:
+            if (type(candidate) is not dict or candidate.get('version') != 1
+                    or (candidate.get('actor'),candidate.get('workbook'),candidate.get('chat'))
+                    != (self.actor,self.identity,self.chat)):
+                raise ValueError('Saved invoice candidate identity changed')
+            candidate = candidate.get('pending')
         return {key: json.loads(chat[key]) if chat[key] else None for key in ("focus","task")} | {
-            'reference_state': reference_state,
+            'reference_state': reference_state, 'invoice_pending':candidate,
             "boundary":chat["boundary"],"turns":rows}
 
     def _read_detail(self, db):
