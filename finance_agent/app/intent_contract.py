@@ -92,6 +92,25 @@ def _valid_target(target, write):
         raise IntentContractError('意图候选字段或新值无效。', status='INVALID_ARGUMENTS')
 
 
+def _period_quote_has_external_carrier(quote, value, slot, request, masked, spans):
+    """An identifier's internal digits cannot become a business period.
+
+    A broad quote wrapping that identifier must retain the same recognized date
+    outside it. Existing nonnumeric language/anchor contracts are not reparsed
+    into a new vocabulary; only known literal date carriers are removed here.
+    """
+    parsed = explicit_scope(quote, include_update_aliases=True)
+    start = request.find(quote)
+    while start >= 0:
+        end = start + len(quote)
+        if not any(left <= start and end <= right for left, right in spans):
+            outside = explicit_scope(masked[start:end], include_update_aliases=True)
+            if value not in parsed.get(slot, ()) or value in outside.get(slot, ()):
+                return True
+        start = request.find(quote, start + 1)
+    return False
+
+
 def validate(raw, *, actor, book, request, turn_id, pending=None, anchor=None):
     if type(raw) is not dict or set(raw) - {'action','pending_request_id','target','sources'}:
         raise IntentContractError('意图候选不得声明身份、授权、确认或提交。', status='INVALID_ARGUMENTS')
@@ -115,14 +134,28 @@ def validate(raw, *, actor, book, request, turn_id, pending=None, anchor=None):
         raise IntentContractError('意图候选每个参数必须有对应来源。', status='INVALID_ARGUMENTS')
     named = request_scope(request, include_update_aliases=True)
     read_companies = None
+    object_spans, masked_request = (), request
     if action == 'read':
         read_companies = read_catalog(book, actor)['companies']
         if target['company_id'] not in {row['company_id'] for row in read_companies}:
             raise IntentContractError('当前账号没有该企业的读取权限。', status='DENIED')
-        registered, _, _ = amendment_sources(request, None, actor=actor, book=book)
-        named = {key: value for key, value in named.items() if key != 'company_id'}
-        if registered.get('company_id'):
-            named['company_id'] = registered['company_id']
+        metadata = {}
+        invoices = (target['invoice_no'],) if 'invoice_no' in target else ()
+        named, _, _ = amendment_sources(request, None, actor=actor, book=book,
+                                        invoice_candidates=invoices, metadata=metadata)
+        # Quotes can legally identify read objects. Their content stays absent
+        # from automatic target scope, but still masks identifier-internal dates.
+        scan = _QUOTED_DATA.sub(lambda match: ' ' + match[0][1:-1] + ' ', request)
+        if scan != request:
+            metadata = {}
+            amendment_sources(scan, None, actor=actor, book=book,
+                              invoice_candidates=invoices, metadata=metadata)
+        object_spans = [item['span'] for item in metadata.get('company_mentions', ())]
+        object_spans.extend(span for occurrences in metadata.get('invoice_mentions', {}).values() for span in occurrences)
+        masked = list(request)
+        for start, end in object_spans:
+            masked[start:end] = ' ' * (end - start)
+        masked_request = ''.join(masked)
     plain = _QUOTED_DATA.sub(' ', request)
     current_fields = _field_origins(plain)
     for slot, value in target.items():
@@ -131,6 +164,11 @@ def validate(raw, *, actor, book, request, turn_id, pending=None, anchor=None):
                 or source.get('kind') not in {'current','pending','anchor','period_offset'}):
             raise IntentContractError('意图候选来源无效。', slot=slot)
         kind = source['kind']
+        if (action == 'read' and slot in {'year', 'month'} and kind in {'current', 'period_offset'}
+                and type(source.get('text')) is str and source['text']
+                and not _period_quote_has_external_carrier(source['text'], value, slot,
+                                                           request, masked_request, object_spans)):
+            raise IntentContractError('账期原话只落在业务对象标识符内，请提供独立账期来源。', slot=slot)
         if kind == 'current':
             if set(source) != {'kind','text'} or type(source['text']) is not str or not source['text'] or source['text'] not in request:
                 raise IntentContractError('意图候选没有当前原文来源。', slot=slot)
