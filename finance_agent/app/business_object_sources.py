@@ -7,13 +7,24 @@ permission, invoice existence, period default, or confirmation.
 from contextlib import closing
 import re
 
-from .controlled_read_scope import catalog
 from .permissions import check_permission
 from .responses import _QUOTED_DATA, _without_quoted_data, request_scope
 from .stage2_schema import open_existing
 
 
 _IDENTIFIER_CHAR = re.compile(r'[A-Za-z0-9_./-]')
+
+
+def _registered_companies(db):
+    return [dict(row) for row in db.execute('SELECT company_id,name,short_name FROM companies ORDER BY company_id')]
+
+
+def readable_companies(book, actor):
+    """Current identity catalog only; unrelated financial-table faults propagate at query time."""
+    with closing(open_existing(book, readonly=True)) as db:
+        db.execute('BEGIN')
+        return [row for row in _registered_companies(db)
+                if check_permission(db, actor, row['company_id'], 'read').allowed]
 
 
 def literal_spans(text, value, *, joint_companies=(), company_component=False):
@@ -67,7 +78,7 @@ def unreadable_company_mentions(request, *, actor, book, include_quoted=False):
     text = (_QUOTED_DATA.sub(lambda match: ' ' + match[0][1:-1] + ' ', request)
             if include_quoted else _without_quoted_data(request))
     with closing(open_existing(book, readonly=True)) as db:
-        companies = [dict(row) for row in db.execute('SELECT company_id,name,short_name FROM companies')]
+        companies = _registered_companies(db)
         matches = registered_company_mentions(text, companies)
         readable = {item['company_id'] for item in matches
                     if check_permission(db, actor, item['company_id'], 'read').allowed}
@@ -94,7 +105,7 @@ def amendment_sources(request, current_value, *, actor, book, invoice_candidates
     its existence. Only fresh authorized get_invoice can establish that fact.
     Quoted data and the uniquely located supplied value cannot supply targets.
     """
-    companies = catalog(book, actor)['companies']
+    companies = readable_companies(book, actor)
     ids = tuple(row['company_id'] for row in companies)
     numbers = {value for value in invoice_candidates if type(value) is str and value}
     if ids:
