@@ -1,5 +1,10 @@
 # 架构职责决定
 
+## R5 当前只读证据与重复展示
+get_invoice可以在同ask中借本轮实际SQL原列身份补缺槽，但必须当前runtime-owned结果、同SQL哈希、VERIFIED、完整未分页未截断、invoices原列，全部合格身份联合键并集唯一且与模型完整目标相等。保持已有字面/期范围/现权冲突；仅call-local controlled_read_scope，不写Context/不入写SOURCES。真实get_invoice仍fresh鉴权读取。默认TRIM只归因业务文本列并将ASCII空格变换保留在条件/口径，不归一化身份/日期/金额。
+
+SQL和freshget可以真实显示同一发票两次，不能因此把一个业务对象变成两个候选。native内部可按同企业/年月/联合键且每来源只有1key判等价；记录全部equivalent_anchor_ids并fresh读最后等价源。global resolver默认和显式ordinal协议不变，不合并不同key/period、多key或坏元数据，也不扩大多行SQL可选集。这不构成人批或提交许可。
+
 ## V3-R4 事实来源修复（15:45）
 SQL只对实际日期字段substr(date,1,4/7)的严格ISO前缀等值/IN补证，按已有授权月份取交集；不支持表达式继续UNKNOWN，别名不定义金额。可选read_scope缺年份只能复用同企业已有合法ScopeProof的唯一当前年份，目录不能单独补年。当前不可读/未知对象是内部否决约束，不能退回旧工作区；同轮独立明确的合法目标仍按真实来源逐项核实，不做否定词路由。
 
