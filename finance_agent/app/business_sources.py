@@ -8,7 +8,7 @@ from copy import deepcopy
 from contextlib import closing
 from hashlib import sha256
 
-from .responses import amendment_scope
+from .business_object_sources import amendment_sources
 from .permissions import check_permission
 from .stage2_schema import open_existing
 from .pending_transition import PendingRequestError
@@ -131,7 +131,10 @@ def bind_request(args, previous, *, actor, book, current_id, current_request):
     # early rejection cannot reactivate the old target in a later turn.
     reference = args.get('value_ref','auto')
     literal = args.get('new_value') if reference == 'auto' else None
-    current, value_scope, ambiguous_literal = amendment_scope(current_request,literal)
+    object_origins = {}
+    current, value_scope, ambiguous_literal = amendment_sources(current_request, literal,
+        actor=actor, book=book, invoice_candidates=[args.get('invoice_no'), *prior_scope.get('invoice_no', ())],
+        metadata=object_origins)
     old_target = prior_scope.get('invoice_no')
     mentioned_invoices = current.get('invoice_no', ())
     # A unique literal may refer to another invoice or frame as data. When
@@ -189,12 +192,15 @@ def bind_request(args, previous, *, actor, book, current_id, current_request):
             available = current.get(key) or prior_scope.get(key,())
             if args[arg] not in available:
                 fail('请明确本次要办理的企业、账期或发票，参数缺少可核对的来源。','object_source')
-            if key == 'invoice_no' and current.get(key) and current[key] != [args[arg]]:
+            if key in {'company_id', 'invoice_no'} and current.get(key) and current[key] != [args[arg]]:
                 fail('尚未唯一选定发票，请明确目标，不会从提及或读取的票据中代选。','object_ambiguity','AMBIGUOUS')
             scope_patch[key] = [args[arg]]
             state['provenance'][key] = (_origin(current_request,current_id,'current_identifier',str(args[arg]))
                 if args[arg] in current.get(key,()) else
                 {'kind':'verified_pending_scope','request_id':(previous or {}).get('request_id')})
+            if key == 'company_id' and args[arg] in current.get(key, ()):
+                origins = [item for item in object_origins['company_mentions'] if item['company_id'] == args[arg]]
+                state['provenance'][key].update(kind='current_authorized_catalog', literals=origins)
         elif key != 'invoice_no' and len(current.get(key,())) == 1:
             scope_patch[key] = list(current[key])
             state['provenance'][key] = _origin(current_request,current_id,'current_scope')

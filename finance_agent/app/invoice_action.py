@@ -49,12 +49,14 @@ def change_invoice(agent, args, previous, request):
             'source':'harness_business_action','user_message':message,
             'business_state_updated':True,'business_authorization':False}), candidate, None, list(reads)
     known = public_state(candidate)['known']
-    if any(key not in known for key in BUSINESS_KEYS):
+    def waiting(reads=()):
         question = ('请明确要修改的字段和对应内容，或确认是否替换上一要求；原要求暂不继续。'
                     if candidate.get('blocked_reason') == 'ambiguous_business_choice' else None)
         return tool_result('WAITING_USER', data=public_state(candidate), evidence={
             'source':'harness_business_action', 'missing_fields':list(candidate['missing_fields']),
-            'user_message':question, 'business_authorization':False}), candidate, None, []
+            'user_message':question, 'business_authorization':False}), candidate, None, list(reads)
+    if any(key not in known for key in ('company_id', 'invoice_no')):
+        return waiting()
     if not agent.workbook_available():
         return stopped('ERROR','账簿身份已变化，未生成预览。')
     company, number = known['company_id'], known['invoice_no']
@@ -75,11 +77,22 @@ def change_invoice(agent, args, previous, request):
     read = tool_result('SUCCESS', data=row, evidence={'source':'current_sqlite', 'scope':scope})
     agent.trace('business.invoice_read', {'arguments':{'company_id':company,'invoice_no':number}, 'result':read})
     reads = [('get_invoice', read)]
-    if (day.year, day.month) != (known['year'], known['month']):
+    if any(key in known and known[key] != value for key, value in (('year', day.year), ('month', day.month))):
         candidate['scope'].pop('invoice_no',None)
         candidate['provenance'].pop('invoice_no',None)
         candidate['missing_fields'] = ('invoice_no',)
         return stopped('SCOPE_MISMATCH','实际发票账期与本次办理要求不一致，请重新核对目标票号。',reads)
+    for key, value in (('year', day.year), ('month', day.month)):
+        if key not in known:
+            candidate['scope'][key] = [value]
+            candidate['provenance'][key] = {'kind': 'current_sqlite', 'company_id': company,
+                'invoice_no': number, 'invoice_date': row['invoice_date'], 'turn_id': agent.trace_id}
+    candidate['scope']['periods'] = [(day.year, day.month)]
+    candidate['missing_fields'] = tuple(key for key in BUSINESS_KEYS
+        if len(candidate.get('change' if key in ('field', 'new_value') else 'scope', {}).get(key, ())) != 1)
+    known = public_state(candidate)['known']
+    if candidate['missing_fields'] or candidate.get('blocked_reason') == 'ambiguous_business_choice':
+        return waiting(reads)
     # This witness is constructed by trusted runtime after request_change has
     # validated every supplied/inherited slot. It is never model-supplied data.
     witness = BoundIntent('amend', agent.user_id, str(agent.db_path), agent.trace_id,
