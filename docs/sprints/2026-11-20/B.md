@@ -48,3 +48,27 @@ Ran 61 tests ... FAILED (failures=16, errors=1)
 - 新故障测试没有挂载 TUI，`UNKNOWN_OUTCOME` 只断言 Agent 真实回执。相关旧 `test_unknown_cancel` 实际运行了 TUI 模拟流程，但不把它合并表述为本轮故障已完成用户可见 UI 验收。
 - 单票会话暂缓的跨进程续办没有实现/宣称；完整 UI 恢复、最终可见未知状态与真人批准窗口留主控单独验收。
 - 未运行全量测试，未扩大任务/偏好或最终答复改动范围；`git diff --check` 通过。
+
+## 独立补证：实际 Workbench 故障页面与 App 重开
+
+追加任务只新增 `tests/test_ticket_fault_ui_20261120.py` 一个 Textual Pilot 测试，未改产品源码。以下补证替代上面首切片“故障没有挂载 UI / 完整 UI 重启恢复未验”的具体缺口；真人批准和真实模型仍未验。
+
+入口为真实 `AgentWorkspace`、150×42 的头显测试、登录 U001、脚本 `change_invoice`、实际单票 Approval 弹窗。**测试程序模拟按下确认按钮**，不是人工批准或桌面真实点击。独立临时官方虚构库触发器计数；故障注入函数先用独立 SQL 确认真实事务+审计已经完成，再在 `_readback` 抛一次异常；`assert_called_once()` 验证仅注入一次。
+
+实际可见结果：
+
+- 对话：“发票修改结果未知。请先核查审计，再决定是否重试。”
+- 业务卡：“成功 0…结果未知 1…”、“结果未知，请核查审计”；原值到新值仍可见。
+- 页脚：“提交结果未知，请先查看执行记录再决定是否重试”。上述区域断言没有“保存成功”或“已保存并回读”。
+- 保持未知结果时，用同 request_id/fingerprint 再提交被守卫拦截；Workbench 再发送 `/edit` 也不出现确认屏、不产生草稿，仍只有 **1 次字段 UPDATE、1 条成功审计**。
+- 关闭第一个 App，再创建新 App 并重新登录（同一测试进程，**不是操作系统跨进程重启验收**）。实际恢复器只读核查同 request_id，审计 COMMITTED 且 fresh `current_matches=true`。登录页内历史显示：“已在 SQLite 成功审计中核实上次提交。请查看当前发票。”
+- 打开并展开真实执行记录页，显示原 request_id、成功审计及原/新值。标题保守保留“审计已证实提交 · 回读未核实”，历史操作仍标结果未知；未把历史未知卡改写成新的提交。新 Agent 会话 ID 不同，旧草稿/确认/pending 均未继承，旧 request 提交为 DENIED；SQL计数仍不变。
+
+首个测试驱动错误是直接 `select_pane` 只切页、没有刷新记录组件而产生 `NoMatches: operation-1`。已改成与工作台导航一致的 `show('records')` 刷新入口；没有产品阻断或源码修复。
+
+```text
+python -m unittest tests.test_ticket_fault_ui_20261120 -v
+Ran 1 test in 1.982s ... OK
+```
+
+0 模型 HTTP、0 付费调用。未重跑 61 项或全量。渲染 SVG 截图和实际 UI 字符/独立 SQL 抓取保存在工作区本地 `business-20261120/b-ticket-ui-evidence/`，不提交验收产物：`01-program-preview`、`02-unknown-visible`、`03-restarted-login`、`04-restarted-original-record`（各有 `.svg` 和 `.json`）。本次证据 request_id 为 `9ab732964a29409bb90c904c763fe13e`。
