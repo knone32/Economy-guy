@@ -549,6 +549,8 @@ class Agent:
         rejected_reply = None
         model_change = None
         scope_repair_used = False
+        business_repair_source = None
+        business_repair_notice = None
         pending_choice = choice_reply = choice_target = None
         if (can_continue_query and pending and "invoice_choice" in pending
                 and pending["actor"] == self.user_id and pending["workbook"] == str(self.db_path)):
@@ -804,6 +806,14 @@ class Agent:
             if hint is not None and not probe_reference and not recent_semantics:
                 reference = self.context.resolve(query_text, explicit=explicit)
         reference_context = None
+        if reference and not reference["ok"] and active_pending and active_pending.get('business_action') == 'single_invoice':
+            pending_scope = active_pending['scope']
+            if all(len(pending_scope.get(key, ())) == 1 for key in ('company_id','invoice_no')):
+                # A failed display/read reference is not a reason to bypass
+                # the model or erase a known target of a pending amendment.
+                # change_invoice still validates scope and rereads the row.
+                self.trace('reference.deferred_to_business_turn', {'status':reference['status']})
+                reference = None
         if reference and reference["ok"]:
             self.context.accept_reference(reference['evidence'])
             if selections is not None:
@@ -1878,6 +1888,13 @@ class Agent:
             # The same set is advertised to the model, scheduler and dispatcher.
             turn_tools = [tool for tool in turn_tools if tool["function"]["name"] in self.allowed_tools]
             request_tools = [] if pending_repair_active or read_finish_active or budget_close_active else turn_tools
+            if business_repair_source is not None:
+                request_tools = [t for t in request_tools if t['function']['name'] == 'change_invoice']
+                context.append({'role':'system','content':
+                    '上一次 change_invoice 把历史内容当作本轮新值，未生成预览。只可重新决定一次该办理。'
+                    '重新判断本轮用户原话：仅在用户仍要使用上一有效内容时明确传 value_ref=previous，并省略 new_value；'
+                    '若用户更正内容，传本轮原文的新值；若不明确，追问或 relation=clarify。'
+                    '本轮给出的目标编号仍需提供，不新增查询或其他写操作。'})
             permitted = {tool["function"]["name"] for tool in request_tools}
             if pending_repair_active:
                 context.append({'role': 'system', 'content':
@@ -1957,11 +1974,11 @@ class Agent:
                         self.trace('tool_result', {'request':forbidden_call,'result':outcome})
                     answer = render_information(read_results)
                 else:
-                    closing = parse_final(reply.get('content'))
-                    if closing and closing.get('turn_action') == 'stop':
+                    closing_reply = parse_final(reply.get('content'))
+                    if closing_reply and closing_reply.get('turn_action') == 'stop':
                         self.cancel_update()
-                    answer = (select_answer(closing.get('answer'), answer_catalog(read_results,self.write_receipt,self.trace_id))
-                              if closing else None) or render_information(read_results)
+                    answer = (select_answer(closing_reply.get('answer'), answer_catalog(read_results,self.write_receipt,self.trace_id))
+                              if closing_reply else None) or render_information(read_results)
                 return finish(answer, store=False, category='database_query', chat_notice=answer)
             try:
                 declared_intent = intent_sidecar(reply.get('content'))
@@ -2003,6 +2020,14 @@ class Agent:
                     read_results.append((rejected_call['function'].get('name'), outcome))
                 execution.stop(error.status)
                 return finish(str(error) + '\n本轮未执行该候选，也没有提交修改。', store=False, category='clarification')
+            if business_repair_source is not None and len(calls) != 1:
+                for rejected in calls:
+                    outcome = tool_result('DENIED', error='办理补正只接受一个业务动作。')
+                    self.messages.append({'role':'tool','tool_call_id':rejected['id'],
+                                          'content':json.dumps(outcome,ensure_ascii=False)})
+                    self.trace('tool_result', {'request':rejected,'result':outcome})
+                execution.stop('WAITING_USER')
+                return finish(business_repair_notice, category='clarification', chat_notice=business_repair_notice)
             if not calls:
                 if self.update_session.explicit_edit_only:
                     missing = edit_scope_error(self.update_session.expected_scope or {})
@@ -2458,9 +2483,23 @@ class Agent:
                                 if result is None and self.user_id != actor:
                                     result = tool_result('DENIED', error='本轮身份已变化，未执行业务动作。')
                                 if result is None:
+                                    before = active_pending
+                                    if (business_repair_source is not None
+                                            and business_args.get('value_ref') == 'previous'):
+                                        before = business_repair_source
                                     result, next_pending, planned, runtime_reads = execute_invoice_action(
-                                        self, business_args, active_pending, current_request)
+                                        self, business_args, before, current_request)
                                     read_results.extend(runtime_reads)
+                                    if (business_repair_source is None and before and len(calls) == 1
+                                            and result.get('evidence',{}).get('needs_value_reference_decision')
+                                            and execution.model_requests < min(execution.block_limit,self.max_requests)
+                                            and execution.actual_tools < self.max_tools):
+                                        # The persisted state is still retired below. Carry the
+                                        # previous source only for this one explicit same-turn choice.
+                                        business_repair_source = before
+                                        business_repair_notice = result['evidence']['user_message']
+                                        repair_scope = True
+                                        self.trace('business.value_reference_repair', {'retry':1,'physical_write':False})
                                     if (result['status'] in {'WAITING_USER','WAITING_CONFIRMATION'}
                                             or result.get('evidence',{}).get('business_state_updated')):
                                         self.pending_intent = active_pending = next_pending
@@ -2655,7 +2694,7 @@ class Agent:
                         if fn.get("name") == "prepare_invoice_update":
                             self.coordinator.record_preparation(result)
                         if repair_scope:
-                            # No draft was prepared. Only this bounded schema repair may continue.
+                            # No draft was prepared. A bounded correction may continue.
                             pass
                         elif result["status"] == "INVALID_ARGUMENTS":
                             ask_after_plan = (summary_needs_period and fn["name"] == "set_schedule"

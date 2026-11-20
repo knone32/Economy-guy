@@ -102,6 +102,24 @@ class AgentTests(DatabaseTestCaseMixin, unittest.TestCase):
         self.assertFalse(any(m["role"] == "tool" for m in agent.messages))
         self.assertIn("9622.06", agent.ask("2026年9月"))
 
+    def test_missing_summary_period_checks_acl_before_model_dispatch(self):
+        def unexpected_model(*_):
+            self.fail("Missing-period or denied query should not dispatch a model")
+
+        for actor, company, stop in (("U001", "C001", "WAITING_USER"),
+                                      ("U002", "C002", "DENIED")):
+            with self.subTest(actor=actor, company=company):
+                agent = Agent(actor, self.db_path, unexpected_model, mode="mock")
+                answer = agent.ask(f"查询{company}的发票价税合计 银行收入和支出 并且说明统计依据")
+                self.assertEqual(agent.last_response["execution"]["stop_reason"], stop)
+                self.assertEqual(agent.last_response["execution"]["model_requests"], 0)
+                self.assertEqual(agent.last_response["tool_results"], ())
+                if stop == "WAITING_USER":
+                    self.assertEqual(answer, "请补充年份、月份。")
+                else:
+                    self.assertIn("权限", answer)
+                    self.assertIsNone(agent.pending_intent)
+
     def test_plain_finance_summary_asks_for_period_before_model_dispatch(self):
         from app.stage3_schema import migrate
 

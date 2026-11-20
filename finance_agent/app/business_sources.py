@@ -8,7 +8,7 @@ from copy import deepcopy
 from contextlib import closing
 from hashlib import sha256
 
-from .responses import request_scope
+from .responses import amendment_scope
 from .permissions import check_permission
 from .stage2_schema import open_existing
 from .pending_transition import PendingRequestError
@@ -79,9 +79,32 @@ def bind_request(args, previous, *, actor, book, current_id, current_request):
     elif previous and previous.get('superseded'):
         state['superseded'] = deepcopy(previous['superseded'])
 
+    # Identify a contradicted invoice independently of the model patch, so an
+    # early rejection cannot reactivate the old target in a later turn.
+    reference = args.get('value_ref','auto')
+    literal = args.get('new_value') if reference == 'auto' else None
+    current, value_scope, ambiguous_literal = amendment_scope(current_request,literal)
+    old_target = prior_scope.get('invoice_no')
+    mentioned_invoices = current.get('invoice_no', ())
+    # A unique literal may refer to another invoice or frame as data. When
+    # it could also be a newly supplied target, omitting the target isn't an
+    # affirmative choice to continue the old one.
+    needs_target_choice = bool(old_target and not mentioned_invoices and
+        ('invoice_no' not in args or args['invoice_no'] not in old_target) and
+        any(value_scope.get(k) and value_scope[k] != prior_scope.get(k)
+            for k in ('invoice_no','company_id','year','month')))
+    old_target_conflicts = bool(old_target and (ambiguous_literal or needs_target_choice or
+        (mentioned_invoices and list(mentioned_invoices) != old_target)
+        or any(current.get(k) and current[k] != prior_scope.get(k)
+               for k in ('company_id','year','month'))))
+
+    def retire_invoice():
+        state['scope'].pop('invoice_no',None)
+        state['provenance'].pop('invoice_no',None)
+
     scope_verified = False
 
-    def fail(message, reason, status='SCOPE_MISMATCH'):
+    def fail(message, reason, status='SCOPE_MISMATCH', *, repairable_reference=False):
         # A rejected replacement cannot resurrect the superseded field/value.
         if previous or relation == 'clarify':
             if not scope_verified:
@@ -92,19 +115,26 @@ def bind_request(args, previous, *, actor, book, current_id, current_request):
                         state['provenance'][key] = deepcopy(origin)
                     else:
                         state['provenance'].pop(key,None)
+                if old_target_conflicts:
+                    retire_invoice()
             state['change'] = {'field':[field]} if field else {}
             state['blocked_reason'] = reason
             state['superseded'] = {'change':old_change,
                                    'request_id':(previous or {}).get('request_id'),
                                    'provenance':deepcopy((previous or {}).get('provenance',{}))}
-            state['missing_fields'] = tuple(k for k in ('field','new_value') if k not in state['change'])
+            state['missing_fields'] = tuple(
+                [k for k in ('company_id','invoice_no','year','month') if len(state['scope'].get(k,())) != 1]
+                + [k for k in ('field','new_value') if k not in state['change']])
             error = PendingRequestError(message + ' 上一次修改不会继续执行，请明确本次要求。',status)
             error.pending_state, error.state_updated = state, True
             error.reason = reason
+            error.repairable_reference = repairable_reference
             raise error
         raise PendingRequestError(message,status)
 
-    current = request_scope(current_request,include_update_aliases=True)
+    if ambiguous_literal:
+        fail('同样的未引用内容也出现在办理范围中。请分别说明发票目标和填写文字。',
+             'value_scope_overlap','AMBIGUOUS')
     scope_patch = {}
     for key, arg in (('company_id','company_id'),('year','target_year'),('month','target_month'),('invoice_no','invoice_no')):
         if arg in args:
@@ -122,9 +152,13 @@ def bind_request(args, previous, *, actor, book, current_id, current_request):
             state['provenance'][key] = _origin(current_request,current_id,'current_scope')
         elif current.get(key) and len(current[key]) != 1:
             fail('当前提及多个企业、账期或发票，请明确本次办理目标。','object_ambiguity','AMBIGUOUS')
+    if 'invoice_no' not in scope_patch and old_target_conflicts:
+        # A different mention is not authorization to select the new key;
+        # neither is the omission permission to resurrect the old key.
+        retire_invoice()
     if any(key in scope_patch and scope_patch[key] != prior_scope.get(key)
            for key in ('company_id','year','month')):
-        state['scope'].pop('invoice_no',None)
+        retire_invoice()
         if 'invoice_no' in args and current.get('invoice_no') != [args['invoice_no']]:
             fail('企业或账期改变后，请重新明确目标发票。','object_frame')
     state['scope'].update(scope_patch)
@@ -154,7 +188,6 @@ def bind_request(args, previous, *, actor, book, current_id, current_request):
         state['missing_fields'] = ('change_choice',)
         state['blocked_reason'] = 'ambiguous_business_choice'
         return state
-    reference = args.get('value_ref','auto')
     if reference == 'clear':
         if args.get('new_value','') != '' or not current_request.strip():
             fail('清空与填写内容不能同时指定，请明确本次内容。','value_ambiguity','AMBIGUOUS')
@@ -171,7 +204,13 @@ def bind_request(args, previous, *, actor, book, current_id, current_request):
         if value and value in current_request:
             origin = _origin(current_request,current_id,'current_literal',value)
         else:
-            fail('本次新内容缺少可核对的原文或有效待补来源，请明确填写内容。','new_value_source','AMBIGUOUS')
+            # A model may have echoed a server-owned value while making a
+            # valid patch. Never accept the echo itself as evidence. Only this
+            # exact, same-field case can request a fresh semantic decision.
+            repairable = (reference == 'auto' and not replacement and value == old_value
+                          and field is not None and relation == 'update')
+            fail('本次新内容缺少可核对的原文或有效待补来源，请明确填写内容。',
+                 'new_value_source','AMBIGUOUS',repairable_reference=repairable)
     elif not replacement and field == _one(old_change,'field') and old_value is not None:
         value = old_value
         origin = {'kind':'verified_pending','request_id':previous['request_id'],

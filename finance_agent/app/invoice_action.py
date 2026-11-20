@@ -39,6 +39,7 @@ def change_invoice(agent, args, previous, request):
             'source':'harness_business_action','user_message':str(error),
             'reason':getattr(error,'reason','source_or_identity'),
             'business_state_updated':getattr(error,'state_updated',False),
+            **({'needs_value_reference_decision':True} if getattr(error,'repairable_reference',False) else {}),
             'business_authorization':False}), getattr(error,'pending_state',previous), None, []
     candidate['business_action'] = 'single_invoice'
     def stopped(status, message, reads=()):
@@ -66,6 +67,7 @@ def change_invoice(agent, args, previous, request):
         return stopped('ERROR','无法读取当前账簿，未生成预览。')
     if row is None:
         candidate['scope'].pop('invoice_no',None)
+        candidate['provenance'].pop('invoice_no',None)
         candidate['missing_fields'] = ('invoice_no',)
         return stopped('NO_DATA','明确指定的发票不存在，请核对票号；未选择替代对象。')
     day = date.fromisoformat(row['invoice_date'])
@@ -75,6 +77,7 @@ def change_invoice(agent, args, previous, request):
     reads = [('get_invoice', read)]
     if (day.year, day.month) != (known['year'], known['month']):
         candidate['scope'].pop('invoice_no',None)
+        candidate['provenance'].pop('invoice_no',None)
         candidate['missing_fields'] = ('invoice_no',)
         return stopped('SCOPE_MISMATCH','实际发票账期与本次办理要求不一致，请重新核对目标票号。',reads)
     # This witness is constructed by trusted runtime after request_change has

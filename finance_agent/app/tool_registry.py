@@ -77,7 +77,7 @@ TOOLS = [tool for tool in TOOLS if tool["function"]["name"] in ANNUAL | {
     "check_missing_purpose", "count_invoice_fields", "get_applicable_rules", "list_rule_versions", "prepare_invoice_update",
     "list_tasks", "manage_task", "manage_preference", "manage_display_preference", "resolve_invoice_reference", "resolve_recent_invoice", "propose_invoice_changes", "change_invoice", "set_schedule"}]
 DESCRIPTIONS = {
-    "change_invoice":"单张发票修改的业务办理入口。只传用户已知或更正的企业/票号/年月/字段/原话新值；未知项省略即可，系统保存已验证信息并追问。后续补充仍调用此工具，例如只提供invoice_no；已知参数也可重复提供，合同不变。系统负责继承来源、权限、fresh读取和正式预览；不需要模型先查询或提供selection_id/pending_id/action/mode。不会提交，预览必须由用户实际确认。普通查询不要调用。批量和规则选集仍用原提案工具。",
+    "change_invoice":"单张发票修改的业务办理入口。只传本轮补充或更正的企业/票号/年月/字段/原话新值；未知和未更正的槽位都省略。系统保存已验证信息并追问。后续补票号只提供invoice_no；不要把“已知信息”整体复制到工具参数。若本轮原话新值提到其他票据或账期而目标仍是待补中的旧票，显式提供旧票号以区分内容和办理目标。系统负责继承来源、权限、fresh读取和正式预览；不需要模型先查询或提供selection_id/pending_id/action/mode。不会提交，预览必须由用户实际确认。普通查询不要调用。批量和规则选集仍用原提案工具。",
     "query_business_sql":"普通只读业务分析首选。在按可信企业和账期隔离的账簿快照上执行单条 SELECT 或只读 WITH。支持筛选、分组、JOIN 和子查询。金额原值是整数分；is_blank(value) 检查 NULL、空串与纯空白。规则判定仍用规则工具。",
     "get_annual_finance_summary":"仅用于可信的完整年度，分别汇总发票、银行收入和银行支出。",
     "list_annual_blank_purpose":"仅用于可信的完整年度，按页列出用途字段为空的发票；不判定必填或合规。",

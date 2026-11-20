@@ -18,7 +18,32 @@ def request_scope(text, include_update_aliases=False):
     A quoted value can still be saved verbatim by the existing edit coordinator.
     It cannot silently grant a second company, invoice or period to that edit.
     """
-    return explicit_scope(_QUOTED_DATA.sub(lambda m: ' ' * len(m[0]), text), include_update_aliases)
+    return explicit_scope(_without_quoted_data(text), include_update_aliases)
+
+
+def _without_quoted_data(text):
+    return _QUOTED_DATA.sub(lambda m: ' ' * len(m[0]), text)
+
+
+def amendment_scope(text, current_value):
+    """Return scope evidence, scope carried by the value, and any overlap.
+
+    When a scope-bearing value occurs more than once outside quotes, it is not
+    safe to assign all occurrences to the value or assume one is the target.
+    """
+    unquoted = _without_quoted_data(text)
+    ambiguous_literal = False
+    value_scope = {}
+    if (current_value and current_value in unquoted
+            and not any(match[0][1:-1] == current_value for match in _QUOTED_DATA.finditer(text))
+            and (value_scope := explicit_scope(current_value, include_update_aliases=True))):
+        if unquoted.count(current_value) > 1:
+            ambiguous_literal = True
+        else:
+            start = unquoted.index(current_value)
+            unquoted = (unquoted[:start] + ' ' * len(current_value)
+                        + unquoted[start + len(current_value):])
+    return explicit_scope(unquoted, include_update_aliases=True), value_scope, ambiguous_literal
 
 
 def merge_pending_scope(previous, current_text, declared=None, read_results=()):
