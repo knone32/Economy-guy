@@ -38,7 +38,7 @@ from .context import ContextBuilder, ContextLimitError, RELATIVE_PERIOD, referen
 from .scheduler import BudgetPolicy, TurnExecution
 from .thinking_protocol import ThinkingProtocol, ProtocolError
 from .model_config import resolve_connection,ProfileError
-from .model_transport import ModelTransport
+from .model_transport import ModelTransport, ModelOutputTruncated
 from .permissions import check_permission
 from .queries import available_periods, QueryError
 from .rules import check_displayed_purpose, RuleError
@@ -1965,6 +1965,15 @@ class Agent:
                     raise ValueError("重复工具请求编号")
                 if (pending_repair_active or read_finish_active) and calls:
                     raise ValueError('受限最终答复阶段禁止业务工具分发')
+            except ModelOutputTruncated:
+                execution.stop('OUTPUT_TRUNCATED')
+                self.trace('error', {'category':'model_output_truncated'})
+                notice = ('模型输出达到本次输出上限而截断，未形成可用回复；'
+                          '未依据这条截断回复执行工具或保存修改。'
+                          '\n请缩小本次请求范围后重试；已有操作以实际回执为准。'
+                          '\n操作回执：' + self.write_receipt['message'])
+                return finish('\n'.join(filter(None, (render_information(read_results), notice))),
+                              store=False, category='database_query' if read_results else 'unverified', chat_notice=notice)
             except BudgetExceeded as error:
                 self.trace('budget.refused', error.metadata())
                 budget_refusal = error.metadata()

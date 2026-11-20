@@ -15,6 +15,10 @@ class ModelRequestError(RuntimeError):
     """SDK异常正文可能含凭据/业务输入，不向普通日志或CLI传播。"""
 
 
+class ModelOutputTruncated(ModelRequestError):
+    """A received completion hit its output limit; never dispatch its partial message."""
+
+
 _ERROR_CODES = {
     "invalid_request_error", "invalid_parameter", "invalid_value", "unsupported_parameter", "unknown_parameter",
     "invalid_model", "model_not_found", "invalid_api_key", "permission_denied", "rate_limit_exceeded",
@@ -42,6 +46,7 @@ _CATEGORY_LABELS = {
     "RESPONSE_PROTOCOL": "HTTP 成功，但回复格式不符合 Chat Completions 协议",
     "HTTP_ERROR": "服务商拒绝了请求", "SDK_OR_RESPONSE_ERROR": "SDK 请求或响应处理失败",
     "BUDGET_EXCEEDED": "模型请求预算不足，尚未确认业务完成",
+    "OUTPUT_TRUNCATED": "模型输出达到本次输出上限而截断，未形成可用回复",
 }
 _PHASE_LABELS = {"agent": "对话请求", "connection": "基础连接", "function_calling": "工具检测"}
 
@@ -280,8 +285,21 @@ class ModelTransport:
                 if raw_response:
                     http_status = response.status_code
                     response = response.parse()
-                message = response.choices[0].message.model_dump(exclude_none=True)
+                choice = response.choices[0]
+                finish_reason = getattr(choice, 'finish_reason', None)
+                finish_reason = finish_reason if type(finish_reason) is str and finish_reason in {
+                    'stop', 'length', 'tool_calls', 'function_call', 'content_filter'} else None
                 response_model = getattr(response, "model", None)
+                usage=getattr(response,'usage',None)
+                raw=usage if type(usage) is dict else usage.model_dump() if usage is not None else {}
+                raw=raw if type(raw) is dict else {}
+                counts={k:raw.get(k) if type(raw.get(k)) is int and raw[k]>=0 else None for k in ('prompt_tokens','completion_tokens','total_tokens')}
+                details = raw.get('completion_tokens_details')
+                reasoning = details.get('reasoning_tokens') if type(details) is dict else None
+                reasoning_tokens = reasoning if type(reasoning) is int and reasoning >= 0 else None
+                if finish_reason == 'length':
+                    raise ModelOutputTruncated('模型输出截断')
+                message = choice.message.model_dump(exclude_none=True)
                 if not self.protocol.enabled:
                     message = self.protocol.normalize(message)
                 # An echo of the bound credential must never reach the Agent, a probe or Trace.
@@ -292,19 +310,28 @@ class ModelTransport:
                     not isinstance(message.get("content"), str) and not message.get("tool_calls")
                 ):
                     raise ValueError("Invalid assistant message")
-                usage=getattr(response,'usage',None)
-                raw=usage if type(usage) is dict else usage.model_dump() if usage is not None else {}
-                raw=raw if type(raw) is dict else {}
-                counts={k:raw.get(k) if type(raw.get(k)) is int and raw[k]>=0 else None for k in ('prompt_tokens','completion_tokens','total_tokens')}
             self.successes+=1
             self.last_response = {**request, 'attempt':self.attempts,'success':True,
                 'http_category':'SDK_SUCCESS','http_status':http_status,
                 'response_model':response_model if type(response_model) is str and _MODEL_ID.fullmatch(response_model)
                 and redact(response_model) == response_model else None,
                 'usage':counts,'usage_status':'KNOWN' if all(v is not None for v in counts.values()) else 'UNKNOWN',
+                'finish_reason':finish_reason, 'reasoning_tokens':reasoning_tokens,
                 'latency_ms':round((time.perf_counter()-started)*1000,3)}
             self.emit("api.response", self.last_response)
             return message
+        except ModelOutputTruncated:
+            self.failures += 1
+            self.last_response = {**request, 'attempt':self.attempts, 'success':False,
+                'http_category':'SDK_SUCCESS', 'http_status':http_status, 'physical_request_sent':True,
+                'error_category':'OUTPUT_TRUNCATED', 'finish_reason':'length',
+                'response_model':response_model if type(response_model) is str and _MODEL_ID.fullmatch(response_model)
+                and redact(response_model) == response_model and (not key or key not in response_model) else None,
+                'usage':counts, 'usage_status':'KNOWN' if all(v is not None for v in counts.values()) else 'UNKNOWN',
+                'reasoning_tokens':reasoning_tokens,
+                'latency_ms':round((time.perf_counter()-started)*1000,3)}
+            self.emit('api.response', self.last_response)
+            raise ModelOutputTruncated(describe_failure(self.last_response)) from None
         except Exception as error:
             self.failures+=1
             budget = budget_cause(error)
