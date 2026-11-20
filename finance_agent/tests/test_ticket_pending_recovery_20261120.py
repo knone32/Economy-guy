@@ -77,7 +77,7 @@ async def main():
     print(json.dumps(pending,ensure_ascii=False))
 asyncio.run(main())
 '''
-        result = await asyncio.to_thread(subprocess.run, [sys.executable, '-c', program, str(self.root)],
+        result = await asyncio.to_thread(subprocess.run, [sys.executable, '-X', 'utf8', '-B', '-c', program, str(self.root)],
                                          capture_output=True, text=True, encoding='utf-8', timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
         original = json.loads(result.stdout.strip())
