@@ -220,9 +220,10 @@ class ConversationUI:
             raise ValueError('请先 /pause 暂缓或 /cancel 取消当前事项。')
         candidate_id, revision = argument.split()
         candidate = self.conversation.resume_invoice_candidate(candidate_id,int(revision))
+        claimed_id, claimed_revision = self.conversation.invoice_token
         self.reset_agent(clear_log=False,retire_candidate=False)
         self.resume_invoice_pending = candidate
-        self.chat_message('待续单票', f'已选择 {candidate_id} · 修订 {revision}。请明确继续或更正；随后重新核权、读取当前值并生成新预览，尚未批准或保存。')
+        self.chat_message('待续单票', f'已选择 {claimed_id} · 修订 {claimed_revision}。请明确继续或更正；随后重新核权、读取当前值并生成新预览，尚未批准或保存。')
 
     def pause_invoice_selection(self):
         if not self.conversation:
