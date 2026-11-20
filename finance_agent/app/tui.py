@@ -978,6 +978,34 @@ class AgentWorkspace(ConversationUI, App):
             event.input.value = ""
             self.action_cancel_edit()
             return
+        if command in {'/material-upload','/material-update','/materials','/source'}:
+            event.input.value = ''
+            try:
+                from .materials import import_docx, list_materials, get_paragraph
+                from .stage2_schema import open_existing
+                from contextlib import closing
+                if command in {'/material-upload','/material-update'}:
+                    # Explicit command grammar, no natural-language intent matching.
+                    import shlex
+                    parts = shlex.split(argument, posix=True)
+                    needed = 3 if command == '/material-update' else 2
+                    if len(parts) != needed:
+                        raise ValueError('用法：/material-upload 企业ID "路径.docx"；/material-update 企业ID 资料ID "路径.docx"（路径用正斜线）')
+                    company, filename = parts[0], parts[-1]
+                    result = import_docx(self.db,self.user,company,filename,material_id=parts[1] if needed==3 else None)
+                    self.chat_message('资料上传 · 未发布制度',json.dumps(result,ensure_ascii=False,indent=2))
+                else:
+                    with closing(open_existing(self.db,readonly=True)) as db:
+                        if command == '/materials':
+                            result = list_materials(db,self.user,argument.strip())
+                        else:
+                            parts=argument.split()
+                            if len(parts)!=3:raise ValueError('用法：/source 资料ID 版本 段号')
+                            result=get_paragraph(db,self.user,parts[0],int(parts[1]),int(parts[2]))
+                    self.chat_message('资料原文 · 指定版本',json.dumps(result,ensure_ascii=False,indent=2))
+            except (OSError,ValueError,PermissionError,sqlite3.Error) as error:
+                self.note(str(error))
+            return
         if message == "/inspect-update":
             event.input.value = ""
             receipt = self.inspect_pending_update()
