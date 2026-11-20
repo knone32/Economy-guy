@@ -10,6 +10,7 @@ from .permissions import check_permission
 from .queries import available_periods
 from .responses import request_scope
 from .stage2_schema import open_existing
+from .seller_read_scope import SELLER_SCHEMA, validate_shape as validate_seller_shape
 
 
 PERIOD_SCHEMA = {'type':'object','properties':{
@@ -20,7 +21,8 @@ READ_SCOPE_SCHEMA = {'type':'object','properties':{
     'company_id':{'type':'string','minLength':1,'maxLength':2000},
     'periods':{'type':'array','items':PERIOD_SCHEMA,'minItems':1,'maxItems':24,'uniqueItems':True},
     'company_quote':{'type':'string','minLength':1,'maxLength':2000},
-    'period_quote':{'type':'string','minLength':1,'maxLength':2000}},
+    'period_quote':{'type':'string','minLength':1,'maxLength':2000},
+    'seller': SELLER_SCHEMA},
     'required':['company_id','periods','company_quote','period_quote'],'additionalProperties':False}
 
 
@@ -31,11 +33,14 @@ class ReadBindingError(ValueError):
 
 
 def validate_shape(binding):
-    if type(binding) is not dict or set(binding) != set(READ_SCOPE_SCHEMA['required']):
+    if (type(binding) is not dict or not set(READ_SCOPE_SCHEMA['required']) <= set(binding)
+            or set(binding) - set(READ_SCOPE_SCHEMA['properties'])):
         raise ValueError('只读范围候选字段不完整或含多余参数')
     if any(type(binding[key]) is not str or not binding[key].strip() or len(binding[key])>2000
            for key in ('company_id','company_quote','period_quote')):
         raise ValueError('只读范围候选必须提供当前原话和企业编号')
+    if 'seller' in binding:
+        validate_seller_shape(binding['seller'])
     periods = binding['periods']
     if type(periods) is not list or not 1<=len(periods)<=24:
         raise ValueError('只读范围候选须提供1至24个完整年月')

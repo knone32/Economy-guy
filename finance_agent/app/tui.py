@@ -1327,8 +1327,12 @@ class AgentWorkspace(ConversationUI, App):
             return ("发票详情", AgentWorkspace.invoice_text(data))
         if tool == "query_business_sql":
             lines = sql_display_rows(data)
+            shown = len(lines)
+            seller = (evidence.get("query_scope") or {}).get("seller_requirement")
+            if seller:
+                lines.insert(0, "本次销售方范围：" + "、".join(seller["names"]))
             invoice = bool(data.get("invoice_projection"))
-            title = f"发票明细 · 已显示 {len(lines)} 张" if invoice else f"业务查询 · 已显示 {len(lines)} 行"
+            title = f"发票明细 · 已显示 {shown} 张" if invoice else f"业务查询 · 已显示 {shown} 行"
             if data["truncated"]:
                 lines.append("查询结果已截断，显示数量不代表总数。")
             return title, ("\n\n" if invoice else "\n").join(lines) or "没有符合条件的记录。"
@@ -1441,6 +1445,9 @@ class AgentWorkspace(ConversationUI, App):
         entries = []
         directories = {}
         for tool, outcome in results:
+            if (tool == "query_business_sql" and outcome["status"] not in {"SUCCESS", "NO_DATA"}
+                    and outcome.get("evidence", {}).get("source") == "seller_request_scope"):
+                self.business_message("销售方范围待核实", outcome["error"], [])
             if outcome["status"] not in {"SUCCESS", "NO_DATA", "NO_CHANGE"}:
                 continue
             evidence = outcome["evidence"]

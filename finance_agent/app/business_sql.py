@@ -14,6 +14,8 @@ from .provenance import SOURCES, READ_SOURCES, ScopeProof
 from .queries import _money
 from .stage2_schema import open_existing
 from .sql_evidence import describe as describe_sql
+from .seller_read_scope import (SellerReadError, catalog as seller_catalog, resolve as resolve_seller,
+                                verify as verify_seller_scope)
 
 
 # The projection names and declarations below are fixed application SQL.
@@ -200,10 +202,11 @@ def _projection_units(sql, columns):
 
 
 class BusinessSQLError(ValueError):
-    def __init__(self, status, message, *, missing=()):
+    def __init__(self, status, message, *, missing=(), evidence=None):
         super().__init__(message)
         self.status = status
         self.missing = missing
+        self.evidence = evidence or {}
 
 
 def _authorizer(action, table, field, database, _context):
@@ -262,6 +265,7 @@ class BusinessSQL:
         self.path, self.actor, self.proof = path, actor, proof
         self.request = request
         self.read_binding = None
+        self.seller_binding = None
         self.connection = None
 
     def bind_read_scope(self,binding):
@@ -287,6 +291,13 @@ class BusinessSQL:
         proof = replace(self.proof,values=values,sources=dict.fromkeys(values,'controlled_read_scope'),read_workspace=None)
         if self.connection is not None and _scope(proof,self.actor)!=self.scope():
             raise BusinessSQLError('SCOPE_MISMATCH','本轮SQL快照已建立，不能替换企业或账期')
+        if 'seller' in binding:
+            try:
+                resolve_seller(self.request, seller_catalog(self.path, self.actor,
+                    _scope(proof, self.actor)['company_ids']), binding['seller'])
+            except SellerReadError as error:
+                raise BusinessSQLError(error.status, str(error), evidence=error.evidence) from None
+            self.seller_binding = dict(binding['seller'])
         self.proof = proof
         self.read_binding = {'source':'current_authorized_catalog','values':values,
                              'company_quote':binding['company_quote'],'period_quote':binding['period_quote'],
@@ -407,12 +418,21 @@ class BusinessSQL:
             db.set_progress_handler(None, 0)
             # Coverage and selection checks keep the read-only guard without counting as user SQL.
             db.set_authorizer(_authorizer)
+        try:
+            seller_scope = verify_seller_scope(self.path, self.actor, scope, self.request,
+                self.seller_binding, attributed, reads)
+        except SellerReadError as error:
+            raise BusinessSQLError(error.status, str(error), evidence=error.evidence) from None
+        if seller_scope is not None:
+            attributed['seller_requirement'] = seller_scope
         if attributed.get('scope') is not None:
             attributed['display_truncated'] = truncated
             attributed['query_set_complete'] = attributed['query_set_complete'] and not truncated
         data = {"sql": sql, "columns": columns, "rows": rows, "row_count": len(rows),
                 "truncated": truncated, "derived": derived,
                 "query_scope": attributed}
+        if seller_scope is not None:
+            data["seller_scope"] = seller_scope
         projection = _invoice_projection(sql, columns)
         if {"invoice_no", "invoice_date", "amount_cents"} <= projection.keys():
             data["invoice_projection"] = projection

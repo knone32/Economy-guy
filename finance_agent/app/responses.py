@@ -608,6 +608,9 @@ def render_scope(evidence, *, conversational=False):
             heading = f"{_sql_scope_heading(actual)}（当前账簿 SQL 快照，按{date_field}归属账期）"
         filters = "，".join(condition.replace("\r", r"\r").replace("\n", r"\n")
                            for condition in query.get("filters", ()))
+        seller = query.get("seller_requirement")
+        if seller:
+            heading += "；销售方范围：" + "、".join(seller["names"])
         return f"{heading} · 筛选条件：{filters}" if filters else heading
     company = scope.get("company_id","未限定")
     if "year" in scope and "month" in scope:
@@ -1260,6 +1263,8 @@ def render_clarification(value):
 
 def render_tool_failure(status, tool=None, outcome=None):
     """User-facing guidance; diagnostic codes and provider details stay in Trace."""
+    if (outcome or {}).get("evidence", {}).get("source") == "seller_request_scope":
+        return outcome["error"]
     if status == "DENIED" and (outcome or {}).get("evidence", {}).get("source") == "tool_dispatch":
         return "模型请求了本轮不可用的操作，该操作未执行。"
     if status == "DENIED" and (outcome or {}).get("evidence", {}).get("source") == "tool_context":

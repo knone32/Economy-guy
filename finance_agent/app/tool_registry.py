@@ -152,7 +152,7 @@ for tool in TOOLS:
 for tool in TOOLS:
     if tool['function']['name']=='query_business_sql':
         tool['function']['parameters']['properties']['read_scope'] = {**READ_SCOPE_SCHEMA,'description':PARAMETERS['read_scope']}
-        tool['function']['description'] += ' 当前企业或年月尚未合法绑定时，可在同一次调用用read_scope按当前read_catalog给出可精确核验的原话候选；不能从SQL里的编号或日期自行取得范围。未登记简称或多义年份需追问。'
+        tool['function']['description'] += ' 当前企业或年月尚未合法绑定时，可在同一次调用用read_scope按当前read_catalog给出可精确核验的原话候选；不能从SQL里的编号或日期自行取得范围。未登记简称或多义年份需追问。 可选seller={mode:single或contains,quote:当前完整条件原话,value:原话名称或包含词}；single多家须追问，contains仅记录模型对当前条件的解释，不能推翻原话完整卖方身份。'
     if tool["function"]["name"] == "count_invoice_fields":
         selector = tool["function"]["parameters"]["properties"]["selector"]
         selector["enum"] = list(queries.INVOICE_FIELD_LABELS)
@@ -490,13 +490,16 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
                     sql_workspace.bind_read_scope(args['read_scope'])
                 scope, data, keys = sql_workspace.query(args["sql"])
             except BusinessSQLError as error:
-                evidence = {"missing_fields": list(error.missing)} if error.missing else {}
+                evidence = dict(error.evidence)
+                if error.missing:
+                    evidence["missing_fields"] = list(error.missing)
                 return tool_result(error.status, evidence=evidence, error=str(error))
             if keys and invoice_selections is not None:
                 data["selection_id"] = register_invoice_selection(invoice_selections, keys, scope, name)
             status = "SUCCESS" if data["rows"] or data["truncated"] else "NO_DATA"
             return tool_result(status, data, {"scope": scope, "query_scope": data.pop("query_scope"),
                                               "source": "current_sqlite",
+                                              **({"seller_scope":data["seller_scope"]} if "seller_scope" in data else {}),
                                               **({'read_scope_binding':sql_workspace.read_binding} if sql_workspace.read_binding else {})})
         if name == "resolve_recent_invoice":
             if execution:
