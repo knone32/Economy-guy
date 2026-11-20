@@ -304,9 +304,9 @@ class Agent:
                 unique[month] = next(iter(years))
         return unique
 
-    def _current_read_objects(self, text, *, invoice_candidates=(), include_quoted=False):
+    def _current_read_objects(self, text, *, invoice_candidates=(), include_quoted=False, casefold_invoices=False):
         """Resolve current registered data once; opaque ID digits are not dates."""
-        from .business_object_sources import amendment_sources
+        from .business_object_sources import amendment_sources, read_invoice_sources, ReadInvoiceAmbiguity
         try:
             if include_quoted:
                 from .business_object_sources import unreadable_company_mentions
@@ -317,9 +317,12 @@ class Agent:
                 # Only this turn-local get_invoice adapter may read quoted
                 # object data. It neither changes Context nor creates an action.
                 text = _QUOTED_DATA.sub(lambda match: ' ' + match[0][1:-1] + ' ', text)
-            current, _, _ = amendment_sources(text, None, actor=self.user_id, book=self.db_path,
-                                               invoice_candidates=invoice_candidates)
+            resolver = read_invoice_sources if casefold_invoices else amendment_sources
+            current, _, _ = resolver(text, None, actor=self.user_id, book=self.db_path,
+                                      invoice_candidates=invoice_candidates)
             return current
+        except ReadInvoiceAmbiguity:
+            raise
         except (OSError, ValueError, sqlite3.Error):
             # An unavailable catalog supplies no object authority. The actual
             # handler still reports database/permission failures independently.
@@ -972,7 +975,6 @@ class Agent:
         exact_invoice = (not reference and not has_dates and
                          len(explicit.get("company_id", [])) == len(explicit.get("invoice_no", [])) == 1)
         invoice_detail = (single_read and not invoice_write
-                          and len(explicit.get("company_id", ())) == len(explicit.get("invoice_no", ())) == 1
                           and re.fullmatch(
                               read_subject + r"F\d+\s*(?:(?:这张\s*)?发票\s*)?(?:的\s*)?"
                               r"(?:(?:当前|现在)\s*(?:的\s*)?)?(用途|备注)"
@@ -1019,15 +1021,22 @@ class Agent:
         def invoice_detail_verified():
             if not invoice_detail:
                 return False
+            from .business_object_sources import ReadInvoiceAmbiguity
+            try:
+                detail_scope = self._current_read_objects(query_text, casefold_invoices=True)
+            except ReadInvoiceAmbiguity:
+                return False
+            if len(detail_scope.get('company_id', ())) != 1 or len(detail_scope.get('invoice_no', ())) != 1:
+                return False
             fields = {"用途": "purpose", "备注": "remark"}
             requested_fields = {fields[label] for label in invoice_detail.groups() if label}
-            company, = explicit["company_id"]
-            number, = explicit["invoice_no"]
+            company, = detail_scope["company_id"]
+            number, = detail_scope["invoice_no"]
             return any(
                 name == "get_invoice" and outcome["status"] == "SUCCESS"
                 and (evidence := outcome["evidence"]).get("source") == "current_sqlite"
                 and (scope := evidence.get("scope", {})).get("company_id") == company
-                and scope.get("invoice_no") == number and not scope_mismatch(explicit, scope)
+                and scope.get("invoice_no") == number and not scope_mismatch(detail_scope, scope)
                 and (data := outcome["data"]).get("company_id") == company and data.get("invoice_no") == number
                 and requested_fields <= data.keys()
                 for name, outcome in read_results
@@ -2659,16 +2668,23 @@ class Agent:
                             tool_scope = {key: values for key, values in tool_scope.items() if key != "invoice_no"}
                             tool_proof.values.pop("invoice_no", None)
                             tool_proof.sources.pop("invoice_no", None)
+                        read_object_error = None
                         if fn.get('name') == 'get_invoice':
                             try:
                                 object_args = validate_arguments('get_invoice', fn.get('arguments'))
                             except (TypeError, ValueError):
                                 object_args = {}
-                            tool_proof, tool_scope = supplement_read_literals(tool_proof, tool_scope,
-                                self._current_read_objects(current_request,
-                                    invoice_candidates=(object_args.get('invoice_no'),), include_quoted=True),
-                                raw_sources=dict.fromkeys(('company_id', 'invoice_no', 'year', 'month', 'periods'),
-                                                          'controlled_read_scope'))
+                            from .business_object_sources import ReadInvoiceAmbiguity
+                            try:
+                                read_literals = self._current_read_objects(current_request,
+                                    invoice_candidates=(object_args.get('invoice_no'),), include_quoted=True,
+                                    casefold_invoices=True)
+                            except ReadInvoiceAmbiguity as error:
+                                read_object_error = tool_result('AMBIGUOUS', error=str(error))
+                            else:
+                                tool_proof, tool_scope = supplement_read_literals(tool_proof, tool_scope,
+                                    read_literals, raw_sources=dict.fromkeys(
+                                        ('company_id', 'invoice_no', 'year', 'month', 'periods'), 'controlled_read_scope'))
                         if fn.get("name") == "manage_task" and len(prior_task_scopes) == 1 and annual_year is None:
                             company, year, month = next(iter(prior_task_scopes))
                             checked = {"company_id": company, "year": year, "month": month}
@@ -2867,6 +2883,8 @@ class Agent:
                                                             "keys": recovered_keys, "mode": invoice_change["mode"]})
                                             if status == "AMBIGUOUS":
                                                 field_question = (selection, proposal)
+                        elif read_object_error is not None:
+                            result = read_object_error
                         else:
                             result = self.dispatch_tool(fn.get("name"), fn.get("arguments"), self.user_id, self.db_path, self.update_session,
                                              allowed_tools=permitted, expected_scope=tool_scope, management_intent=management_intent,

@@ -6,6 +6,7 @@ permission, invoice existence, period default, or confirmation.
 """
 from contextlib import closing
 import re
+from unicodedata import category
 
 from .permissions import check_permission
 from .responses import _QUOTED_DATA, _without_quoted_data, request_scope
@@ -27,24 +28,24 @@ def readable_companies(book, actor):
                 if check_permission(db, actor, row['company_id'], 'read').allowed]
 
 
-def literal_spans(text, value, *, joint_companies=(), company_component=False):
+def literal_spans(text, value, *, joint_companies=(), company_component=False, cased_tokens=False):
     """Exact complete identifiers; a canonical company/invoice joint key is valid."""
     if not value:
         return []
+    def identifier_char(char):
+        return bool(_IDENTIFIER_CHAR.fullmatch(char)) or (cased_tokens and category(char) in {'Lu', 'Ll', 'Lt'})
     spans = []
     for match in re.finditer(re.escape(value), text):
         start, end = match.span()
-        left = (start and _IDENTIFIER_CHAR.fullmatch(value[0])
-                and _IDENTIFIER_CHAR.fullmatch(text[start - 1]))
-        right = (end < len(text) and _IDENTIFIER_CHAR.fullmatch(value[-1])
-                 and _IDENTIFIER_CHAR.fullmatch(text[end]))
+        left = start and identifier_char(value[0]) and identifier_char(text[start - 1])
+        right = end < len(text) and identifier_char(value[-1]) and identifier_char(text[end])
         if right and company_component and text[end] == '/':
             right = False
         if left and text[start - 1] == '/':
             # The slash is a known joint-key separator, not part of an invented
             # invoice prefix. Verify the whole canonical company component.
             left = not any(text[:start].endswith(company + '/') and
-                (start == len(company) + 1 or not _IDENTIFIER_CHAR.fullmatch(
+                (start == len(company) + 1 or not identifier_char(
                     text[start - len(company) - 2])) for company in joint_companies)
         if not left and not right:
             spans.append((start, end))
@@ -150,3 +151,64 @@ def amendment_sources(request, current_value, *, actor, book, invoice_candidates
                 start = unquoted.index(current_value)
                 unquoted = unquoted[:start] + ' ' * len(current_value) + unquoted[start + len(current_value):]
     return scope(unquoted, metadata), value_scope, ambiguous
+
+
+class ReadInvoiceAmbiguity(ValueError):
+    """A read spelling has multiple real invoice keys; no key may be selected."""
+
+
+def _casefold_spans(text, value, *, joint_companies=()):
+    if not value:
+        return set()
+    folded, positions = [], []
+    for index, char in enumerate(text):
+        part = char.casefold()
+        folded.append(part)
+        positions.extend([index] * len(part))
+    folded_text = ''.join(folded)
+    found = set()
+    for match in re.finditer(re.escape(value.casefold()), folded_text):
+        start, end = positions[match.start()], positions[match.end() - 1] + 1
+        spelling = text[start:end]
+        if spelling.casefold() == value.casefold() and (start, end) in literal_spans(
+                text, spelling, joint_companies=joint_companies, cased_tokens=True):
+            found.add((start, end))
+    return found
+
+
+def read_invoice_sources(request, current_value=None, *, actor, book, invoice_candidates=()):
+    """Only a read adapter may normalize a unique real key within a current company.
+
+    Exact spelling wins when it identifies a real key. Otherwise casefold may
+    establish a read-only canonical source, never existence from an invented
+    token or any write permission. Default amendment_sources stays exact.
+    """
+    if current_value is not None:
+        raise ValueError('只读票号归一化不能绑定修改内容')
+    current, carried, ambiguous = amendment_sources(request, None, actor=actor, book=book,
+                                                   invoice_candidates=invoice_candidates)
+    companies = current.get('company_id', ())
+    if len(companies) != 1:
+        return current, carried, ambiguous
+    with closing(open_existing(book, readonly=True)) as db:
+        numbers = [row[0] for row in db.execute('SELECT invoice_no FROM invoices WHERE company_id=?', (companies[0],))]
+    occurrences = {}
+    plain = _without_quoted_data(request)
+    folded_request = plain.casefold()
+    for number in numbers:
+        if number.casefold() not in folded_request:
+            continue
+        for span in _casefold_spans(plain, number, joint_companies=companies):
+            occurrences.setdefault(span, set()).add(number)
+    canonical = set()
+    for (start, end), matches in occurrences.items():
+        spelling = request[start:end]
+        if spelling in matches:
+            canonical.add(spelling)
+        elif len(matches) == 1:
+            canonical.update(matches)
+        else:
+            raise ReadInvoiceAmbiguity('票号大小写在当前企业对应多个实际编号，请提供完整精确票号。')
+    if canonical:
+        current['invoice_no'] = sorted(canonical)
+    return current, carried, ambiguous
