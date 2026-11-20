@@ -35,7 +35,8 @@ query.json：
 ```
 
 上传不发布制度。正式发布需 rule.manage 的既有可信入口，详见 MATERIAL_RULE_CONTRACT.md。
-当前只承诺Word原段。Excel首次建账沿用；Excel资料原行、PDF页码、企业共享原件未完成。
+V3资料上传现支持Word原段、Excel工作表及原始行、文字PDF页码；去重/版本更新均复用同一资料入口。
+Excel建账仍只使用兼容官方结构的模板，资料上传不导入业务表。扫描PDF的OCR和企业共享原件尚不支持。
 
 程序证据：tests.test_assistant_config、tests.test_materials；尚不代表陌生自然语言或真人确认已验。
 

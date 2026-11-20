@@ -7,3 +7,7 @@
 历史累计42元上限保持；../evidence-root/HISTORICAL-BUDGET-INDEX.json明确不完整，历史费用unknown，不能作零。本轮开工未发付费请求。优先核提供商消费/余额及现有执行器；无法核实则只在可验证保守边界内推进，额度不足转离线。
 
 旧AUTH绑定7a1fdf4且16:00到期，不能直接复用作新SHA冻结证明；V3授权根自主分配，并不允许重置消耗或超42元/阶段硬限。下一次Live前须同账本重新绑定冻结代码/配置和执行器，保留旧授权及首执。真人实际操作不得伪造。
+
+V3核验补充：官方中文价格页 https://api-docs.deepseek.com/zh-cn/quick_start/pricing/ 已核峰价0.04/2/8元每百万（命中输入/未命中输入/输出），离峰减半。当前guard全部按峰价计保守上界，不将其宣称实际账单；未知历史42元仍不当零。官方GET余额已成功，只证明当前可用，不能反推期初充值与累计费用；非敏感证据../evidence-root/V3-ENVIRONMENT.json，不把账户余额提交Git。
+
+根新授权../evidence-root/V3-AUTHORIZATION-1819a5b.json绑定冻结1819、原budget_id、13条前缀hash和真实配置hash；C01–C08各8/8/4/4/8/8/4/4物理请求、输出每次8192，合48请求，另3保留，不再逐批向用户申请。阶段总上限完全不变。HTTP guard及副本零网络核账证据../evidence-root/V3-GUARD-OFFLINE-PREFLIGHT.json。正式费用余额始终从原账inspect读取，不能以本页旧快照替代。

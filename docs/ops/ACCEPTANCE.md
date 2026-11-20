@@ -1,6 +1,6 @@
 # 验收（V3；不同SHA不拼接）
 
-当前待验718d8121ba0327c8ccf5b105046f1294eb8c7bdf。旧61相关检查通过，全量866中182FAIL/33ERROR；原始证据../evidence-root/final-718d812-*.log。当前SHA正式Live与真人链NOT_TESTED，不建议晋级。
+当前重冻候选以../evidence-root/V3-FREEZE-R2.json为准。原718、阶段1819的程序与Live证据仅属各自SHA；新的正式Live与真人链尚NOT_TESTED，不建议晋级。
 
 | 业务 | 当前同版状态 | 首个缺口 |
 |---|---|---|
@@ -25,3 +25,14 @@
 |08 恢复|请求核账/幂等/CAS/截断状态|程序已有；同版真人重启待验|
 
 真实可见批准、批准后提交、审计及重启回读：NOT_TESTED。正式库未修改，未合main、未推送。只有C出具冻结候选正式成绩。
+
+## V3阶段冻结1819（不是完成声明）
+
+1819a5bb6cd2205ba72e95b3594cb5a876b6b8ba独立源码与完整日志：../frozen-v3-1819a5b、../evidence-root/v3-frozen-1819a5b-full.log；901项537.674秒，686通过、182FAIL、33ERROR。原718的215条失败名称集合完全相同，不能据此将其全部关闭。6659另一次unknown_cancel的首次断言失败保留；1819原样通过，B独立7次低量对照未复现，归因仍未关闭。
+
+新增程序能力：日期分组/企业年月标量、恢复修订号、Excel原行及PDF页码/不可变版本、坏XML/伪小dimension/UTF16 DTD拒绝、预算已知usage保留；不是Live/真人分数。当前旧失败中已证实普通只读分发创建缺失DB，待新候选修复。
+
+正常console零API可见性已由用户回答“能看到工作台”证实；真人批准/实际提交/审计/批准后重启仍NOT_TESTED。C全新四对8场仍全部NOT_TESTED（收费hold；不是INVALID首执）。采集器synthetic自测错误与重试独立保存，未触碰原题成绩。原7a四对评分完全不改。
+
+
+重冻前只读修复：普通配置读取创建缺失DB的真实缺陷已修，根10项定向通过（包括原test_empty_and_missing_database不变断言、缺失路径不创建、legacy无DDL、F5真实程序入口）；新冻结仍须独立全量。源于旧接口替身的query_continuity两子例已经精确归因，不外推其他失败。
