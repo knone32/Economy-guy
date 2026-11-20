@@ -373,6 +373,9 @@ class Agent:
         new=Agent(self.user_id,self.db_path,self.model,self.mode,self.trace_path,self.max_requests,self.max_tools,
             self.teaching,self.context.max_chars,self.budget_policy.block_requests,self.budget_policy.max_extensions,
             self.budget_policy.max_replans,self.management_confirmation,connection)
+        new.assistant_id = self.assistant_id
+        from .assistant_config import refresh_assistant
+        refresh_assistant(new)
         new.context.references_blocked = self.context.references_blocked
         scope={k:v for k,v in self.context.scope.items() if k in {'company_id','year','month','periods'}}
         if scope.get('company_id'):

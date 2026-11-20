@@ -70,3 +70,12 @@ class AssistantConfigTests(unittest.TestCase):
         self.put('tool','get_invoice',{})
         with self.assertRaises(ValueError):self.put('tool','get_invoice',{},enabled=False)
         with self.assertRaises(ValueError):self.put('tool','arbitrary_python',{})
+
+    def test_switch_model_keeps_assistant_scope(self):
+        from types import SimpleNamespace
+        self.assistants()
+        original=Agent('U001',self.path,lambda *_:None,mode='mock')
+        original.assistant_id='query';refresh_assistant(original)
+        switched=original.switch_model(SimpleNamespace(authorize=lambda actor:None))
+        self.assertEqual(switched.assistant_id,'query')
+        self.assertNotIn('change_invoice',switched.allowed_tools)
