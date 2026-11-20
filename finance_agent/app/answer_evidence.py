@@ -191,6 +191,28 @@ def select(answer, facts):
     return '\n'.join(rendered)
 
 
+def selection_diagnostic(answer, facts):
+    """Explain a failed selection without choosing replacements or changing facts."""
+    if not isinstance(answer, list) or any(not valid_answer_item(item) for item in answer):
+        return {'issues': [{'reason': 'invalid_answer_structure'}]}
+    issues = []
+    for index, item in enumerate(answer):
+        references = (('ref', item),) if type(item) is str else (
+            ('left', item['left']), ('right', item['right']))
+        for side, ref in references:
+            fact = facts.get(ref)
+            if fact is None:
+                issues.append({'answer_index': index, 'side': side, 'ref': ref[:200],
+                               'reason': 'missing_reference'})
+            elif type(item) is dict and fact.get('type') != 'scalar':
+                issues.append({'answer_index': index, 'side': side, 'ref': ref[:200],
+                               'reason': 'parent_type_mismatch', 'expected_type': 'scalar',
+                               'actual_type': fact.get('type'), 'op': item['op']})
+        if len(issues) >= 8:
+            break
+    return {'issues': issues[:8] or [{'reason': 'incompatible_current_fact_selection'}]}
+
+
 def prompt(facts):
     view = []
     for fact in facts.values():

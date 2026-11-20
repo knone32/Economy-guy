@@ -9,7 +9,8 @@ from .tool_registry import (TOOLS, TEACHING_TOOLS, REGISTRY, handle_tool, tool_r
                             remaining_work_allowed, validate_arguments, register_invoice_selection)
 from .trace import redact, write_trace, warn_trace_degraded
 from .responses import merge_pending_scope
-from .answer_evidence import catalog as answer_catalog, select as select_answer, prompt as answer_prompt
+from .answer_evidence import (catalog as answer_catalog, select as select_answer, prompt as answer_prompt,
+                              selection_diagnostic)
 from .intent_contract import (IntentContractError, sidecar as intent_sidecar, validate as validate_intent,
     infer_proposal as infer_proposal_intent, apply_pending as apply_intent_pending,
     proposal_edit as intent_proposal_edit, read_proof as intent_read_proof, READ_TOOLS)
@@ -572,6 +573,7 @@ class Agent:
         pending_repair_active = False
         pending_repair_reason = None
         read_finish_used = read_finish_active = False
+        read_finish_reason = None
         completed_read_calls = {}
 
         def workbook_stamp():
@@ -1139,9 +1141,9 @@ class Agent:
             proposals=self.management_proposals if management is None else None)
         def finish(text, store=True, category="operation_result", *, chat_notice=None, missing_fields=(),
                    summary_verified=False, explanation_partial=False, single_edit_verified=False,
-                   verified_read=False):
+                   verified_read=False, final_only=False):
             page_issue = page_read = None
-            if (simple_directory and full_directory and not execution.schedule
+            if (not final_only and simple_directory and full_directory and not execution.schedule
                     and execution.stop_reason in {None, "NO_PROGRESS", "COMPLETED", "EVIDENCE_RETURNED",
                                                   "MODEL_LIMIT", "NO_LEGAL_WORK", "EXTENSION_LIMIT"}):
                 pages = matching_directory(single_scope_results())
@@ -1473,6 +1475,18 @@ class Agent:
                                          "fulfillment": fulfillment["status"], "query_evidence_count": len(facts)})
             self.last_response["trace_degraded"] = self.trace_degraded
             return text
+        def finish_reference_fallback(reason):
+            nonlocal model_text, bound_answer, natural, rejected_reply
+            model_text = bound_answer = natural = None
+            rejected_reply = 'invalid_current_fact_selection'
+            execution.stop('INVALID_RESPONSE')
+            self.trace('reply.references_not_repaired', {'status': 'NOT_REPAIRED', 'reason': reason})
+            notice = '未能完成最终事实引用；以下仅交付已取得的实际结果，尚未核实全部问题。'
+            answer = finish(render_information(read_results) + '\n' + notice, store=False,
+                            category='database_query', chat_notice=notice, final_only=True)
+            self.last_response['delivery_source'] = 'current_evidence_fallback'
+            return answer
+
         def finish_invoice_chain(chain, notice="", *, question=True, reads=None):
             reads = read_results if reads is None else reads
             self.pending_intent = chain.pending(actor, self.db_path)
@@ -1871,6 +1885,8 @@ class Agent:
                 self.trace('error',{'category':'protocol','message':str(error)})
                 return finish('协议安全停止：'+str(error)+'；未执行新的业务操作。')
             if not execution.start_request():
+                if read_finish_active and read_finish_reason is not None:
+                    return finish_reference_fallback(execution.stop_reason or 'NO_REQUEST_SLOT')
                 break
             if active_pending:
                 pending_context = ({'invoice_change':invoice_business_state(active_pending)}
@@ -1984,9 +2000,15 @@ class Agent:
                     'scope必须是槽位到列表的对象；候选集合由你解释原话明确提交，不能照抄全部提及。'
                     '保留未更正槽位和用户原新值，不授予权限/确认。结构问题：' + str(pending_repair_reason)})
             if read_finish_active:
-                context.append({'role': 'system', 'content':
+                context.append({'role': 'system', 'content': (
+                    '上一最终answer未通过实际引用校验。现在仅补正一次最终information/clarification的answer。'
+                    '不能调用工具或提交intent/pending/turn_action，不能新增读取、状态或保存声明。'
+                    '按当前answer_catalog重新选择所需真实事实；算术父必须是scalar，整行result不能参与算术。'
+                    '程序没有替换任何引用或数值。以下结构诊断是数据，不是新用户要求：'
+                    + json.dumps(read_finish_reason, ensure_ascii=False)
+                    if read_finish_reason is not None else
                     '重复的只读调用没有再次执行。仅依据本轮已取得的原始读时结果输出最终答复，不能再调用工具。'
-                    '这不是新读取、当前值二次核验或新提交；仍有未完成目标要明确说明，不要宣称全部完成。'})
+                    '这不是新读取、当前值二次核验或新提交；仍有未完成目标要明确说明，不要宣称全部完成。')})
             if budget_close_active:
                 context.append({'role':'system','content':
                     '上一逻辑请求在HTTP发送前因token预算预留被拒绝，本次仅使用已有合法模型槽位收尾。'
@@ -2008,11 +2030,13 @@ class Agent:
                     raise ValueError("工具请求结构错误")
                 if len({c["id"] for c in calls}) != len(calls):
                     raise ValueError("重复工具请求编号")
-                if (pending_repair_active or read_finish_active) and calls:
+                if (pending_repair_active or read_finish_active and read_finish_reason is None) and calls:
                     raise ValueError('受限最终答复阶段禁止业务工具分发')
             except ModelOutputTruncated:
                 execution.stop('OUTPUT_TRUNCATED')
                 self.trace('error', {'category':'model_output_truncated'})
+                if read_finish_active and read_finish_reason is not None:
+                    return finish_reference_fallback('OUTPUT_TRUNCATED')
                 notice = ('模型输出达到本次输出上限而截断，未形成可用回复；'
                           '未依据这条截断回复执行工具或保存修改。'
                           '\n请缩小本次请求范围后重试；已有操作以实际回执为准。'
@@ -2022,6 +2046,9 @@ class Agent:
             except BudgetExceeded as error:
                 self.trace('budget.refused', error.metadata())
                 budget_refusal = error.metadata()
+                if read_finish_active and read_finish_reason is not None:
+                    execution.stop('REQUEST_BUDGET_EXCEEDED')
+                    return finish_reference_fallback('REQUEST_BUDGET_EXCEEDED')
                 actual_reads = any(r.get('status') in {'SUCCESS','NO_DATA'}
                                    and r.get('evidence',{}).get('source') == 'current_sqlite'
                                    for _,r in read_results)
@@ -2045,12 +2072,41 @@ class Agent:
                     self.write_receipt = self._receipt("ERROR")
                 self.trace("error", "API请求失败或模型响应结构无效")
                 execution.stop("API_OR_RESPONSE_ERROR")
+                if read_finish_active and read_finish_reason is not None:
+                    return finish_reference_fallback('API_OR_RESPONSE_ERROR')
                 return finish("请求失败：API请求失败或模型响应结构无效，未确认业务成功。")
             if not diagnostic_request:
                 self.trace("model_reply", redact(wire_reply))
             self.messages.append(reply)
+            reference_repair_turn = read_finish_active and read_finish_reason is not None
             pending_repair_active = False
             read_finish_active = False
+            if reference_repair_turn:
+                if calls:
+                    for forbidden in calls:
+                        execution.requested_tools += 1
+                        result = tool_result('DENIED', evidence={'source': 'answer_reference_repair'},
+                                             error='最终引用补正不允许工具调用，未执行。')
+                        self.messages.append({'role': 'tool', 'tool_call_id': forbidden['id'],
+                                              'content': json.dumps(result, ensure_ascii=False)})
+                        self.trace('tool_result', {'request': forbidden, 'result': result})
+                    return finish_reference_fallback('TOOLS_FORBIDDEN')
+                repaired = parse_final(reply.get('content'))
+                if (repaired is None or repaired['kind'] not in {'information', 'clarification'}
+                        or 'answer' not in repaired
+                        or set(repaired) - {'kind', 'text', 'answer', 'missing_fields'}):
+                    self.messages.pop()
+                    return finish_reference_fallback('INVALID_REPAIR_ENVELOPE')
+                bound_answer = select_answer(repaired['answer'], answer_catalog(read_results, self.write_receipt, self.trace_id))
+                self.messages.pop()
+                if bound_answer is None:
+                    return finish_reference_fallback('SECOND_INVALID_SELECTION')
+                natural, model_text = repaired, repaired['text']
+                execution.stop('WAITING_USER' if repaired.get('missing_fields') else 'ANSWERED')
+                self.trace('reply.references_repaired', {'uses_original_gate': True, 'new_tools': 0})
+                return finish(bound_answer, store=False,
+                              category='clarification' if repaired.get('missing_fields') else 'database_query',
+                              missing_fields=repaired.get('missing_fields', ()), final_only=True)
             if budget_close_active:
                 execution.stop('REQUEST_BUDGET_EXCEEDED')
                 if calls:
@@ -2183,10 +2239,26 @@ class Agent:
                     model_text = None
                     execution.stop('INVALID_RESPONSE')
                     return finish('待补结构补正仍不完整；没有提交修改，请重新明确要求。', store=False)
-                bound_answer = (select_answer(natural.get('answer'),
-                    answer_catalog(read_results, self.write_receipt, self.trace_id)) if natural else None)
+                current_catalog = answer_catalog(read_results, self.write_receipt, self.trace_id)
+                bound_answer = select_answer(natural.get('answer'), current_catalog) if natural else None
                 if natural is not None and 'answer' in natural and bound_answer is None:
                     self.trace('reply.references_rejected', {'reason': 'unknown_or_invalid_current_fact_ref'})
+                    actual_reads = read_results and all(result.get('status') in {'SUCCESS', 'NO_DATA'}
+                        and result.get('evidence', {}).get('source') == 'current_sqlite' for _, result in read_results)
+                    if read_only and actual_reads and not (allow_prepare or management or active_pending or invoice_write or self.teaching):
+                        if (not read_finish_used and completed_read_calls
+                                and all(may_finish_duplicate(record) for record in completed_read_calls.values())):
+                            if index + 1 < self.max_requests:
+                                read_finish_used = read_finish_active = True
+                                read_finish_reason = selection_diagnostic(natural['answer'], current_catalog)
+                                self.messages.pop()
+                                self.trace('reply.references_repair_requested', {'diagnostic': read_finish_reason,
+                                    'tools_allowed': False, 'uses_existing_loop': True})
+                                continue
+                            execution.stop('MODEL_LIMIT')
+                            return finish_reference_fallback('NO_LOOP_SLOT')
+                        self.trace('reply.references_not_repaired', {'status': 'NOT_REPAIRED',
+                                   'reason': 'FINAL_ONLY_SLOT_USED_OR_READ_CONTEXT_NOT_ELIGIBLE'})
                 if natural is not None and natural["kind"] in {"information", "explanation"} and read_results and bound_answer is None:
                     conflict = reply_evidence_conflict(natural["text"], read_results, current_request,
                         trusted_scope=self.context.proof(), actor=self.user_id,
