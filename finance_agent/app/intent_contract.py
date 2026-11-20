@@ -11,9 +11,11 @@ import json
 from contextlib import closing
 
 from .permissions import check_permission
-from .provenance import ScopeProof, SOURCES
+from .provenance import ScopeProof, SOURCES, READ_SOURCES
 from .responses import request_scope, explicit_scope, _QUOTED_DATA
 from .stage2_schema import open_existing
+from .controlled_read_scope import catalog as read_catalog
+from .business_object_sources import amendment_sources, registered_company_mentions
 
 SCOPE_KEYS = ('company_id','invoice_no','year','month')
 WRITE_KEYS = (*SCOPE_KEYS, 'field','new_value')
@@ -112,6 +114,15 @@ def validate(raw, *, actor, book, request, turn_id, pending=None, anchor=None):
     if type(sources) is not dict or set(sources) != set(target):
         raise IntentContractError('意图候选每个参数必须有对应来源。', status='INVALID_ARGUMENTS')
     named = request_scope(request, include_update_aliases=True)
+    read_companies = None
+    if action == 'read':
+        read_companies = read_catalog(book, actor)['companies']
+        if target['company_id'] not in {row['company_id'] for row in read_companies}:
+            raise IntentContractError('当前账号没有该企业的读取权限。', status='DENIED')
+        registered, _, _ = amendment_sources(request, None, actor=actor, book=book)
+        named = {key: value for key, value in named.items() if key != 'company_id'}
+        if registered.get('company_id'):
+            named['company_id'] = registered['company_id']
     plain = _QUOTED_DATA.sub(' ', request)
     current_fields = _field_origins(plain)
     for slot, value in target.items():
@@ -125,6 +136,17 @@ def validate(raw, *, actor, book, request, turn_id, pending=None, anchor=None):
                 raise IntentContractError('意图候选没有当前原文来源。', slot=slot)
             quote = source['text']
             parsed_quote = explicit_scope(quote, include_update_aliases=True)
+            if action == 'read' and slot == 'company_id':
+                companies = {item['company_id'] for item in registered_company_mentions(quote, read_companies)}
+                if len(companies) != 1:
+                    raise IntentContractError('企业原话未登记或对应多个可读企业，请明确企业。', slot=slot)
+                if value not in companies:
+                    raise IntentContractError('企业原话与实际登记对象不一致。', status='SCOPE_MISMATCH', slot=slot)
+                parsed_quote = {**parsed_quote, 'company_id': list(companies)}
+            elif action == 'read' and slot == 'invoice_no':
+                quoted, _, _ = amendment_sources(quote, None, actor=actor, book=book,
+                                                  invoice_candidates=(value,))
+                parsed_quote = {**parsed_quote, 'invoice_no': quoted.get('invoice_no', ())}
             if slot in SCOPE_KEYS:
                 if (named.get(slot) and value not in named[slot]) or (parsed_quote.get(slot) and value not in parsed_quote[slot]):
                     raise IntentContractError('意图候选与当前明确对象或日期冲突。', status='SCOPE_MISMATCH', slot=slot)
@@ -151,7 +173,7 @@ def validate(raw, *, actor, book, request, turn_id, pending=None, anchor=None):
                                           status='SCOPE_MISMATCH', slot=slot)
         elif kind == 'anchor':
             if (set(source) != {'kind'} or slot not in SCOPE_KEYS or not isinstance(anchor, ScopeProof)
-                    or anchor.actor != actor or anchor.sources.get(slot) not in SOURCES
+                    or anchor.actor != actor or anchor.sources.get(slot) not in (READ_SOURCES if action == 'read' else SOURCES)
                     or value not in anchor.values.get(slot, ())):
                 raise IntentContractError('候选缺少实际可信对象锚点。', slot=slot)
             if named.get(slot) and value not in named[slot]:

@@ -12,6 +12,7 @@ from .permissions import check_permission
 from .rules import RuleError, resolve_rule
 from .stage2_schema import open_existing
 from .controlled_read_scope import catalog as read_catalog
+from .business_object_sources import amendment_sources
 
 
 RELATIVE_PERIOD = r"本月|今年|去年|上个月|下个月|上月|下月|最近"
@@ -71,11 +72,49 @@ class ContextBuilder:
         self.displayed_sql_invoices = None
         self.restored_turns = []
         self.personal_detail = "普通"
+        self.object_source_metadata = {}
 
     def begin(self,text,message_index,reset=False,*,independent_read=False,explicit=None,date_sources=None,unresolved_year=False):
         """明确范围更正后弃用旧焦点；不更改长期任务，也不产生提交许可。"""
+        literal = explicit_scope(text,include_update_aliases=True)
         if explicit is None:
-            explicit = explicit_scope(text,include_update_aliases=True)
+            explicit = literal
+        explicit = dict(explicit)
+        object_sources, company_catalog_failed = {}, False
+        self.object_source_metadata = {}
+        try:
+            metadata = {}
+            registered, _, _ = amendment_sources(text, None, actor=self.user_id,
+                                                 book=self.db_path, metadata=metadata)
+            self.object_source_metadata = {**metadata, 'message_index': message_index, 'read_only': True}
+            old_companies = explicit.pop('company_id', None)
+            companies = registered.get('company_id')
+            if companies:
+                explicit['company_id'] = companies
+                # Existing exact literal sources keep their original contract.
+                # Newly resolved registered names supply read scope only.
+                object_sources['company_id'] = ('user_current' if companies == old_companies else 'controlled_read_scope')
+                owners = {}
+                for mention in metadata.get('company_mentions', ()):
+                    owners.setdefault(tuple(mention['span']), set()).add(mention['company_id'])
+                if any(len(values) > 1 for values in owners.values()):
+                    object_sources['company_id'] = 'ambiguous_registered_company'
+            invoices = registered.get('invoice_no')
+            if invoices:
+                object_sources['invoice_no'] = ('user_current' if invoices == explicit.get('invoice_no')
+                                                else 'controlled_read_scope')
+                explicit['invoice_no'] = invoices
+            # The shared helper masks complete registered identifiers before
+            # parsing dates. Their internal digits cannot establish a period;
+            # unrelated caller-inferred date slots are left intact.
+            for key in ('year', 'month', 'periods'):
+                if key in literal:
+                    if key in registered:
+                        explicit[key] = registered[key]
+                    else:
+                        explicit.pop(key, None)
+        except (OSError, ValueError, sqlite3.Error):
+            company_catalog_failed = True
         if reset or (self.annual_focus and scope_mismatch(
                 explicit, dict(zip(("company_id", "year", "month"), self.annual_focus)))):
             self.annual_focus = None
@@ -83,6 +122,8 @@ class ContextBuilder:
         self.sources={key:('session_confirmed' if origin=='user_current' else origin)
                       for key,origin in self.sources.items() if key in self.scope}
         self.diagnostics = []
+        if company_catalog_failed:
+            self.diagnostics.append('company_catalog_unavailable')
         if not previous and not self.references_blocked:
             try:
                 anchors = reference_catalog(self.db_path,self.user_id,display_ids=self.display_ids)
@@ -118,6 +159,7 @@ class ContextBuilder:
         self.scope.update(explicit)
         self.sources.update({key:'user_current' for key in explicit})
         self.sources.update(date_sources or {})
+        self.sources.update(object_sources)
         if len(date_fields.intersection(explicit)) == 1 and all(
                 len(self.scope.get(key, [])) == 1 and self.sources.get(key) in SOURCES for key in date_fields):
             self.scope["periods"] = [(self.scope["year"][0], self.scope["month"][0])]
