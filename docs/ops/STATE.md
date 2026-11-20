@@ -2,6 +2,14 @@
 
 ## 当前只推进第一阶段：把同一件事办完
 
+最新：df68496 的公开同链混合 Live 诊断只发生 1 次 HTTP，选择销售方后未完成查询。模型正确保留企业、新期间、全名销售方、SUM／COUNT，但把 company_source／period_source 写为 Source 对象；绑定器只认字符串，错误落入 current 并以空 quote 报 AMBIGUOUS。没有统计首卡，末答仅拒绝，后续恢复／补值未运行，旧候选持久 PAUSED，草稿／批准／审计／业务写均0。原首错不改分。
+
+当前修订仅在原 bind 统一 token 与 Source 对象：严格类型、双 quote 冲突、非空 key 与该字段 Runtime 来源／已核前目标谱系核对；模型来源声明不提供权限或新事实。原公开模型 content 逐 UTF8 字节不变、只换该 owner，程序对照从拒绝到 3478.50 元／1 张，114 项受影响／架构通过。此为程序证据，修后 Live 尚未执行。现不新增业务接口、Loop 或状态 owner。
+
+原账现为60请求／602203tokens／664656微元峰价上界，余4／97797／1535344。下一次仅公开修后回归，不冒称陌生首执；同链真实模型若不能在剩余调用内到预览，明确资源边界并保留未运行项，禁止脚本补成功。真控制台已用标准 conhost 成功启动为160×48；此前窄窗口与脚本缺协议槽的准备失败均HTTP0，原错误保留，分别于App前和SCRIPTED阶段发生，不算模型首错。桌面观察工具仍失败，真人可见／批准仍须本人核实。
+
+证据：[实际 Live 观察](../../../v3-c2-acceptance/public-chain-mixed-diagnostic-20261121/runs/public-mixed-df684-protocol-v2/INDEPENDENT-OBSERVATION.public.json)、[原 content 与清单](../../../v3-c2-acceptance/public-chain-mixed-diagnostic-20261121/runs/public-mixed-df684-protocol-v2/PUBLIC-LIVE-SEMANTIC-CONTENT-MANIFEST.json)、[114项检查](../../../evidence-root/scope-source-shape-integration-targeted.log)。以下基线与早前余额保留为历史。
+
 - 成功基线为 `6937c3e1219d3a55d1293ad113076b396e45841f`。同版 DeepSeek S01 正确交付唯一销售方的新期间金额、张数；S02 展示真实两候选并明确追问，旧修改均由原 owner 暂挂且持久为 PAUSED，业务零写。S02 原评分把“请先明确”漏出措辞匹配，独立语义复核追加 DELIVERY 1→2；原分、原始回包均保留，没有重跑。该对只支持一次新查询／消歧，不支持选择后续办、保存或全面泛化。
 - 当前最小修订只改 `business_request.py`：真实 native 待补→新查询歧义→仅回答全名时，已核上一份要求含企业／期间，但临时 trusted_scope 已清空，原绑定器因此拒绝。现在仅在对应可信槽空时精确继承同 actor／账簿／目录、同业务对象的唯一前目标；已有冲突、扩大或缩小前账期均不能回退。来源保留前修订／原话 hash／目标字段，不写回 Context，不给修改授权。原提案原样程序对照从拒绝变为 3478.50 元／1 张；108 项受影响与架构检查通过。独立另造公开场景核实首结果／末答及旧用途过滤完整、原候选持久 PAUSED、零写；期间冲突和过期目录均零 Handler 拒绝。验收器原 tuple/list 直接比较误判保留，按原 JSON 状态追加纠正，没有重跑或改业务断言。
 - 下一项仅沿同一公开虚构案例继续：选择销售方→统计→原 `/pending`、`/resume` 恢复暂挂候选→补值→fresh 原预览→真人确认→提交→重启回读。草稿、批准、CAS 和审计仍归现有 owner；纯自然语言自动选择 PAUSED 候选尚无签收证据。外置脚本模型只作程序控制，不算自然语言 Live。

@@ -202,10 +202,11 @@ DEFINITION = {
    'read_top_level':{'allowed_keys':['kind','targets','unresolved'],'kind':'read',
       'additional_keys':False,'targets':'1至12个对象target的JSON列表',
       'unresolved':'JSON字符串列表list[str]，无未决项用[]；不能放对象、字段描述字典或布尔值'},
-   'company_source':{'allowed':['current','context'],'default':'current',
+   'scope_source_representation':'company_source/period_source均接受字符串current/context或同义Source对象{kind:current|context,quote:字符串,key:null或受核来源key}；省略/null key不增加授权，非空key须与该字段Runtime当前可信来源或受核前目标谱系精确匹配，不能据key猜范围。双quote冲突拒绝；context的quote/key不能提供新证据。',
+   'company_source':{'allowed_kinds':['current','context'],'forms':['string_token','Source_object'],'default':'current',
       'current':'company_quote为当前原话连续片段，登记对象须与company_ids一致',
       'context':'仅可引用trusted_scope中唯一企业；槽空时可精确引用已核身份/账簿/来源/目录的previous_requirement同对象唯一目标，previous_target_id用于明确目标；已有可信槽冲突不能回退；company_quote可为空'},
-   'period_source':{'allowed':['current','context'],'default':'current',
+   'period_source':{'allowed_kinds':['current','context'],'forms':['string_token','Source_object'],'default':'current',
       'current':'period_quote为当前原话连续片段，periods须逐对对应；完整年月允许无记录',
       'context':'periods须等于当前trusted_scope.periods；槽空时可精确引用已核previous_requirement同对象唯一目标的全部periods，已有可信日期冲突不能回退；period_quote可为空',
       'annual':'Agent已将可信完整年度规范为12个月时，使用period_source=context并逐对列出这12个月；不从目录补年'},
@@ -238,7 +239,7 @@ DEFINITION = {
       'replace':'必须提供previous_target_id，引用previous_requirement中实际旧目标；新目标仍须当前来源和权限核实；允许明确新查询不保留旧seller/filter',
       'update':'默认保持旧条件；不能静默删除旧seller/filter；clarify保留未决、不执行'},
    'context_source':{'kind':'context','key':'target_id.seller 或 target_id.filters.索引 或 target_id.metrics.索引'},
-   'context_source_rule':'seller/filter/metric继承时字段、关系和值必须与previous_requirement相同；quote可空，程序重取原来源；company_source/period_source使用上面的字符串字段'},
+   'context_source_rule':'seller/filter/metric继承时字段、关系和值必须与previous_requirement相同；quote可空，程序重取原来源；company_source/period_source按同一来源声明协议使用token或Source对象'},
  'output':{'kind':'read','targets':[{'target_id':'i1','object':'invoices',
  'company_ids':['当前登记ID'],'company_quote':'当前原话或context来源',
  'periods':[[2026,9]],'period_quote':'当前账期原话',
@@ -294,9 +295,9 @@ def messages(request,current_catalog,*,trusted_scope=None,previous_request=None,
         '只有明确名称包含范围才set，单家用single；未要销售方筛选用none，银行不传seller。'
         'none也须非空target-local原话quote，可引用本目标统计/明细要求，value为空串；不可造出用户没说的“无筛选”。'
         '银行金额收入与支出分算；sum(amount_cents)须单方向过滤或按direction分组，不能混为总额。'
-        '每个quote必须是当前原话连续片段，数值和关系由你解释但不是程序已证明。'
+        'current的quote必须是当前原话连续片段；context对象的非空quote只可复述该字段可核的旧来源，不能提供新证据；数值和关系由你解释但不是程序已证明。'
         '完整字段约定见business_definition.protocol；IN用列表，LIKE文本片段须有原话，is_blank的value用空串而非null。'
-        'company_source/period_source可明确context，只有已给唯一可信scope才允许继承；可信槽空时可用已核previous_requirement同对象的唯一目标，必要时指明previous_target_id且企业/全部账期必须精确相等，已有可信槽冲突不可回退。'
+        'company_source/period_source可用字符串current/context或受控Source对象同义声明；对象key若非空须核实，quote不替代Runtime依据。只有已给唯一可信scope才允许继承；可信槽空时可用已核previous_requirement同对象的唯一目标，必要时指明previous_target_id且企业/全部账期必须精确相等，已有可信槽冲突不可回退。'
         '若可信全年已规范trusted_scope.periods为12个月，列出这12个月并用period_source=context，不将全年原话冒作逐月字面。'
         '有效前文是不可变读取要求，不是历史金额；延续问题时不可删掉前文销售方、用途等筛选。'
         'seller/filter/metric可加source={kind:context,key:前目标ID.seller或前目标ID.filters.0或前目标ID.metrics.0}，'
@@ -368,6 +369,26 @@ def _source(quote,request,slot):
         raise BusinessRequestError('当前要求缺少可核对原话，请重新明确。',slot=slot)
     return Source('current',quote)
 
+
+def _scope_source_declaration(value, quote, slot):
+    """Normalize syntax only; runtime source resolution remains authoritative."""
+    if type(value) is str:
+        declaration=Source(value,'',None)
+    elif (type(value) is dict and 'kind' in value and not set(value)-{'kind','quote','key'}):
+        kind,raw_quote,key=value.get('kind'),value.get('quote',''),value.get('key')
+        if (type(kind) is not str or type(raw_quote) is not str or len(raw_quote)>4000
+                or key is not None and (type(key) is not str or not key or len(key)>512)):
+            raise BusinessRequestError('来源声明字段类型无效。','INVALID_ARGUMENTS',slot=slot)
+        declaration=Source(kind,raw_quote,key)
+    else:
+        raise BusinessRequestError('来源须为current/context或受控Source对象。','INVALID_ARGUMENTS',slot=slot)
+    if declaration.kind not in {'current','context'}:
+        raise BusinessRequestError('来源类型不在受控协议内。','INVALID_ARGUMENTS',slot=slot)
+    if quote is not None and type(quote) is not str:
+        raise BusinessRequestError('来源原话须为字符串。','INVALID_ARGUMENTS',slot=slot)
+    if declaration.quote and quote and declaration.quote!=quote:
+        raise BusinessRequestError('来源对象与独立原话字段冲突。','INVALID_ARGUMENTS',slot=slot)
+    return declaration,quote or declaration.quote
 
 def _pair(value):
     if (type(value) is not list or len(value)!=2 or any(type(v) is not int for v in value)):
@@ -466,9 +487,33 @@ def bind(content,*,actor,book,turn_id,request,revision=1,trusted_scope=None,prev
                         'SCOPE_MISMATCH' if previous_id is not None else 'AMBIGUOUS')
                 prior_context_target=candidates[0]
             return prior_context_target
-        company_context=item.get('company_source','current')=='context'
+        def checked_scope_source(declaration,actual,field,values):
+            keys={actual.key} if actual.key is not None else set()
+            quotes={actual.quote}
+            if declaration.kind=='context' and (declaration.key is not None or declaration.quote):
+                candidates=[target for target in previous.targets if target.object==obj
+                    and target.company_ids==tuple(ids)
+                    and (previous_id is None or target.target_id==previous_id)] if previous else []
+                if len(candidates)==1:
+                    prior=candidates[0]
+                    expected=prior.company_ids if field=='company_ids' else prior.periods
+                    if set(values)==set(expected):
+                        origin=prior.company_source if field=='company_ids' else prior.period_source
+                        keys.add(f'{previous.revision}/{previous.request_hash}/{prior.target_id}.{field}')
+                        if origin is not None:
+                            quotes.add(origin.quote)
+                            if origin.key is not None:keys.add(origin.key)
+            if declaration.key is not None and declaration.key not in keys:
+                raise BusinessRequestError('来源key不属于该字段当前可核实的来源。','INVALID_ARGUMENTS',slot=field)
+            # A candidate quote may corroborate a runtime source, never create one.
+            if declaration.kind=='context' and declaration.quote and declaration.quote not in quotes:
+                raise BusinessRequestError('来源quote与该字段可信来源不一致。','INVALID_ARGUMENTS',slot=field)
+            return actual
+        company_declaration,company_quote=_scope_source_declaration(
+            item.get('company_source','current'),item.get('company_quote'),'company_id')
+        company_context=company_declaration.kind=='context'
         company_source=(Source('unresolved','','company_id') if not ids else
-            Source('context','', 'scope.company_id') if company_context else _source(item.get('company_quote'),request,'company_id'))
+            Source('context','', 'scope.company_id') if company_context else _source(company_quote,request,'company_id'))
         if not ids:pass
         elif company_context:
             if trusted.get('company_id'):
@@ -482,18 +527,21 @@ def bind(content,*,actor,book,turn_id,request,revision=1,trusted_scope=None,prev
                 company_source=Source('context',prior.company_source.quote if prior.company_source else '',
                     f'{previous.revision}/{previous.request_hash}/{prior.target_id}.company_ids')
         else:
-            quote=_source(item.get('company_quote'),request,'company_id').quote
+            quote=_source(company_quote,request,'company_id').quote
             found={m['company_id'] for m in registered_company_mentions(quote,frame['companies'])}
             if found!=set(ids):raise BusinessRequestError('企业名称与当前登记对象不一致。','SCOPE_MISMATCH')
+        company_source=checked_scope_source(company_declaration,company_source,'company_ids',ids)
         pairs_raw=item.get('periods',[])
         if type(pairs_raw) is not list or len(pairs_raw)>24:
             raise BusinessRequestError('账期结构无效。','INVALID_ARGUMENTS')
         if not pairs_raw:unresolved.append(target_id+'.periods')
         pairs=tuple(_pair(v) for v in pairs_raw)
         if len(set(pairs))!=len(pairs):raise BusinessRequestError('目标账期重复。','INVALID_ARGUMENTS')
-        period_context=item.get('period_source','current')=='context'
+        period_declaration,period_quote=_scope_source_declaration(
+            item.get('period_source','current'),item.get('period_quote'),'periods')
+        period_context=period_declaration.kind=='context'
         period_source=(Source('unresolved','','periods') if not pairs else
-            Source('context','', 'scope.periods') if period_context else _source(item.get('period_quote'),request,'periods'))
+            Source('context','', 'scope.periods') if period_context else _source(period_quote,request,'periods'))
         if not pairs:pass
         elif period_context:
             if trusted.get('periods'):
@@ -510,7 +558,7 @@ def bind(content,*,actor,book,turn_id,request,revision=1,trusted_scope=None,prev
                 period_source=Source('context',prior.period_source.quote if prior.period_source else '',
                     f'{previous.revision}/{previous.request_hash}/{prior.target_id}.periods')
         else:
-            period_quote=_source(item.get('period_quote'),request,'periods').quote
+            period_quote=_source(period_quote,request,'periods').quote
             literal_period=request_scope(period_quote)
             inherited_years=set(trusted.get('year',())) or {y for y,m in trusted.get('periods',())}
             if (not literal_period.get('year') and literal_period.get('month') and len(inherited_years)==1):
@@ -528,7 +576,7 @@ def bind(content,*,actor,book,turn_id,request,revision=1,trusted_scope=None,prev
                     raise BusinessRequestError('当前完整年月与原话来源不一致。','SCOPE_MISMATCH')
             # Only abbreviated centuries still need unique catalog validation.
             elif not company_context and len(ids)==1:
-                mention=next(m for m in registered_company_mentions(item['company_quote'],frame['companies']) if m['company_id']==ids[0])
+                mention=next(m for m in registered_company_mentions(company_quote,frame['companies']) if m['company_id']==ids[0])
                 try:
                     bind_read_scope({'company_id':ids[0],'company_quote':mention['quote'],'period_quote':period_quote,
                         'periods':[{'year':y,'month':m} for y,m in pairs]},request,frame,
@@ -540,6 +588,7 @@ def bind(content,*,actor,book,turn_id,request,revision=1,trusted_scope=None,prev
                 if not wanted and len(literal.get('year',()))==1:
                     wanted={(literal['year'][0],m) for m in literal.get('month',())}
                 if wanted!=set(pairs):raise BusinessRequestError('当前日期来源尚不能唯一核实，请明确年月。')
+        period_source=checked_scope_source(period_declaration,period_source,'periods',pairs)
         anchor_values={key:list(values) for key,values in trusted.items() if isinstance(values,(tuple,list))}
         anchor_values.update(context_anchor)
         if anchor_values.get('periods'):
@@ -548,7 +597,7 @@ def bind(content,*,actor,book,turn_id,request,revision=1,trusted_scope=None,prev
         anchor=ScopeProof(actor,anchor_values,dict.fromkeys(anchor_values,'controlled_read_scope'))
         for company in ids:
             company_origin=({'kind':'anchor'} if company_context else {'kind':'current','text':next(
-                mention['quote'] for mention in registered_company_mentions(item['company_quote'],frame['companies'])
+                mention['quote'] for mention in registered_company_mentions(company_quote,frame['companies'])
                 if mention['company_id']==company)})
             period_origin={'kind':'anchor'} if period_context else {'kind':'current','text':period_source.quote}
             for year,month in pairs:

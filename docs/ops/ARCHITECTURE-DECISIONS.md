@@ -1,5 +1,9 @@
 # 架构职责决定
 
+## 单一入口规范化来源表示（2026-11-21）
+
+df68496 真实选择全名回合的业务解释正确，Source对象却被字符串比较误当current，随后空quote被报成用户歧义。前文metadata本来就展示Source对象，继续追加问法提示不能解决这处接口差异。仅在原bind将current/context token与受控Source对象规范化；quote当前来源、key字段／目标／修订／hash及谱系仍核对，实际Source由Runtime重建，声明不创建权限。无key只是旧context token的同义表示；错形态为INVALID_ARGUMENTS，真实范围冲突与证明能力限制仍分开。沿用原Loop、一次结构重述上限、草稿和确认owner。
+
 ## 只读澄清复用已核要求（2026-11-21）
 
 native 修改暂挂时应清掉旧票的临时 scope；这不应清掉已经独立绑定的新查询要求。原 native→歧义→全名对照表明，要求仍在，绑定器却只看空 trusted_scope，首先丢失企业来源。复用现有 `company_source=context`／`period_source=context`：可信槽空时，可精确引用已核 actor、账簿、原话 hash、目录及同对象的唯一前目标，记前修订与字段来源。已有可信值冲突不回退，多目标不猜，账期集合必须完整相等，ACL、旧 seller／filter 保留规则照旧。局部 ScopeProof 只供既有校验，不写回全局 Context，不恢复旧票范围、不提供批准。
