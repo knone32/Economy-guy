@@ -1244,6 +1244,12 @@ class AgentWorkspace(ConversationUI, App):
 
     @staticmethod
     def business_card(tool, data, evidence):
+        if tool == 'open_material_reference':
+            return ('资料原文', f"{data['name']} · v{data['version']} · 第{data['paragraph_id']}段\n{data['text']}\nSHA256 {data['sha256']}")
+        if tool == 'list_materials':
+            return ('资料版本目录', '\n'.join(f"{r['name']} v{r['version']}（{r['paragraph_count']}段）\n/source {r['material_id']} {r['version']} 1" for r in data) or '当前账号没有可访问资料。')
+        if tool == 'use_skill':
+            return ('共享能力', f"{data['name']} · v{data['revision']}\n" + '\n'.join(data['steps']))
         if evidence.get("source") != "current_sqlite":
             return None
         if tool == "list_invoices" and isinstance(data, list):
@@ -1296,7 +1302,7 @@ class AgentWorkspace(ConversationUI, App):
         if tool == "check_missing_purpose":
             lines = AgentWorkspace.invoice_lines(data["missing_invoices"]) if data["missing_invoices"] else "没有缺项。"
             return (f"用途检查 · {data['count']} 张",
-                    display_rule_amounts(data["rule"]["content"]) + "\n" + lines)
+                    display_rule_amounts(data["rule"]["content"]) + AgentWorkspace.rule_source_text(data['rule']) + "\n" + lines)
         if tool == "manage_task" and "task" in data:
             task = data["task"]
             state = TASK_STATUS.get(task["status"], "状态待核对")
@@ -1306,8 +1312,18 @@ class AgentWorkspace(ConversationUI, App):
                 return ("待办回执", f"{action}用途补充待办，{state}{next_step}。")
             return ("待办", f"{task['year']} 年 {task['month']} 月用途补充待办，{state}。")
         if tool == "get_applicable_rules":
-            return ("适用规则", display_rule_amounts(data["content"]))
+            return ("适用规则", display_rule_amounts(data["content"]) + AgentWorkspace.rule_source_text(data))
         return None
+
+    @staticmethod
+    def rule_source_text(rule):
+        text = f"\n制度 {rule.get('rule_id','')} · 版本 {rule.get('version','')} · 适用日 {rule.get('business_date','')}"
+        source = rule.get('source')
+        if source:
+            text += f"\n原文：/source {source['material_id']} {source['version']} {source['paragraph_id']}"
+        else:
+            text += '\n依据为内置业务规则，无上传文件段落。'
+        return text
 
     @staticmethod
     def invoice_lines(rows):
