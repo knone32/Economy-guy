@@ -197,7 +197,41 @@ class ConversationUI:
             for selector in ("#chat-log", "#business-log"):
                 self.workspace_widget(selector).scroll_end(animate=False)
             self.note("已继续上次对话。当前业务状态将在查询时重新读取。")
+        if self.conversation.list_invoice_candidates():
+            self.chat_message('待续单票', '有未提交的单票候选。输入 /pending 查看；新聊天需按候选编号和修订显式恢复，历史内容不提供批准。')
         return self.has_saved_history
+
+    def show_invoice_candidates(self):
+        if not self.conversation:
+            self.note('当前未启用本地会话存储。')
+            return
+        rows = self.conversation.list_invoice_candidates()
+        lines = []
+        for row in rows:
+            known = invoice_business_state(row['pending'])['known']
+            summary = '；'.join(f'{key}：{value}' for key,value in known.items())
+            lines.append(f"{row['id']} · 修订 {row['revision']} · {'暂缓' if row['state']=='PAUSED' else '待补'}\n{summary}\n/resume {row['id']} {row['revision']}")
+        self.chat_message('待续单票', '\n\n'.join(lines) if lines else '没有可续办的单票候选。')
+
+    def resume_invoice_selection(self, argument):
+        if not self.conversation:
+            raise ValueError('当前未启用本地会话存储。')
+        if self.agent and (self.agent.pending_intent or self.agent.pending_edit):
+            raise ValueError('请先 /pause 暂缓或 /cancel 取消当前事项。')
+        candidate_id, revision = argument.split()
+        candidate = self.conversation.resume_invoice_candidate(candidate_id,int(revision))
+        self.reset_agent(clear_log=False,retire_candidate=False)
+        self.resume_invoice_pending = candidate
+        self.chat_message('待续单票', f'已选择 {candidate_id} · 修订 {revision}。请明确继续或更正；随后重新核权、读取当前值并生成新预览，尚未批准或保存。')
+
+    def pause_invoice_selection(self):
+        if not self.conversation:
+            self.note('当前未启用本地会话存储，无法跨聊天暂缓。')
+            return
+        self.conversation.pause_invoice_candidate()
+        self.reset_agent(clear_log=False,retire_candidate=False)
+        self.resume_invoice_pending = None
+        self.note('已暂缓未提交单票。可在新聊天输入 /pending 后显式恢复；尚未保存。')
 
     def retire_invoice_candidate(self):
         """Persist trusted out-of-turn cancellation, even before Agent creation."""
@@ -239,7 +273,12 @@ class ConversationUI:
             self.conversation.finish(self.turn_seq, self.turn_display, evidence, self.agent.trace_id, hint, state,
                                      operation=operation,
                                      invoice_pending=(self.agent.pending_intent if self.agent.pending_intent
-                                         and self.agent.pending_intent.get('business_action') == 'single_invoice' else None))
+                                         and self.agent.pending_intent.get('business_action') == 'single_invoice' else
+                                         getattr(self.agent,'paused_invoice_candidate',None)),
+                                     candidate_state=('PAUSED' if getattr(self.agent,'paused_invoice_candidate',None) else
+                                         'CANCELLED' if status == 'CANCELLED' else
+                                         'COMPLETED' if status in {'COMMITTED','COMMITTED_UNVERIFIED','CURRENT_VALUE_MATCHES','UNKNOWN_OUTCOME'}
+                                         or any(change.get('status') in {'COMMITTED','COMMITTED_UNVERIFIED'} for change in (operation or {}).get('changes',[])) else None))
             self.has_saved_history = True
         except (OSError, ValueError, sqlite3.Error):
             self.notify("本轮历史保存失败。请检查执行记录与当前业务状态。", severity="warning")

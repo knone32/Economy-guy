@@ -95,3 +95,18 @@ Ran 1 test in 1.982s ... OK
 本地公开截图/字符及原候选来源对照：`business-20261120/b-ticket-pending-ui-evidence/05-pending-restored-after-process.{svg,json}`、`06-restored-fresh-preview.{svg,json}`。0 模型 HTTP、0 付费，恢复正例未批准发票。
 
 范围限制：本补丁恢复**已结束回合的 active 单票待补候选**。在正式确认弹窗尚未结束时关闭/崩溃，不把当时的完整 draft、批准或未完成 turn 恢复为可执行要求；需要用户重新明确。未做任意自然语言 NLU 或真人确认验收，也未建立通用长期记忆框架。
+
+## B v2：跨新聊天显式续办与修订保护（基线 66aeec2）
+
+本节替代前节「仅同一对话恢复、切新聊天撤销候选」的范围限制。最初公开反例在 `list_invoice_candidates` 缺失处报 AttributeError；原实现只有 chats.invoice_pending，生命周期归聊天且没有修订比较。
+
+- 新增独立 `invoice_candidates` 加法表，按可信 actor 与稳定 workbook identity 隔离。保存的只是来源核对后的业务槽位、来源链、稳定候选 ID、revision 和 ACTIVE/PAUSED/CANCELLED/COMPLETED 状态。取消与完成保留终态墓碑、移出可续列表；任何旧 revision 更新均拒绝，不从历史正文重造候选。
+- Workbench 新聊天保持暂缓候选，默认不激活旧业务。输入 `/pending` 查看可读改候选和修订，复制 `/resume <id> <revision>` 显式选择，再明确继续/补充。本轮模型只传增量；来源槽由运行时合并，重新核权、fresh 读值、生成全新正式预览。候选 ID/revision 不是批准，不恢复 request fingerprint、草稿或 confirmation。
+- `/pause` 与结构化最终答复 `turn_action=pause` 保存 PAUSED、退休执行状态；`/cancel` 与 `turn_action=stop` 取消。新聊天、切历史改为暂缓，普通退出保留候选；进入任务/显式边界仍按原规则撤销当前绑定事项。
+- 正式单票预览前 checkpoint 业务候选为 PAUSED；若进程在弹窗中断，列表里仍可显式找回业务数据，不继承当时批准。每轮与预览 checkpoint 持有 expected revision；持久化以事务 CAS 更新，Agent 准备/提交前也核验修订。旧聊天快照只有 revision 匹配且候选仍 ACTIVE 时才可用于原聊天恢复。
+
+新增公开 `tests.test_ticket_durable_20261120` 5 项（全部通过，0 模型 HTTP）：实际 Workbench 新建不同 chat ID → 列表 → 显式 resume → 独立 SQL 改原值 → 新正式预览（程序拒绝，无审计）；模型 pause/stop 的持久状态分验；新聊天取消后不能复活；旧 revision 不能覆盖新内容或取消；已显示的旧批准窗在独立修订取消后，即使程序点击确认也不能提交，发票及审计不变。最后一项模拟可信界面选择，不是真人批准。
+
+额外定向首次运行 51 项有 3 项失败，均来自原 `tests.test_p05_sessions`（SDK 布线、偏好确认、查询语义跨进程）。在未改动且 HEAD=66aeec2 的原 b-ticket 树独立运行这 3 项，重现相同 3 项失败；未改旧断言或归入本切片通过。初次旧恢复子进程测试另因 Windows 子进程编码不匹配失败，设置 `PYTHONUTF8=1` 后真正子进程恢复项通过。全量回归另行运行，不能据定向通过声称全绿。
+
+入口：`app/ticket_candidates.py`（可信持久态/CAS）；`SessionStore`（迁移及回合事务绑定）；`ConversationUI` 与 `AgentWorkspace.submitted`（列表/选择/暂缓）；`invoice_action.change_invoice`（预览前业务快照）；`Agent.pause_invoice_update` 与 `responses.parse_final`（pause/stop 分态）。未读 private 题，未调用产品 API/付费模型、未推 main。真人 UI、任意自然语言准确性、真实跨进程审批弹窗强杀恢复未验；既有真正子进程待补恢复及本轮实际新聊天恢复分别验证，不混称同一场验收。

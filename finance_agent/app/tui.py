@@ -661,7 +661,7 @@ class AgentWorkspace(ConversationUI, App):
         if not self.read_workspace and self.resume_focus and self.resume_focus[2] == 0:
             self.agent.context.annual_focus = self.resume_focus
         if self.conversation:
-            self.agent.workbook_guard = self.conversation.validate
+            self.agent.workbook_guard = self.conversation.validate_invoice_revision
             if self.task_focus:
                 self.agent.focus_task(*self.task_focus)
             self.agent.context.restored_turns = list(self.resumed)
@@ -675,7 +675,7 @@ class AgentWorkspace(ConversationUI, App):
                     self.note(str(error))
                 else:
                     self.agent.messages[0]['content'] += (
-                        '\n当前单票状态来自同账号、同账簿、同对话的未提交业务候选，不是草稿或批准。'
+                        '\n当前单票状态来自同账号、同账簿的未提交业务候选，不是草稿或批准。'
                         '仅当用户本轮明确继续或更正这一候选时，使用change_invoice表达业务动作；'
                         '查询或其他话题不要擅自继续。系统仍会重新核权、fresh读取并生成新预览。')
                     self.resume_invoice_pending = None
@@ -818,7 +818,7 @@ class AgentWorkspace(ConversationUI, App):
             self.request_new_chat()
         elif chat and self.conversation and self.can_change_conversation():
             try:
-                self.retire_invoice_candidate()
+                self.conversation.pause_invoice_candidate()
                 self.conversation.switch_chat(chat)
             except (OSError, ValueError, sqlite3.Error):
                 self.note("无法切换对话，请先结束本轮操作或重新打开账簿。")
@@ -857,7 +857,7 @@ class AgentWorkspace(ConversationUI, App):
                     and self.can_change_conversation(discard_local_draft=local_only)):
                 if self.conversation:
                     try:
-                        self.retire_invoice_candidate()
+                        self.conversation.pause_invoice_candidate()
                         self.conversation.new_chat(self.read_workspace)
                     except (OSError, ValueError, sqlite3.Error):
                         self.note("无法保存新对话，请重新打开账簿。")
@@ -866,7 +866,7 @@ class AgentWorkspace(ConversationUI, App):
                 self.reset_agent(clear_log=True, retire_candidate=False)
                 prompt.value = ""
                 self.show("chat")
-                self.note("已开始新对话。可输入问题，按 Enter 发送。")
+                self.note("已开始新对话。输入 /pending 查看暂缓单票并显式恢复，或输入新问题。")
 
         if self.agent is not None or self.has_saved_history or prompt.value.strip():
             body = ("当前对话会归档，可在「我的对话」中重开。" if self.conversation else
@@ -885,7 +885,7 @@ class AgentWorkspace(ConversationUI, App):
         elif self.agent is not None:
             def leave(confirmed):
                 if confirmed:
-                    self.reset_agent(clear_log=True)
+                    self.reset_agent(clear_log=True,retire_candidate=False)
                     self.exit()
             self.push_screen(Approval("退出程序", "将关闭当前对话。已保存的业务记录仍可查看。",
                                       "退出程序", danger=True), leave)
@@ -995,6 +995,18 @@ class AgentWorkspace(ConversationUI, App):
                 return
         if self.conversation_blocked:
             self.note("此账号的账簿对话已在另一窗口打开。请关闭后重新登录。")
+            return
+        if command in {'/pending','/resume','/pause'}:
+            event.input.value = ''
+            try:
+                if command == '/pending':
+                    self.show_invoice_candidates()
+                elif command == '/resume':
+                    self.resume_invoice_selection(argument)
+                else:
+                    self.pause_invoice_selection()
+            except (OSError,ValueError,PermissionError,sqlite3.Error) as error:
+                self.note(str(error) or '请使用 /resume 候选编号 修订号，先输入 /pending 查看。')
             return
         if message == "/cancel":
             event.input.value = ""
@@ -1206,6 +1218,9 @@ class AgentWorkspace(ConversationUI, App):
             agent.ask(message, read_workspace=read_workspace, task_note_from_request=True, **args)
             proposal = agent.last_response.pop("invoice_change", None)
             if proposal is not None:
+                if (self.conversation and self.turn_seq is not None
+                        and getattr(agent,'ticket_preview_candidate',None)):
+                    self.conversation.checkpoint_invoice_candidate(self.turn_seq,agent.ticket_preview_candidate)
                 batch = self.execute_batch(proposal)
             elif agent.update_session.drafts:
                 draft, = agent.update_session.drafts.values()

@@ -126,7 +126,7 @@ SYSTEM += """
 单张发票修改只用change_invoice表达业务动作及已知参数。对象未知也应主动调用，由系统保存已知信息并明确追问；后续补充或更正仍用相同参数，可只补invoice_no。系统继承可信业务状态、校验权限、fresh读取并组织正式预览，模型不用传selection_id、pending_id、action、mode、确认、生命周期事件，也不需要先查后转述。
 只读查询不建立修改事项。含糊对象不能猜选；业务参数不是授权，只有正式界面可接受用户确认。不能从正文自称保存推导状态。新值精确照录用户原话；缺项省略，不能填猜测值。不能把读取集合变修改集合。
 propose_invoice_changes保留给批量/规则/复杂选集及兼容调用；其selection引用只属于该高级选集接口。单张业务不得在两种接口之间切换。
-当前单票办理的known是系统保存的来源可追溯业务候选，不代表已执行或已授权；missing_fields由系统计算，不是模型要维护的状态机。不要在最终JSON另写pending/pending_change或amend意图。终止当前未提交事项可用turn_action=stop，不撤销历史事务。
+当前单票办理的known是系统保存的来源可追溯业务候选，不代表已执行或已授权；missing_fields由系统计算，不是模型要维护的状态机。change_invoice只传本轮明确新增或更正的业务槽位，省略已在known且本轮未改的企业、年月、字段和内容；运行时合并未变槽位。不要在最终JSON另写pending/pending_change或amend意图。用户暂缓、稍后继续用turn_action=pause；明确取消、不要办了用turn_action=stop，两者都不撤销历史事务。
 更正关系由你判断：change_invoice默认relation=update补充当前办理；用户撤销旧要求重新定义时用replace，未确定字段和内容的对应关系时用clarify，不代选。field只表示当前要修改的字段，保留不动的字段不传。新内容照录当前原话；沿用上一有效内容可省略new_value，同字段由系统继承；换字段沿用旧内容或显式重传历史值须value_ref=previous。明确清空用value_ref=clear；字段变更不自动串用旧值。系统验证原文/有效待补来源，不以标点、词序判断语义；这些动作均不授予写入许可。
 查询最终JSON使用kind/text/answer，answer只引用本轮有指标/范围/单位的事实或已支持的compare/subtract。未知事实不能声称已验证，未完成不能声称完成。
 只读规范化可继续使用intent={action:"read",target:{company_id,year,month,invoice_no?},sources:{各槽:{kind:"current",text:原话}}}，仅供读取，不成为写许可。已有可信参数无需额外声明。
@@ -237,9 +237,20 @@ class Agent:
         receipt["trace_degraded"] = self.trace_degraded or receipt.get("trace_degraded", False)
         return receipt
 
+    def pause_invoice_update(self):
+        """Retain only unapproved business data; all execution state is retired."""
+        from copy import deepcopy
+        candidate = self.pending_intent
+        self.cancel_update()
+        self.paused_invoice_candidate = (deepcopy(candidate) if candidate
+            and candidate.get('business_action') == 'single_invoice' else None)
+        return self.paused_invoice_candidate
+
     def commit_update(self, request_id, fingerprint):
         if self._active or self._retired: raise ProfileError('运行中或已结束的Agent不能提交')
         self._check_identity()
+        if not self.workbook_available():
+            return self._receipt('DENIED')
         self._active=True
         try: receipt = self.coordinator.commit_update(request_id, fingerprint, commit_invoice_update)
         finally: self._active=False
@@ -506,6 +517,8 @@ class Agent:
         if self.workbook_guard:
             self.workbook_guard()
         current_request = text
+        self.paused_invoice_candidate = None
+        self.ticket_preview_candidate = None
         displayed_invoices = self.context.displayed_sql_invoices
         self.context.displayed_sql_invoices = None
         pending, self.pending_intent = self.pending_intent, None
@@ -1999,6 +2012,8 @@ class Agent:
                     closing_reply = parse_final(reply.get('content'))
                     if closing_reply and closing_reply.get('turn_action') == 'stop':
                         self.cancel_update()
+                    elif closing_reply and closing_reply.get('turn_action') == 'pause':
+                        self.pause_invoice_update()
                     answer = (select_answer(closing_reply.get('answer'), answer_catalog(read_results,self.write_receipt,self.trace_id))
                               if closing_reply else None) or render_information(read_results)
                 return finish(answer, store=False, category='database_query', chat_notice=answer)
@@ -2062,6 +2077,10 @@ class Agent:
                     final_payload.pop('intent', None)
                     final_content = json.dumps(final_payload, ensure_ascii=False)
                 natural = parse_final(final_content)
+                if natural is not None and natural.get('turn_action') == 'pause':
+                    self.pause_invoice_update()
+                    execution.stop('WAITING_USER')
+                    return finish('已暂缓当前未提交单票。可从待续单票列表显式恢复；尚未保存，恢复后需重新预览和确认。',store=False)
                 if natural is not None and natural.get('turn_action') == 'stop':
                     # A stop is a bounded current-session action, never an
                     # authorization or a rollback of a historical transaction.

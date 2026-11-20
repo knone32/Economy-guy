@@ -97,6 +97,9 @@ def change_invoice(agent, args, previous, request):
     result = tool_result(status, data=public_state(candidate), evidence={
         'source':'harness_business_action', 'business_authorization':False}, error=error)
     if planned:
+        # Only source-checked business slots survive interruption. Draft,
+        # request/fingerprint approval and current invoice values never do.
+        agent.ticket_preview_candidate = candidate
         agent.trace('business.invoice_preview_candidate', {'candidate':planned})
         return result, None, planned, reads
     return stopped(status,error or '当前办理未能形成预览，请补充核对要求。',reads)

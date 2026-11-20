@@ -235,7 +235,7 @@ def parse_final(content):
             or not isinstance(value['answer'], list) or not 1 <= len(value['answer']) <= 64
             or any(not valid_answer_item(ref) for ref in value['answer'])):
         return None
-    if 'turn_action' in value and (value['kind'] != 'information' or value['turn_action'] != 'stop'):
+    if 'turn_action' in value and (value['kind'] != 'information' or value['turn_action'] not in {'stop','pause'}):
         return None
     if "pending_change" in value:
         change = value["pending_change"]

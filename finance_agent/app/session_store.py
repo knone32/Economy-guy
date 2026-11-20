@@ -10,6 +10,7 @@ from uuid import uuid4
 from .persistence import can_manage, can_propose, require_management_confirmation, result
 from .stage2_schema import open_existing
 from .trace import redact
+from .ticket_candidates import TicketCandidates, initialize as initialize_candidates
 
 
 def workbook_identity(path, *, create=False):
@@ -51,7 +52,7 @@ def _reference_state_json(state):
     return json.dumps(state, ensure_ascii=False)
 
 
-class SessionStore:
+class SessionStore(TicketCandidates):
     """One active transcript per trusted actor/workbook, with an OS-held lock."""
 
     def __init__(self, path, workbook, actor):
@@ -132,7 +133,11 @@ class SessionStore:
                 db.execute('ALTER TABLE chats ADD COLUMN reference_state TEXT')
             if 'invoice_pending' not in {r['name'] for r in db.execute('PRAGMA table_info(chats)')}:
                 db.execute('ALTER TABLE chats ADD COLUMN invoice_pending TEXT')
+            initialize_candidates(db)
             self.chat = self._active(db)
+            self.invoice_token = self._candidate_token(db)
+            self._turn_invoice_tokens = {}
+            self._turn_invoice_states = {}
             db.execute("UPDATE turns SET state='INTERRUPTED' WHERE chat=? AND state='RUNNING'", (self.chat,))
 
     def _active(self, db):
@@ -193,6 +198,8 @@ class SessionStore:
             # A previously interrupted process never transfers running tool work.
             db.execute("UPDATE turns SET state='INTERRUPTED' WHERE chat=? AND state='RUNNING'", (chat,))
         self.chat = chat
+        with self.connection() as db:
+            self.invoice_token = self._candidate_token(db)
 
     def new_chat(self, focus):
         self.validate()
@@ -202,6 +209,7 @@ class SessionStore:
             new = self._active(db)
             db.execute("UPDATE chats SET focus=? WHERE id=?", (json.dumps(focus), new))
         self.chat = new
+        self.invoice_token = None
 
     def select_focus(self, focus, task):
         self.validate()
@@ -219,14 +227,30 @@ class SessionStore:
             seq = db.execute("INSERT INTO turns(chat,state,request,display) VALUES (?,'COMPLETED','',?)",
                              (self.chat, json.dumps([["会话分界",message]], ensure_ascii=False))).lastrowid
             retired = _reference_state_json({'version':1,'retired':True,'invoice_query':None})
+            token = self._persist_candidate(db,None,'CANCELLED',self.invoice_token)
             db.execute("UPDATE chats SET boundary=?,task=NULL,reference_state=?,invoice_pending=NULL,updated=CURRENT_TIMESTAMP WHERE id=?",
                        (seq,retired,self.chat))
+        self.invoice_token = token
 
     def begin(self, request, mode):
         self.validate()
         with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            # Beginning a turn retires implicit restart activation, but keeps
+            # unfinished work in the explicit list. Capture its revision now.
+            original_state = None
+            if self.invoice_token:
+                row = db.execute('SELECT state FROM invoice_candidates WHERE id=? AND revision=?',self.invoice_token).fetchone()
+                original_state = row['state'] if row else None
+                if row and row['state'] in {'CANCELLED','COMPLETED'}:
+                    db.execute('UPDATE chats SET candidate_id=NULL,candidate_revision=NULL WHERE id=?',(self.chat,))
+                    self.invoice_token = None
+                else:
+                    self.invoice_token = self._persist_candidate(db,None,'PAUSED',self.invoice_token)
             seq = db.execute("INSERT INTO turns(chat,state,request,mode) VALUES (?,'RUNNING',?,?)",
                              (self.chat,redact(request),mode)).lastrowid
+            self._turn_invoice_tokens[seq] = self.invoice_token
+            self._turn_invoice_states[seq] = original_state
             # An interrupted new turn must not resurrect a superseded/cancelled
             # older candidate. A completed turn atomically saves its new state.
             db.execute("UPDATE chats SET invoice_pending=NULL,updated=CURRENT_TIMESTAMP WHERE id=?", (self.chat,))
@@ -243,16 +267,16 @@ class SessionStore:
         return json.dumps({'version':1,'actor':self.actor,'workbook':self.identity,
                            'chat':self.chat,'pending':pending}, ensure_ascii=False)
 
-    def set_invoice_pending(self, pending):
+    def set_invoice_pending(self, pending, *, state=None):
         """Trusted runtime/idle-cancel setter; never exposed as a model tool."""
         self.validate()
-        encoded = self._invoice_pending_json(pending)
         with self.connection() as db:
-            changed = db.execute('''UPDATE chats SET invoice_pending=?,updated=CURRENT_TIMESTAMP
-                WHERE id=? AND workbook=? AND actor=? AND state='ACTIVE' ''',
-                (encoded,self.chat,self.identity,self.actor)).rowcount
-            if changed != 1:
+            db.execute('BEGIN IMMEDIATE')
+            if not db.execute("SELECT 1 FROM chats WHERE id=? AND workbook=? AND actor=? AND state='ACTIVE'",
+                              (self.chat,self.identity,self.actor)).fetchone():
                 raise ValueError('Invoice candidate is outside the active chat')
+            token = self._persist_candidate(db,pending,state or ('ACTIVE' if pending is not None else 'CANCELLED'),self.invoice_token)
+        self.invoice_token = token
 
     def set_reference_state(self, state):
         """Trusted UI/backend setter, including idle cancellation with no turn.
@@ -279,7 +303,7 @@ class SessionStore:
             if changed != 1:
                 raise ValueError("Turn is no longer active")
 
-    def finish(self, seq, display, calls, trace, hint, state="COMPLETED", *, operation=None, invoice_pending=None):
+    def finish(self, seq, display, calls, trace, hint, state="COMPLETED", *, operation=None, invoice_pending=None, candidate_state=None):
         self.validate()
         if state not in {"COMPLETED","INTERRUPTED","UNKNOWN_OUTCOME"}:
             raise ValueError("Invalid terminal turn state")
@@ -294,7 +318,6 @@ class SessionStore:
             evidence = {"tools": evidence, "operation": operation}
         reference_state = (_reference_state_json(hint['reference_state'])
                            if type(hint) is dict and 'reference_state' in hint else None)
-        candidate = self._invoice_pending_json(invoice_pending) if state == 'COMPLETED' else None
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             if not db.execute("SELECT 1 FROM chats WHERE id=? AND workbook=? AND actor=? AND state='ACTIVE'",
@@ -308,15 +331,27 @@ class SessionStore:
                 raise ValueError('Turn is no longer active')
             if reference_state is not None:
                 db.execute('UPDATE chats SET reference_state=? WHERE id=?', (reference_state,self.chat))
-            db.execute("UPDATE chats SET invoice_pending=?,updated=CURRENT_TIMESTAMP WHERE id=?", (candidate,self.chat))
+            expected = self._turn_invoice_tokens.get(seq)
+            token = self._persist_candidate(db,invoice_pending if state == 'COMPLETED' else None,
+                candidate_state or ('ACTIVE' if state == 'COMPLETED' and invoice_pending is not None
+                    else 'COMPLETED' if state == 'UNKNOWN_OUTCOME'
+                    else 'PAUSED' if state == 'INTERRUPTED' or self._turn_invoice_states.get(seq) == 'PAUSED'
+                    else 'CANCELLED'),expected)
+        self.invoice_token = token
+        self._turn_invoice_tokens.pop(seq,None)
+        self._turn_invoice_states.pop(seq,None)
 
     def history(self):
         self.validate()
         with self.connection() as db:
-            chat = db.execute("SELECT focus,task,boundary,reference_state,invoice_pending FROM chats WHERE id=? AND workbook=? AND actor=? AND state='ACTIVE'",
+            chat = db.execute("SELECT focus,task,boundary,reference_state,invoice_pending,candidate_id,candidate_revision FROM chats WHERE id=? AND workbook=? AND actor=? AND state='ACTIVE'",
                               (self.chat,self.identity,self.actor)).fetchone()
             if chat is None:
                 raise ValueError('Conversation is outside the active actor/workbook')
+            # A transcript envelope is never the authority after a revision.
+            current_candidate = db.execute('''SELECT state FROM invoice_candidates WHERE id=? AND revision=?
+                AND workbook=? AND actor=?''',
+                (chat['candidate_id'],chat['candidate_revision'],self.identity,self.actor)).fetchone()
             rows = []
             for entry in db.execute("SELECT * FROM turns WHERE chat=? ORDER BY seq", (self.chat,)):
                 row = dict(entry)
@@ -330,7 +365,8 @@ class SessionStore:
         reference_state = json.loads(chat['reference_state']) if chat['reference_state'] else None
         if reference_state is not None:
             _reference_state_json(reference_state)
-        candidate = json.loads(chat['invoice_pending']) if chat['invoice_pending'] else None
+        candidate = (json.loads(chat['invoice_pending']) if chat['invoice_pending'] and current_candidate
+                     and current_candidate['state'] == 'ACTIVE' else None)
         if candidate is not None:
             if (type(candidate) is not dict or candidate.get('version') != 1
                     or (candidate.get('actor'),candidate.get('workbook'),candidate.get('chat'))
