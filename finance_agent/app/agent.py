@@ -585,6 +585,8 @@ class Agent:
         self.business_request = None
         self._business_contract_required = False
         business_preflight = False
+        business_format_repair_used = False
+        business_format_error = None
         current_request = text
         self.paused_invoice_candidate = None
         self.ticket_preview_candidate = None
@@ -2141,6 +2143,9 @@ class Agent:
                         previous_business_request.require_context(actor,self.db_path)
                     context = request_messages(current_request,request_catalog(self.db_path,actor),
                         trusted_scope=business_trusted,previous_request=previous_business_request)
+                    if business_format_error:
+                        from .business_request import schema_restatement_messages
+                        context = schema_restatement_messages(context, error_code=business_format_error)
                 except (BusinessRequestError,ValueError,OSError,sqlite3.Error) as error:
                     execution.stop('ERROR')
                     return finish('无法核实当前业务目录，请重新打开账簿。',store=False,category='clarification',final_only=True)
@@ -2149,7 +2154,8 @@ class Agent:
                     execution.stop('CONTEXT_LIMIT')
                     return finish('当前完整业务目录超过可处理范围，请缩小企业范围。',store=False,category='clarification',final_only=True)
                 self.trace('business_request.semantic_input',{'tools_allowed':False,'sql_supplied':False,
-                                                             'previous_requirement':previous_business_request is not None})
+                                                             'previous_requirement':previous_business_request is not None,
+                                                             'format_repair':business_format_repair_used})
             elif self.business_request is not None:
                 context.append({'role':'user','name':'business_request',
                     'content':'以下是已固定的当前读取要求，不是操作授权。所有提案必须保留其对象/条件/指标/未决项：'
@@ -2232,9 +2238,12 @@ class Agent:
                     execution.stop('AMBIGUOUS')
                     return finish('读取要求尚未核实，未执行查询。请明确对象、范围和条件。',store=False,
                                   category='clarification',final_only=True)
+                route = None
                 try:
                     route=load_review(reply.get('content'))
                     if type(route) is not dict:raise BusinessRequestError('读取要求结构无效。')
+                    if business_format_repair_used and route.get('kind') != 'read':
+                        raise BusinessRequestError('读取要求结构补正不能切换为其他业务路径。','INVALID_ARGUMENTS')
                     if route.get('kind')=='legacy' and set(route)=={'kind'}:
                         business_phase=False
                         self.trace('business_request.legacy_route',{'read_authorization':False})
@@ -2288,6 +2297,16 @@ class Agent:
                         business_phase=False
                         continue
                 except (BusinessRequestError,ValueError,TypeError,sqlite3.Error) as error:
+                    if (isinstance(error, BusinessRequestError) and error.status == 'INVALID_ARGUMENTS'
+                            and isinstance(route, dict) and route.get('kind') == 'read'
+                            and not business_format_repair_used and index + 1 < self.max_requests
+                            and execution.model_requests < execution.block_limit):
+                        business_format_repair_used = True
+                        business_format_error = 'invalid_structure'
+                        self.trace('business_request.format_repair_requested', {
+                            'reason':'invalid_read_requirement_structure', 'tools_allowed':False,
+                            'uses_existing_loop':True, 'failed_model_body_supplied':False})
+                        continue
                     status=getattr(error,'status','AMBIGUOUS');execution.stop(status)
                     notice=str(error)
                     names=getattr(error,'candidates',())

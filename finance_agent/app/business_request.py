@@ -191,6 +191,9 @@ DEFINITION = {
  'period':'账期为YYYY-MM；明确完整年月可以无记录，不从记录目录默认补日期。',
  'units':{'amount_cents':'整数分','sum(amount_cents)':'整数分，显示元时除100','count(*)':'条/张'},
  'protocol':{
+   'read_top_level':{'allowed_keys':['kind','targets','unresolved'],'kind':'read',
+      'additional_keys':False,'targets':'1至12个对象target的JSON列表',
+      'unresolved':'JSON字符串列表list[str]，无未决项用[]；不能放对象、字段描述字典或布尔值'},
    'company_source':{'allowed':['current','context'],'default':'current',
       'current':'company_quote为当前原话连续片段，登记对象须与company_ids一致',
       'context':'仅可引用trusted_scope中唯一企业；company_quote可为空'},
@@ -204,7 +207,7 @@ DEFINITION = {
       'none':'value必须为空串；quote引用本目标统计或明细要求本身，不虚构“无筛选”原话，不混入其他对象条件',
       'single':'一家登记销售方，不能从共享简称代选',
       'set':'用户明确名称包含范围，value为当前quote中的包含词；quote不可仅等于value',
-      'ambiguous':'不能确定单家时保留实际候选，不能改成set'},
+      'ambiguous':'value仍是当前quote中的原话简称字符串，不能放候选名称列表；实际候选由Runtime目录产生；不能改成set'},
    'filter_operators':{
       '=':{'value':'单一字符串、整数或布尔值'},'!=':{'value':'单一字符串、整数或布尔值'},
       '>':{'value':'单一字符串或整数'},'>=':{'value':'单一字符串或整数'},
@@ -242,6 +245,8 @@ DEFINITION = {
 def messages(request,current_catalog,*,trusted_scope=None,previous_request=None):
     return [{'role':'system','content':
         '先独立解释当前要求，不生成SQL、不调用工具，不看拟执行方案。仅JSON。'
+        'read顶层仅kind、targets、unresolved，禁止额外type等标签；unresolved仅字符串列表，无未决项用[]，不能用对象列表。'
+        'seller.value在ambiguous时也必须是当前原话简称字符串，不传候选列表；候选由Runtime目录生成。'
         '按业务对象分别列target，发票销售方/用途不能移到银行。公司和账期不可从目录默认补。'
         '先保留用户全部筛选、指标、分组、比较和未决项。共享简称不明则seller.mode=ambiguous；'
         '只有明确名称包含范围才set，单家用single；未要销售方筛选用none，银行不传seller。'
@@ -261,6 +266,42 @@ def messages(request,current_catalog,*,trusted_scope=None,previous_request=None)
             'trusted_scope':trusted_scope or {},'previous_requirement':previous_request.metadata() if previous_request else None,
             'business_definition':DEFINITION},ensure_ascii=False)}]
 
+
+
+_SCHEMA_ERROR_GUIDANCE = {
+    'invalid_structure':'独立要求JSON未满足有限字段或类型约定。',
+    'top_level':'read顶层字段不符合约定。',
+    'unresolved':'unresolved类型不符合约定。',
+    'seller_value':'seller.value类型不符合约定。',
+}
+
+
+def schema_restatement_messages(original_context, *, error_code='invalid_structure'):
+    """Pure prompt construction; scheduler/one-attempt allowance stay with Agent.
+
+    Accept only the original independent input and a finite static error code.
+    There is no failed-reply, SQL, tool-proposal or execution-result parameter.
+    """
+    if type(error_code) is not str or error_code not in _SCHEMA_ERROR_GUIDANCE:
+        raise ValueError('结构重述只能使用静态错误码')
+    if (type(original_context) not in (list,tuple) or len(original_context)!=2
+            or any(type(m) is not dict or set(m)!={'role','content'}
+                   or type(m['content']) is not str for m in original_context)
+            or [m['role'] for m in original_context]!=['system','user']):
+        raise ValueError('结构重述仅接收原独立要求的两条输入消息')
+    payload=load_review(original_context[1]['content'])
+    if (type(payload) is not dict or set(payload)!={'request','read_catalog','trusted_scope',
+                                                  'previous_requirement','business_definition'}):
+        raise ValueError('结构重述输入不是原独立要求上下文')
+    return [dict(m) for m in original_context]+[{'role':'system','content':
+        '仅做一次独立要求的结构重述，不调用工具、不生成SQL、不输出业务结果。'
+        +_SCHEMA_ERROR_GUIDANCE[error_code]+
+        '只根据前述原用户要求、有效前文和授权目录重新输出JSON；不引用失败回复或工具提案。'
+        '若kind为read，顶层仅kind/targets/unresolved，禁止type等额外键；targets为对象列表。'
+        'unresolved必须为字符串列表list[str]，无未决项用[]，不能用list[dict]。'
+        'seller.value必须是字符串；ambiguous也使用当前quote中的原话简称，不填候选列表。'
+        '保留所有条件及未决项；语义不明时保留unresolved，不能为结构合法擅自补出来源或猜单家。'
+        '其他字段、当前quote、权限和有限协议仍完全遵循原business_definition.protocol。'}]
 
 def _source(quote,request,slot):
     if type(quote) is not str or not quote or len(quote)>4000 or quote not in request:
@@ -438,7 +479,7 @@ def bind(content,*,actor,book,turn_id,request,revision=1,trusted_scope=None,prev
             value=body['value'];mode=body['mode']
             if inherited_seller and (mode,value)!=(inherited_seller[0].mode,inherited_seller[0].value):
                 raise BusinessRequestError('继承销售方不得同时改写其关系或值。','SCOPE_MISMATCH')
-            if type(value) is not str or len(value)>2000:raise BusinessRequestError('销售方值无效。')
+            if type(value) is not str or len(value)>2000:raise BusinessRequestError('销售方值无效。','INVALID_ARGUMENTS')
             names=tuple(sorted({n for c in ids for n in byid[c]['seller_names'] if isinstance(n,str) and n}))
             if mode!='none' and any(not byid[c]['seller_catalog_complete'] for c in ids):
                 raise BusinessRequestError('完整销售方目录超过能力边界，不能猜测唯一对象。','SQL_SCOPE_LIMIT')

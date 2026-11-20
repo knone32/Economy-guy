@@ -240,3 +240,44 @@ class BusinessRequestPhaseTests(unittest.TestCase):
         self.assertIn('get_finance_summary',names)
         self.assertTrue(names <= set(CAPABILITIES)|SUPPORT_TOOLS,names)
         self.assertNotIn('check_missing_purpose',names)
+
+    def test_one_schema_restatement_uses_original_input_without_failed_body(self):
+        bad={**self.requirement(),'type':'DO_NOT_FORWARD_SELECT_7'}
+        a,_,seen=self.run_case([
+            {'role':'assistant','content':json.dumps(bad)},
+            {'role':'assistant','content':json.dumps(self.requirement())}],max_requests=2)
+        self.assertEqual(len(seen),2);self.assertEqual(seen[1][1],[])
+        self.assertNotIn('DO_NOT_FORWARD_SELECT_7',json.dumps(seen[1][0]))
+        self.assertIsNotNone(a.business_request)
+        self.assertEqual(a.last_response['execution']['model_requests'],2)
+        self.assertEqual(a.last_response['execution']['actual_tool_calls'],0)
+
+    def test_schema_restatement_has_one_attempt_and_needs_existing_budget_slot(self):
+        bad={'role':'assistant','content':json.dumps({**self.requirement(),'type':'read'})}
+        for count,replies in ((1,[bad]),(9,[bad,bad])):
+            with self.subTest(max_requests=count):
+                a,_,seen=self.run_case(replies,max_requests=count)
+                self.assertEqual(len(seen),1 if count==1 else 2)
+                self.assertIsNone(a.business_request)
+                self.assertEqual(a.last_response['execution']['actual_tool_calls'],0)
+
+    def test_duplicate_scope_and_semantic_ambiguity_do_not_restate_structure(self):
+        duplicate='{"kind":"read","kind":"read","targets":[],"unresolved":[]}'
+        mismatch=self.requirement();mismatch['targets'][0]['company_quote']='金额和张数'
+        unresolved=self.requirement();unresolved['unresolved']=['i1.seller']
+        for body in (duplicate,json.dumps(mismatch),json.dumps(unresolved)):
+            with self.subTest(body=body):
+                a,_,seen=self.run_case([{'role':'assistant','content':body}])
+                self.assertEqual(len(seen),1)
+                self.assertEqual(a.last_response['execution']['actual_tool_calls'],0)
+
+    def test_schema_restatement_cannot_switch_to_legacy_route_or_modify_invoice(self):
+        bad={'role':'assistant','content':json.dumps({**self.requirement(),'type':'read'})}
+        for second in ({'role':'assistant','content':'{"kind":"legacy"}'},
+                       {'role':'assistant','tool_calls':[tool('forbidden','change_invoice',company_id='C001')]}):
+            with self.subTest(second=second):
+                a,_,seen=self.run_case([bad,second])
+                self.assertEqual(len(seen),2)
+                self.assertEqual(a.last_response['execution']['actual_tool_calls'],0)
+                self.paired(a)
+                self.assertFalse(a.pending_edit)
