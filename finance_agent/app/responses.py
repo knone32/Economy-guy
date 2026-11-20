@@ -616,6 +616,8 @@ def render_scope(evidence, *, conversational=False):
         period = f"{scope['year']} 年"
     else:
         period = scope.get("business_date","未按年月限定")
+    if scope.get("business_date") and "year" in scope:
+        period += f"；规则适用业务日期 {scope['business_date']}"
     rule = evidence.get("rule")
     rule_text = f"{rule.get('rule_id',rule.get('id',''))} {rule['name']} v{rule['version']}" if rule else evidence.get("rule_status","不适用（无财税规则判定）")
     if evidence.get("reference_rule_screening"):
@@ -933,6 +935,15 @@ def render_invoice_sql_coverage(coverage, *, filtered=False):
     return detail
 
 
+def render_rule_context(rule):
+    """Deliver returned rule provenance without inferring it from user prose."""
+    parts = []
+    if rule.get("effective_from"):
+        parts.append(f"生效日期 {rule['effective_from']}。")
+    parts.extend(rule.get("explanation") or ())
+    return "\n".join(parts)
+
+
 def render_summary_basis(rule):
     rule = rule or {}
     rule_id = rule.get("rule_id") or rule.get("id")
@@ -940,11 +951,13 @@ def render_summary_basis(rule):
     if not (rule_id and version):
         return None
     if (rule_id, version) == ("R001", "1.0"):
-        return ("统计依据为 R001 v1.0：发票按开票日期汇总价税合计，银行流水按交易日期"
-                "分别汇总收入和支出，两者不抵销。")
-    if rule.get("content"):
-        return f"统计依据为 {rule_id} v{version}：{rule['content']}"
-    return None
+        basis = ("统计依据为 R001 v1.0：发票按开票日期汇总价税合计，银行流水按交易日期"
+                 "分别汇总收入和支出，两者不抵销。")
+    elif rule.get("content"):
+        basis = f"统计依据为 {rule_id} v{version}：{rule['content']}"
+    else:
+        return None
+    return "\n".join(filter(None, (basis, render_rule_context(rule))))
 
 
 def confirmed_task_creation(outcome):
@@ -1112,8 +1125,12 @@ def render_information(results):
             parts.append(f"本轮查询：发票价税合计 {data['invoice_total']} 元（{data['invoice_count']}张）；"
                          f"银行收入 {data['bank_income_total']} 元（{data['bank_income_count']}条）；"
                          f"银行支出 {data['bank_expense_total']} 元（{data['bank_expense_count']}条）。")
+            if basis := render_summary_basis(outcome.get("evidence", {}).get("rule")):
+                parts.append(basis)
         elif name == "get_applicable_rules":
             parts.append(f"当前适用规则 {data['rule_id']} v{data['version']}：" + display_rule_amounts(data["content"]))
+            if context := render_rule_context(data):
+                parts.append(context)
         elif name == "list_rule_versions":
             parts.append(render_rule_history(data))
         elif name == "resolve_recent_invoice":
@@ -1135,6 +1152,8 @@ def render_information(results):
         elif name == "check_missing_purpose":
             parts.append(f"本轮检查：{data['count']}张必填用途缺失。依据{data['rule']['name']} {data['rule']['version']}版。")
             parts.append(display_rule_amounts(data["rule"]["content"]))
+            if context := render_rule_context(data["rule"]):
+                parts.append(context)
             parts.append("缺失明细（业务数据）：" + json.dumps(data["missing_invoices"], ensure_ascii=False))
         elif name in {"manage_task","manage_preference","manage_display_preference"}:
             parts.append("持久化管理结果 "+outcome['status']+"（不授予发票修改许可）：" + json.dumps(data,ensure_ascii=False))

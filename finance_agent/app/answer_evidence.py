@@ -7,7 +7,7 @@ SQL execution facts are distinct from proof of query meaning or completeness.
 import json
 from hashlib import sha256
 
-from .responses import render_information, render_scope, render_tool_failure, valid_answer_item
+from .responses import render_information, render_scope, render_summary_basis, render_tool_failure, valid_answer_item
 from .fact_arithmetic import basis as measure_basis, cents, derive, display, scalar, sql_scalars
 
 
@@ -83,9 +83,15 @@ def catalog(results, receipt, turn_id):
         parent = prefix + key + '.result'
         add(key + '.result', name, render_information([(name, result)]), type='result', scope=evidence.get('scope', {}))
         if name in {'get_finance_summary', 'get_annual_finance_summary'} and isinstance(data, dict):
+            basis_text = render_summary_basis(evidence.get('rule'))
+            basis_ref = prefix + key + '.basis' if basis_text else None
+            if basis_ref:
+                add(key + '.basis', '统计口径与规则来源', scope + '\n' + basis_text, type='basis', parent_ref=parent)
             for field, (label, unit) in SUMMARY_FIELDS.items():
                 if field in data:
                     add(key + '.' + field, label, f'{scope}：{label} {data[field]} {unit}。')
+                    if basis_ref:
+                        facts[prefix + key + '.' + field]['basis_ref'] = basis_ref
                     table = 'invoices' if field.startswith('invoice_') else 'bank_transactions'
                     operation = 'count_rows' if field.endswith('_count') else 'sum'
                     conditions = [] if table == 'invoices' else [{'field': 'direction', 'operator': '=',
@@ -165,18 +171,30 @@ def select(answer, facts):
             or len({json.dumps(ref, sort_keys=True) for ref in answer}) != len(answer)):
         return None
     rendered = []
+    dependencies = []
     for item in answer:
         text = facts.get(item, {}).get('text') if type(item) is str else derive(item, facts)
         if text is None:
             return None
         rendered.append(text)
+        # Provenance is a dependency of the chosen fact, including arithmetic
+        # parents. This never determines which metric the user intended.
+        parents = (item,) if type(item) is str else (item['left'], item['right'])
+        for parent in parents:
+            ref = facts.get(parent, {}).get('basis_ref')
+            if ref and ref not in dependencies and ref not in answer:
+                dependencies.append(ref)
+    for ref in dependencies:
+        if ref not in facts:
+            return None
+        rendered.append(facts[ref]['text'])
     return '\n'.join(rendered)
 
 
 def prompt(facts):
     view = []
     for fact in facts.values():
-        item = {key: fact[key] for key in ('ref', 'label', 'type', 'value', 'unit', 'metric', 'parent_ref', 'dimensions') if key in fact}
+        item = {key: fact[key] for key in ('ref', 'label', 'type', 'value', 'unit', 'metric', 'parent_ref', 'dimensions', 'basis_ref') if key in fact}
         if fact.get('type') == 'result':
             item['scope'] = fact.get('scope', {})
         if fact.get('type') == 'text':

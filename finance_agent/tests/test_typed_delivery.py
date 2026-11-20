@@ -45,6 +45,9 @@ class TypedDeliveryTests(unittest.TestCase):
         difference_value = totals['C001'] - totals['C002']
         self.assertIn(f'{abs(Decimal(difference_value))/100:.2f}', text)
         self.assertIn('高于', text)
+        self.assertIn('开票日期', text)
+        self.assertIn('交易日期', text)
+        self.assertIn('来源：官方业务规则1.1.0', text)
         difference = select([{'op': 'subtract', 'left': left, 'right': right}], fs)
         self.assertIn(f'{Decimal(difference_value)/100:.2f}', difference)
 

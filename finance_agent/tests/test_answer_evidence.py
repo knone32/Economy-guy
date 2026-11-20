@@ -69,6 +69,45 @@ class AnswerEvidenceTests(unittest.TestCase):
         with closing(sqlite3.connect(self.book)) as db:
             self.assertEqual(db.execute('SELECT count(*) FROM invoice_audit').fetchone()[0], 0)
 
+    def test_selected_summary_metrics_keep_their_date_and_rule_basis(self):
+        agent = self.summary_agent(lambda fs: final(answer=[
+            next(f['ref'] for f in fs if f['ref'].endswith('.bank_income_total')),
+            next(f['ref'] for f in fs if f['ref'].endswith('.invoice_total'))]))
+        answer = agent.ask('甲企业2026年9月，给出银行收入和发票价税合计，并说明归属日期和统计依据。')
+        self.assertIn('13000.50', answer)
+        self.assertIn('交易日期', answer)
+        self.assertIn('开票日期', answer)
+        self.assertIn('R001 v1.0', answer)
+        self.assertIn('生效日期 2026-01-01', answer)
+        self.assertIn('来源：官方业务规则1.1.0', answer)
+        self.assertEqual(answer.count('统计依据为'), 1)
+        self.assertEqual(agent.last_response['delivery_source'], 'model_ordered_current_evidence')
+
+    def test_summary_result_fallback_keeps_the_same_basis(self):
+        agent = self.summary_agent(lambda fs: final(answer=[
+            next(f['ref'] for f in fs if f['ref'].endswith('.result'))]))
+        answer = agent.ask('甲企业2026年9月财务汇总及日期依据。')
+        self.assertIn('交易日期', answer)
+        self.assertIn('生效日期 2026-01-01', answer)
+        self.assertIn('来源：官方业务规则1.1.0', answer)
+
+    def test_rule_delivery_keeps_effective_date_and_official_context(self):
+        stage = 0
+        def model(messages, tools):
+            nonlocal stage
+            stage += 1
+            if stage == 1:
+                return tool('get_applicable_rules', company_id='C001', rule_type='purpose',
+                            business_date='2026-09-01')
+            return final(answer=[next(f['ref'] for f in facts(messages) if f['ref'].endswith('.result'))])
+        agent = self.agent(model)
+        answer = agent.ask('甲企业2026年9月1日适用的用途规则是什么，何时生效、依据出自哪里？')
+        self.assertIn('R002 v2.0', answer)
+        self.assertIn('规则适用业务日期 2026-09-01', answer)
+        self.assertIn('生效日期 2026-09-01', answer)
+        self.assertIn('来源：官方业务规则1.1.0', answer)
+        self.assertIn('current_sqlite', answer)
+
     def test_catalog_never_accepts_unknown_cross_turn_or_duplicate_refs(self):
         fs = catalog([], {'message': '尚未提交'}, 'turn-2')
         for answer in (['turn-1:receipt'], ['turn-2:made_up'],
@@ -199,6 +238,40 @@ class AnswerEvidenceTests(unittest.TestCase):
         answer = agent.ask('甲企业2026年9月备注改为“待核”，票号待补。')
         self.assertNotIn('已经保存全部修改', answer)
         self.assertIn('发票编号', answer)
+
+
+class AnswerEvidenceWorkbenchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_selected_summary_basis_reaches_the_workbench_chat(self):
+        from app.model_config import DEFAULT_TEMPLATE
+        from app.tui import AgentWorkspace, ChatLog
+        from tests.test_tui_p0 import P0Test
+
+        with TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            book = directory / 'workbench.sqlite3'
+            import_workspace(Path(__file__).parent / 'fixtures/example.xlsx', book)
+            stage = 0
+            def model(messages, tools):
+                nonlocal stage
+                stage += 1
+                if stage == 1:
+                    return tool('get_finance_summary', company_id='C001', year=2026, month=9)
+                return final(answer=[next(f['ref'] for f in facts(messages)
+                                          if f['ref'].endswith('.bank_income_total'))])
+            app = AgentWorkspace(book, DEFAULT_TEMPLATE, directory / 'missing.json', model=model)
+            app.mode = 'mock'
+            async with app.run_test(size=(140, 34)) as pilot:
+                await P0Test.sign_in(self, app, pilot)
+                await P0Test.send(self, app, pilot, '甲企业2026年9月银行收入汇总及日期依据。')
+                await P0Test.await_state(self, pilot, lambda: bool(app.records) and not app.busy)
+                chat = '\n'.join(entry.plain for entry in app.workspace_widget('#chat-log', ChatLog).entries)
+                self.assertIn('银行收入合计 13000.50 元', chat)
+                self.assertIn('交易日期', chat)
+                self.assertIn('生效日期 2026-01-01', chat)
+                self.assertIn('来源：官方业务规则1.1.0', chat)
+                self.assertEqual(stage, 2)
+                with closing(sqlite3.connect(book)) as db:
+                    self.assertEqual(db.execute('SELECT count(*) FROM invoice_audit').fetchone()[0], 0)
 
 
 if __name__ == '__main__':
