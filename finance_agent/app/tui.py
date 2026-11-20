@@ -140,7 +140,7 @@ class AgentWorkspace(ConversationUI, App):
                  ("go-records", "记录"), ("account", "账户"))
     BINDINGS = [("f2", "navigation", "导航"), ("f3", "account", "账户"),
                 ("f4", "cancel_edit", "取消未提交操作"), ("ctrl+n", "new_chat", "新建对话"),
-                ("ctrl+q", "quit_safe", "退出")]
+                ("f5", "assistant", "业务助手"), ("ctrl+q", "quit_safe", "退出")]
 
     mock_demo = False
 
@@ -165,6 +165,7 @@ class AgentWorkspace(ConversationUI, App):
         self.trace_path = trace_path
         self.model_override = model
         self.agent = None
+        self.assistant_id = None
         self._model_update_verification = None
         self.user = None
         self.profile = None
@@ -423,6 +424,7 @@ class AgentWorkspace(ConversationUI, App):
             self.workspace_widget("#business-title", Static).update("业务历史 · 当时快照")
 
     def logout(self):
+        self.assistant_id = None
         self.reset_agent(clear_log=True)
         self.close_conversation()
         self.session_keys.clear()
@@ -640,6 +642,7 @@ class AgentWorkspace(ConversationUI, App):
         self.agent = Agent(self.user, self.db, mode=self.mode, trace_path=self.trace_path,
                            management_confirmation=self.confirm_management,
                            display_preference=self.conversation.manage_detail if self.conversation else None, **options)
+        self.agent.assistant_id = self.assistant_id
         verification = self._switched_update()
         if verification is not None:
             # Only transfer the evidence and receipt into the fresh update session.
@@ -688,6 +691,28 @@ class AgentWorkspace(ConversationUI, App):
             self.push_screen(Approval(
                 title, "当前对话将关闭，未提交的操作会取消。已保存的业务记录仍可查看。",
                 title, danger=True), lambda yes: self.logout() if yes else None)
+
+    def action_assistant(self):
+        if not self.user or self.busy:
+            return
+        if self.agent and (self.agent.pending_edit or self.agent.write_receipt.get('status') == 'UNKNOWN_OUTCOME'):
+            self.note('请先处理当前预览或核实保存结果，再切换助手。')
+            return
+        from .assistant_config import connect
+        from contextlib import closing
+        with closing(connect(self.db)) as db:
+            choices = [(json.loads(r['body'])['name'], r['id']) for r in db.execute(
+                "SELECT id,body FROM assistant_config WHERE owner=? AND kind='assistant' AND enabled=1", (self.user,))]
+        if not choices:
+            self.note('尚未配置业务助手。请用 python -m app.assistant_cli 为当前账号配置。')
+            return
+        def selected(identifier):
+            if identifier:
+                self.assistant_id = identifier
+                if self.agent:
+                    self.agent.assistant_id = identifier
+                self.note('已选择业务助手：' + identifier + '；下一轮读取当前能力版本。')
+        self.push_screen(Choices('业务助手', choices), selected)
 
     def action_account(self):
         if not self.user or self.screen is not self.screen_stack[0]:

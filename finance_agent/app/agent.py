@@ -144,6 +144,8 @@ class Agent:
         self.tools = [tool for tool in (TEACHING_TOOLS if teaching else TOOLS)
                       if display_preference or tool["function"]["name"] != "manage_display_preference"]
         self.allowed_tools = frozenset(tool["function"]["name"] for tool in self.tools)
+        self.assistant_id = None
+        self.active_skills = []
         self.teaching = teaching
         self.trace_id = None
         self.coordinator = WriteCoordinator(user_id, db_path, self.trace)
@@ -346,12 +348,17 @@ class Agent:
     def ask(self, text, allow_prepare=False, continue_edit=False, management=None, management_action=None, *,
             edit_scope=None, edit_correction=False, read_workspace=None, task_note_from_request=False, read_request=None):
         if self._active or self._retired: raise ProfileError('Agent正在运行或已结束，不能重入')
+        from .assistant_config import refresh_assistant
+        refresh_assistant(self)
         self._active=True
         try:
             with ExitStack() as turn_resources:
                 return self._ask(text,allow_prepare,continue_edit,management,management_action,edit_scope,edit_correction,
                                  read_workspace,task_note_from_request,read_request,turn_resources)
         finally: self._active=False
+
+    def dispatch_tool(self, *args, **kwargs):
+        return handle_tool(*args, **kwargs, assistant_id=self.assistant_id)
 
     def switch_model(self,connection):
         """可信轮次边界重建协议会话；仅携带可重查的业务范围和历史用户目标。"""
@@ -1087,7 +1094,7 @@ class Agent:
                     if blocked:
                         result = tool_result(blocked, error=None if same_workbook else "当前账号或工作库已变化")
                     else:
-                        result = handle_tool(name, raw, self.user_id, self.db_path, allowed_tools=self.allowed_tools,
+                        result = self.dispatch_tool(name, raw, self.user_id, self.db_path, allowed_tools=self.allowed_tools,
                                              provenance=self.context.proof(directory_scope=full_directory),
                                              execution=execution)
                         execution.observe(name, args, result)
@@ -1432,7 +1439,7 @@ class Agent:
             source = "trusted_reference" if recent_edit or from_reference else "user_current"
             proof = ScopeProof(actor, scope, dict.fromkeys(scope, source))
             selection_source = edit_selection_source
-            outcome = handle_tool("get_invoice", raw, actor, self.db_path,
+            outcome = self.dispatch_tool("get_invoice", raw, actor, self.db_path,
                                   allowed_tools=self.allowed_tools, expected_scope=expected,
                                   provenance=proof, execution=execution)
             read_results.append(("get_invoice", outcome))
@@ -1521,7 +1528,7 @@ class Agent:
             if blocked:
                 execution.stop(blocked)
                 return finish(render_tool_failure(blocked), store=False)
-            outcome = handle_tool(name, raw, actor, self.db_path, allowed_tools=self.allowed_tools,
+            outcome = self.dispatch_tool(name, raw, actor, self.db_path, allowed_tools=self.allowed_tools,
                                   expected_scope=scope, provenance=proof, execution=execution)
             execution.observe(name, followup, outcome)
             self.trace("invoice.followup_read", {"original_request": pending_from, "step": position,
@@ -2660,7 +2667,7 @@ class Agent:
                                             if status == "AMBIGUOUS":
                                                 field_question = (selection, proposal)
                         else:
-                            result = handle_tool(fn.get("name"), fn.get("arguments"), self.user_id, self.db_path, self.update_session,
+                            result = self.dispatch_tool(fn.get("name"), fn.get("arguments"), self.user_id, self.db_path, self.update_session,
                                              allowed_tools=permitted, expected_scope=tool_scope, management_intent=management_intent,
                                              reference_context=reference_context,execution=execution,
                                              management_confirmation=confirm_proposal if self.management_confirmation else None,

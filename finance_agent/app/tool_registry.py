@@ -34,6 +34,7 @@ OPTIONAL_FIELDS = {
     "propose_invoice_changes": {"rule_business_date", "target_year", "target_month", "rule_cohort", "write_scope", "pending_request_id"},
 }
 REGISTRY = {
+    "use_skill": (None, {"company_id":"string", "skill_id":"string"}),
     "change_invoice": (None, {"company_id":"string", "invoice_no":"string", "year":"integer", "month":"integer", "field":"string", "new_value":"string", "relation":"string", "value_ref":"string"}),
     "query_business_sql": (None, {"sql": "string"}),
     "list_invoices": (queries.list_invoices, MONTH),
@@ -73,10 +74,11 @@ TOOLS = [{"type": "function", "function": {"name": name,
          for name, (_, fields) in REGISTRY.items()]
 TEACHING_TOOLS = TOOLS
 TOOLS = [tool for tool in TOOLS if tool["function"]["name"] in ANNUAL | {
-    "query_business_sql", "get_finance_summary", "list_invoices", "list_invoice_directory", "get_invoice", "list_bank_transactions",
+    "use_skill", "query_business_sql", "get_finance_summary", "list_invoices", "list_invoice_directory", "get_invoice", "list_bank_transactions",
     "check_missing_purpose", "count_invoice_fields", "get_applicable_rules", "list_rule_versions", "prepare_invoice_update",
     "list_tasks", "manage_task", "manage_preference", "manage_display_preference", "resolve_invoice_reference", "resolve_recent_invoice", "propose_invoice_changes", "change_invoice", "set_schedule"}]
 DESCRIPTIONS = {
+    "use_skill":"选用当前助手已配置的共享办事步骤。返回当前有效版本和依赖，随后用现有业务工具核实。该工具本身不改账、不批准，也不提供当前金额。",
     "change_invoice":"单张发票修改的业务办理入口。只传本轮补充或更正的企业/票号/年月/字段/原话新值；未知和未更正的槽位都省略。系统保存已验证信息并追问。后续补票号只提供invoice_no；不要把“已知信息”整体复制到工具参数。若本轮原话新值提到其他票据或账期而目标仍是待补中的旧票，显式提供旧票号以区分内容和办理目标。系统负责继承来源、权限、fresh读取和正式预览；不需要模型先查询或提供selection_id/pending_id/action/mode。不会提交，预览必须由用户实际确认。普通查询不要调用。批量和规则选集仍用原提案工具。",
     "query_business_sql":"普通只读业务分析首选。在按可信企业和账期隔离的账簿快照上执行单条 SELECT 或只读 WITH。支持筛选、分组、JOIN 和子查询。金额原值是整数分；is_blank(value) 检查 NULL、空串与纯空白。规则判定仍用规则工具。",
     "get_annual_finance_summary":"仅用于可信的完整年度，分别汇总发票、银行收入和银行支出。",
@@ -126,6 +128,7 @@ PARAMETERS = {"relation":"本次要求与上一办理的业务关系，不是权
               "ordinal":"用户明确的展示序号，从1开始。", "anchor_id":"已展示anchor编号；唯一列表时可为空，不能自行编造。",
               "goal":"本轮用户目标描述，不是执行证据。","steps":"必要工具步骤及依赖，不拆分SQL/事务等内部操作。",
               "stop_condition":"目标证据齐全或等待用户/确认/拒绝时停止的描述；不能扩大运行时硬限。"}
+PARAMETERS['skill_id'] = '当前助手配置中共享能力的稳定标识。'
 PARAMETERS['direction'] = '可选。银行方向枚举：收入或支出；省略时保持整月收支明细。'
 DESCRIPTIONS['list_bank_transactions'] += ' 可用direction仅取收入或支出，同时返回同一筛选范围的明细、程序计算笔数与合计；这些指标不需要另查综合财务汇总或发票目录。'
 for tool in TOOLS:
@@ -422,7 +425,7 @@ def register_invoice_selection(selections, keys, scope, source):
     return selection_id
 
 
-def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allowed_tools=None, expected_scope=None, management_intent=None, reference_context=None, execution=None, management_confirmation=None, management_proposals=None,provenance=None,display_preference=None,recent_context=None,sql_workspace=None,invoice_selections=None):
+def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allowed_tools=None, expected_scope=None, management_intent=None, reference_context=None, execution=None, management_confirmation=None, management_proposals=None,provenance=None,display_preference=None,recent_context=None,sql_workspace=None,invoice_selections=None,assistant_id=None):
     """严格按 Schema 校验，身份仅取可信 Session，并复用业务函数。"""
     try:
         if not isinstance(name, str) or name not in REGISTRY:
@@ -431,9 +434,22 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
         permitted = {tool["function"]["name"] for tool in TOOLS} if allowed_tools is None else allowed_tools
         if name not in permitted:
             return tool_result("DENIED", evidence={"source": "tool_dispatch"}, error="工具未授权给当前运行上下文")
+        from .assistant_config import tool_enabled
+        if not tool_enabled(db_path, user_id, name):
+            return tool_result("DENIED", evidence={"source":"tool_configuration"}, error="工具已停用，请刷新助手配置")
         directory_sort = provenance.directory_sort if isinstance(provenance, ScopeProof) and provenance.actor == user_id else None
         args = validate_arguments(name, raw_arguments, directory_sort=directory_sort)
+        from .assistant_config import dispatch_allowed
+        if not dispatch_allowed(db_path,user_id,assistant_id,name,args.get('skill_id')):
+            return tool_result('DENIED',error='当前助手配置已变化或未授予此能力')
         function = REGISTRY[name][0]
+        if name == "use_skill":
+            from .assistant_config import use_skill
+            try:
+                data = use_skill(db_path, user_id, args['skill_id'], args['company_id'], permitted)
+            except PermissionError as error:
+                return tool_result('DENIED', error=str(error))
+            return tool_result('SUCCESS', data, {'source':'shared_skill_configuration'})
         if name == "query_business_sql":
             if (sql_workspace is None or sql_workspace.actor != user_id
                     or Path(sql_workspace.path).resolve() != Path(db_path).resolve()):
