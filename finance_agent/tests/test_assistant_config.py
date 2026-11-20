@@ -76,6 +76,6 @@ class AssistantConfigTests(unittest.TestCase):
         self.assistants()
         original=Agent('U001',self.path,lambda *_:None,mode='mock')
         original.assistant_id='query';refresh_assistant(original)
-        switched=original.switch_model(SimpleNamespace(authorize=lambda actor:None))
+        switched=original.switch_model(SimpleNamespace(authorize=lambda actor:None,metadata=lambda:{}))
         self.assertEqual(switched.assistant_id,'query')
         self.assertNotIn('change_invoice',switched.allowed_tools)
