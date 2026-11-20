@@ -1,12 +1,16 @@
 """Program-operated real Textual surface; never human or NLU evidence."""
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from zipfile import ZipFile
+from contextlib import closing
 import unittest
 from textual.widgets import Input
 from app.tui import AgentWorkspace
 from app.model_config import DEFAULT_TEMPLATE
 from app.cli_workspaces import import_workspace
 from app.assistant_config import configure
+from app.materials import list_materials
+from app.stage2_schema import open_existing
 from app.tui_screens import Choices
 from tests import test_tui_p0 as helpers
 
@@ -34,6 +38,16 @@ class PlatformWorkbenchTests(unittest.IsolatedAsyncioTestCase):
                 content='\n'.join(line.text for line in app.workspace_widget('#chat-log').lines)
                 self.assertIn('资料原文',content)
                 self.assertIn('[]',content)
+                word=root/'policy.docx'
+                with ZipFile(word,'w') as z:
+                    z.writestr('word/document.xml','<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>制度原段留存</w:t></w:r></w:p></w:body></w:document>')
+                await self.send(app,pilot,f'/material-upload C001 "{word.as_posix()}"')
+                with closing(open_existing(book,readonly=True)) as db:
+                    material=list_materials(db,'U001','C001')[0]
+                await self.send(app,pilot,f"/source {material['material_id']} 1 1")
+                content='\n'.join(line.text for line in app.workspace_widget('#chat-log').lines)
+                self.assertIn('制度原段留存',content)
+                self.assertIn(material['material_id'],content)
 
     def test_rule_card_preserves_version_and_exact_source_command(self):
         source={'material_id':'opaque','version':1,'paragraph_id':3}

@@ -993,7 +993,7 @@ class AgentWorkspace(ConversationUI, App):
                         raise ValueError('用法：/material-upload 企业ID "路径.docx"；/material-update 企业ID 资料ID "路径.docx"（路径用正斜线）')
                     company, filename = parts[0], parts[-1]
                     result = import_docx(self.db,self.user,company,filename,material_id=parts[1] if needed==3 else None)
-                    self.chat_message('资料上传 · 未发布制度',json.dumps(result,ensure_ascii=False,indent=2))
+                    self.chat_message('资料上传 · 本次未执行制度发布',json.dumps(result,ensure_ascii=False,indent=2))
                 else:
                     with closing(open_existing(self.db,readonly=True)) as db:
                         if command == '/materials':
@@ -1312,12 +1312,18 @@ class AgentWorkspace(ConversationUI, App):
                 return ("待办回执", f"{action}用途补充待办，{state}{next_step}。")
             return ("待办", f"{task['year']} 年 {task['month']} 月用途补充待办，{state}。")
         if tool == "get_applicable_rules":
-            return ("适用规则", display_rule_amounts(data["content"]) + AgentWorkspace.rule_source_text(data))
+            rule = dict(data)
+            rule.setdefault('business_date', evidence.get('scope', {}).get('business_date',''))
+            return ("适用规则", display_rule_amounts(data["content"]) + AgentWorkspace.rule_source_text(rule))
         return None
 
     @staticmethod
     def rule_source_text(rule):
-        text = f"\n制度 {rule.get('rule_id','')} · 版本 {rule.get('version','')} · 适用日 {rule.get('business_date','')}"
+        text = f"\n制度 {rule.get('rule_id','')} · 版本 {rule.get('version','')}"
+        if rule.get('business_date'):
+            text += f" · 适用日 {rule['business_date']}"
+        elif rule.get('effective_from'):
+            text += f" · 生效日 {rule['effective_from']}"
         source = rule.get('source')
         if source:
             text += f"\n原文：/source {source['material_id']} {source['version']} {source['paragraph_id']}"
