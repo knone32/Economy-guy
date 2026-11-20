@@ -77,6 +77,29 @@ class CurrentObjectDenialTests(unittest.TestCase):
                 self.assertFalse(any(r['status'] == 'SUCCESS' for _, r in agent.last_response['tool_results']))
                 self.assertNotIn('9622.06', answer)
 
+    def test_independent_current_readable_target_is_not_denied_by_another_mention(self):
+        for text in (
+                '北湾不查了，只查C001 2026年9月发票及银行收支。',
+                '北湾出现在背景资料里。这次核对甲企业2026年9月的发票及银行收支。'):
+            for target in ('C001', 'C002'):
+                with self.subTest(text=text, target=target):
+                    agent = Agent('U002', self.book, scripted_model([
+                        tool('get_finance_summary', {'company_id':target, 'year':2026, 'month':9}), FINAL]), mode='mock')
+                    agent.ask(text, read_workspace=('C001', 2026, 9))
+                    outcomes = [result for name, result in agent.last_response['tool_results'] if name == 'get_finance_summary']
+                    self.assertTrue(outcomes)
+                    self.assertEqual(outcomes[0]['status'], 'SUCCESS' if target == 'C001' else 'DENIED')
+                    if target == 'C001':
+                        self.assertEqual(outcomes[0]['evidence']['scope']['company_id'], 'C001')
+
+    def test_sql_uses_the_independent_current_readable_company(self):
+        sql = "SELECT COUNT(*) AS cnt FROM invoices WHERE company_id='C001'"
+        agent = Agent('U002', self.book, scripted_model([tool('query_business_sql', {'sql':sql}), FINAL]), mode='mock')
+        agent.ask('北湾作为背景，这次分析C001 2026年9月发票张数。', read_workspace=('C001', 2026, 9))
+        outcome = agent.last_response['tool_results'][0][1]
+        self.assertEqual(outcome['status'], 'SUCCESS')
+        self.assertEqual(tuple(outcome['evidence']['scope']['company_ids']), ('C001',))
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -723,6 +723,23 @@ class Agent:
             else '当前明确的企业标识无法在登记目录核实；不能改用已选企业，请核对企业。'
             if current_read_denial == 'SCOPE_MISMATCH'
             else '无法核验当前账簿和企业权限，请重新打开工作账簿。')
+        # A current independent readable object can coexist with a denied
+        # background mention. Never discharge this constraint using history or
+        # the selected workspace; the model still chooses the relationship.
+        current_read_companies = (set(self._current_read_objects(current_request).get('company_id', ()))
+                                  if current_read_denial else set())
+
+        def has_current_read_target(function):
+            if not current_read_companies:
+                return False
+            if function.get('name') == 'query_business_sql':
+                return True  # The snapshot below remains bound to current objects.
+            try:
+                arguments = json.loads(function.get('arguments'))
+            except (TypeError, ValueError):
+                return False
+            return (type(arguments) is dict and type(arguments.get('company_id')) is str
+                    and arguments['company_id'] in current_read_companies)
         invoice_proposals = read_only and not (bulk_no_confirmation or unresolved_receipt)
         selections = {} if invoice_proposals else None
         invoice_change = None
@@ -1030,6 +1047,9 @@ class Agent:
                      self.context.annual_focus or read_workspace or (prior_annual_focus if has_dates else None))
         read_workspace = (self._workspace_read_scope(selection, query_text, current_month=current_month)
                           if (not (allow_prepare or management) or mixed) and not reference else None)
+        if (current_read_denial and current_read_companies and read_workspace
+                and not set(read_workspace.get('company_id', ())) <= current_read_companies):
+            read_workspace = {key: value for key, value in read_workspace.items() if key != 'company_id'}
         full_directory = None
         if all_invoices:
             # The workspace can still establish the company, never the period of an explicit full directory.
@@ -1055,7 +1075,7 @@ class Agent:
                                           or simple_directory or all_invoices)
         sql_workspace = None
         sql_context = None
-        if sql_analysis and current_read_denial is None:
+        if sql_analysis and (current_read_denial is None or current_read_companies):
             sql_workspace = BusinessSQL(self.db_path, self.user_id, self.context.proof(
                 read_workspace, annual_year=annual_year),request=current_request)
             turn_resources.callback(sql_workspace.close)
@@ -1547,7 +1567,7 @@ class Agent:
             execution.stop("UNKNOWN_OUTCOME")
             return finish(unresolved_receipt["message"], chat_notice=unresolved_receipt["message"])
 
-        if (current_read_denial and not invoice_write
+        if (current_read_denial and not current_read_companies and not invoice_write
                 and (query_goal(query_text) == 'finance' and not explicit.get('periods') or not sql_analysis)):
             execution.stop(current_read_denial)
             return finish(current_read_notice, store=False, chat_notice=current_read_notice)
@@ -2198,7 +2218,7 @@ class Agent:
                     execution.stop('CANCELLED')
                     return finish('已停止本轮继续办理；此前已执行的事项不会撤销。\n操作回执：'
                                   + self.write_receipt['message'], store=False)
-                if current_read_denial and not invoice_write:
+                if current_read_denial and not current_read_companies and not invoice_write:
                     execution.stop(current_read_denial)
                     return finish(current_read_notice, store=False, chat_notice=current_read_notice)
                 if reconciliation_edit and not execution.schedule:
@@ -2549,7 +2569,7 @@ class Agent:
                     self.trace('read.final_only', {'original_call_id': previous_read['id'],
                         'suppressed_call_id': call['id'], 'no_new_handler_or_progress': True})
                     continue
-                if current_read_denial and fn.get('name') in READ_TOOLS:
+                if current_read_denial and fn.get('name') in READ_TOOLS and not has_current_read_target(fn):
                     result = tool_result(current_read_denial,
                         evidence={'source':'current_request_denial_constraint', 'scope_grant':False},
                         error=current_read_notice)
