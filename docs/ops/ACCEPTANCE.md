@@ -1,5 +1,15 @@
 # 验收（V3；不同SHA不拼接）
 
+## 7ec8358 只查询 Live 结果（冻结源码不改）
+
+一次公开续查已执行，真实SQL与首卡事实PASS：C001、2027-04、砚川展览服务有限公司、3478.50元、1张均与独立SQLite真值一致。首帧多余relation_source:null触发一次结构补正；末答第四个逻辑请求在HTTP前被原64总限拒，实际HTTP3。最终是PARTIAL_RESULT／final_selection_not_verified的Runtime原结果回退；未见模型错误末答，亦不能称完整末答闭环或自然语言泛化通过。
+
+旧候选PAUSED，业务／审计／草稿／批准0，guard_halted=false。恢复办理NOT_RUN；GUI人眼、真人批准、保存、提交后重启NOT_TESTED。原账64／629620／758261微元峰价上界，物理请求额度用尽，停止付费。原评分与所有raw保留，不靠脚本补成功。仅验收记录更新，不修改受测源码。
+
+[独立证据](../../../v3-c2-acceptance/public-chain-mixed-diagnostic-20261121/runs/public-query-only-7ec8358/INDEPENDENT-OBSERVATION.public.json)
+
+---
+
 ## 当前签收边界（上海2026-11-21；仅第一阶段）
 
 有限默认值／来源／继承检查已结束：root121项受影响检查通过；独立业务谓词满足，原报告的拒绝码期望差异保留，不能称原报告全绿。原f618／804b公开content本地诊断仅为程序证据，原df684／8b61 Live失败保持。当前冻结修订的下一次Live只验选择销售方后的统计卡与末答，不自动扩大到恢复办理。GUI人眼、真人批准、保存、提交后重启均NOT_TESTED。原账61／608090／691874，余3物理请求。

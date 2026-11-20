@@ -1,5 +1,15 @@
 # V3当前状态（总控权威；上海2026-11-21）
 
+## 7ec8358 一次只查询 Live 已停止（验收后记录，源码冻结）
+
+受测版本 `7ec83589d7391a7ef6d83a83fee775627a480faa`，app64摘要 `992a0e8aeff6a5560e235db1a3ff9dc22149f470fc785025d255fbe09bf94b2e`。有限检查后仅按授权执行一次公开续查，3个真实HTTP：首次额外带target.relation_source:null，结构补正后要求绑定成功，随后实际SQL与首卡数据正确为C001／2027-04／砚川展览服务有限公司／3478.50元／1张。第四个逻辑请求是末答，在发送前因cap3及原全局64上限被拒；没有已返回的错误末答或错误refs。最终为预算回退原结果、PARTIAL_RESULT／final_selection_not_verified，故只签收实际查询与首卡事实，完整末答未闭合。
+
+新增阻断是输入前文元数据与输出候选允许字段仍有差异，relation_source多余字段消耗一次补正，随后可用请求不足；不归为错误销售方或错误计算，不再付费重试或追加测试矩阵。原候选仍PAUSED，实际业务表／audit不变，draft／confirm／Approval0。未继续恢复、补值、批准或保存；控制台与卡片回调记录不能代替GUI人眼验收。
+
+原账现64请求／629620tokens／758261微元峰价保守上界（非账单），unknown_usage=false；物理请求余0，原700000tokens／2.20元不增，历史42元UNKNOWN保留。原首分及程序证据不改。最新证据：[独立简报](../../../v3-c2-acceptance/public-chain-mixed-diagnostic-20261121/runs/public-query-only-7ec8358/INDEPENDENT-OBSERVATION.public.json)。后续文档提交不迁移此Live成绩；以下为验收前快照。
+
+---
+
 ## 当前只推进第一阶段：把同一件事办完
 
 本轮有限接口检查已收口，不再扩矩阵：统一 scope／seller／filter／metric 的来源声明；显式默认 update 无 quote 与省略同义，仍不允许删除旧条件或新增替换权限。当前源 owner 为 `1aa074670c627bd40534814816ae70e8428e974b0631e44d89789db2521828a7`，121项受影响／架构通过。六组实际Agent／Registry等价程序对照保留同一目标、范围、结果及零写；独立有限复核未发现新增业务阻断，身份／账簿／目录／错key／跨目标／范围冲突仍拒。原验收器一处过窄拒绝码期望差异保留并附语义说明，不改断言或重跑。
