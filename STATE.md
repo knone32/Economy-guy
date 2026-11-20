@@ -1,5 +1,7 @@
 # 后续修复候选（尚未通过产品Live验收）
 
+> 当前总控状态以 [docs/ops/STATE.md](docs/ops/STATE.md) 和 [docs/ops/ACCEPTANCE.md](docs/ops/ACCEPTANCE.md) 为准。2026-11-20最新D01首执仍FAIL，OR误拒离线修复已提交；下文保留历史，不代表当前候选参数或签收状态。
+
 分支 sprint/2026-11-20-contract-followup；独立于7a1fdf4原冻结。已合入35a8b57的输出截断分类与d689474的受控只读绑定；旧C成绩仅属于7a1fdf4，不迁移为本分支通过。
 
 新路径只支持当轮ACL目录中精确登记名称/简称及可唯一核实期间。原sql-only公开输入仍被拒，原COUNT指标错误未改，不宣称公开原题转绿。旧read-intent补SQL scope的兼容路径被明确收口，原兼容测试保留并失败，需迁移为原生read_scope。

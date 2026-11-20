@@ -226,6 +226,26 @@ class ConflictingCountTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("授权快照", shown)
             self.assertNotIn("当月总计", shown)
 
+    async def test_identical_target_or_has_filtered_evidence_on_both_surfaces(self):
+        # The preceding historical UNKNOWN assertion is intentionally retained.
+        # This formerly unknown shape now has finite IN-equivalent attribution;
+        # its filtered count must still never become a whole-month count.
+        sql = ("SELECT COUNT(*) AS invoice_count FROM invoices "
+               "WHERE invoice_no = 'F999' OR invoice_no = 'F002'")
+        chat, cards, response = await self.workbench_query(COUNT_PROMPT, [
+            test_tui_p0.tool("query_business_sql", {"sql": sql}), final("当月总计 1 张。")])
+        self.assertEqual(len(cards), 1)
+        result = next(r for name, r in response['tool_results'] if name == 'query_business_sql')
+        self.assertEqual(result['evidence']['query_scope']['status'], 'VERIFIED')
+        self.assertEqual(result['data']['rows'], [(1,)])
+        self.assertEqual(result['evidence']['query_scope']['conditions'], [
+            {'field': 'invoice_no', 'operator': 'IN', 'value': ['F999', 'F002']}])
+        for shown in (chat, cards[0]):
+            self.assertIn('F999', shown)
+            self.assertIn('F002', shown)
+            self.assertIn('筛选', shown)
+            self.assertNotIn('当月总计', shown)
+
     @staticmethod
     def filtered_sql(projection, company, period):
         return (f"SELECT {projection} FROM invoices "

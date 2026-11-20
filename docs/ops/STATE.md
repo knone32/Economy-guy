@@ -6,9 +6,13 @@
 
 独立同版DeepSeek K01/K02首执均FAIL，原分不可改。K01合法完整身份SQL因月份OR谓词归因UNKNOWN而误拒；K02模型把简称的全部发票解释成跨销售方contains，真实卡片展示合计且未追问。故D01尚未修复完成，不晋级main。公开证据 ../v3-c5-sealed/k01-k02-sealed/public/K-FIRST-92f708e-REPORT.json。
 
-当前离线修复K01归因：同一目标的等值／IN析取按等价IN归因，混合目标、变换、AND分支继续UNKNOWN；35项定向通过。B按原用户、原SQL进行实际Textual脚本模型回归通过：卡片6895元／3张、8300元／2张；末答增加1405元、减少1张。证据 ../../k01-or-repair/run-1795167617925099800（相对总项目根核对路径），标AFTER_DISCLOSURE_SCRIPTED_NONLIVE；原首FAIL不改，全量回归另记。K02需要独立于SQL生成的用户业务关系约束，禁止用词表补丁或一律禁LIKE掩盖。
+当前离线修复K01归因已提交764e6f6：同一目标的等值／IN析取按等价IN归因，混合目标、变换、AND分支继续UNKNOWN；35项定向通过。B按原用户、原SQL进行实际Textual脚本模型回归通过：卡片6895元／3张、8300元／2张；末答以六月减五月的scalar算式显示1405元、-1张（没有另写“增加／减少”字样）。证据位于总项目根 k01-or-repair/run-1795167617925099800，标AFTER_DISCLOSURE_SCRIPTED_NONLIVE；原首FAIL不改，全量回归另记。K02需要独立于SQL生成的用户业务关系约束，禁止用词表补丁或一律禁LIKE掩盖。
 
 统一预算累计49请求／511727tokens／445084成本微元（峰价记账上界，非账单）；未知用量false，原46条前缀保持，原总限64／700000／2.20元不增加。真人批准／提交／重启回读仍未验；D07及整行引用相减另记。
+
+OR修复全量：1036项／160FAIL／32ERROR／422.753秒（../evidence-root/d01-or-current-full.log）。比92f新增一条旧UNKNOWN断言FAIL：invoice_no两个等值OR现可形成IN归因；旧断言保留不改，新增真实卡片／末答正控制通过，核实筛选数不会冒称整月总数。新增Approval挂载NoMatches错误一次隔离复核通过，但原ERROR保留、归因未关闭；其余原失败仍在。此后仅补1条正控制测试与文档，不重复整套为追绿。
+
+K02独立语义review在 d01-semantic-review-work 隔离开发，尚未集成。会覆盖自报contains和遗漏seller条件，不把生成SQL当用户要求；非SQL汇总／列表附加条件的保护仍需独立核实。N01/N02已新封存，仅零API设计，等待新候选与同账授权；不替换旧K成绩。
 
 ## R5冻结前（上海11月20日下午）
 
