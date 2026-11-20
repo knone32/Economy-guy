@@ -128,9 +128,16 @@ class BusinessRequestPhaseTests(unittest.TestCase):
         message={'role':'assistant','tool_calls':[tool('native','change_invoice',company_id='C001',invoice_no='F001',
             year=2026,month=9,field='remark',new_value='待核')]}
         seen=[]
-        def model(messages,tools):seen.append(tools);return message
+        stages=[]
+        def model(messages,tools):
+            stages.append(tools)
+            if not tools:
+                return {'role':'assistant','content':'{"kind":"legacy"}'}
+            seen.append(tools);return message
         a=Agent('U001',self.book,model,mode='mock',trace_path=self.root/'legacy-write.jsonl')
         a.ask('C001 2026年9月F001的备注改成“待核”。')
+        self.assertEqual(stages[0],[]);self.assertEqual(len(stages),2)
+        self.assertEqual(a.last_response['execution']['model_requests'],2)
         self.assertIsNone(a.business_request);self.assertTrue(seen[0])
         self.assertEqual(a.last_response['execution']['stop_reason'],'WAITING_CONFIRMATION')
         with closing(sqlite3.connect(self.book)) as db:

@@ -324,3 +324,42 @@ class BusinessRequestDeliveryTests(unittest.TestCase):
         partial = assess_selection(request, subset, facts, results)
         self.assertFalse(partial['complete']); self.assertIn('i1:groups_not_delivered', partial['missing'])
         self.assertTrue(assess_selection(request, ['group:r0.result'], facts, results)['complete'])
+
+    def test_unproved_display_projection_cannot_block_or_replace_proved_core(self):
+        from app.tool_registry import handle_tool
+        from app.answer_evidence import catalog
+        from app.business_request_delivery import assess_selection
+        request=self.requirement()
+        sql=self.sql.replace('SUM(amount_cents) AS cents',
+            'SUM(amount_cents) AS cents,ROUND(SUM(amount_cents)/100.0,2) AS yuan')
+        legacy=self.actual_result(sql)
+        self.assertEqual(legacy['evidence']['query_scope']['status'],'UNKNOWN')
+        values={'company_id':['C001'],'periods':[(2026,9),(2026,10)]}
+        with closing(BusinessSQL(self.book,'U002',ScopeProof('U002',values,
+                     dict.fromkeys(values,'user_current')))) as workspace:
+            accepted=handle_tool('query_business_sql',json.dumps({'sql':sql}),'U002',self.book,
+                                sql_workspace=workspace,business_request=request)
+        self.assertEqual(accepted['status'],'SUCCESS',accepted)
+        self.assertEqual(accepted['data']['sql'],sql)
+        self.assertEqual(accepted['data']['rows'],[('2026-09',1,179700),('2026-10',1,235700)])
+        projection=accepted['data']['request_projection']
+        self.assertEqual(projection['source_column_indices'],[0,1,2])
+        self.assertFalse(projection['source_projection_complete'])
+        self.assertEqual(projection['source_columns'][3]['kind'],'unattributed')
+        results=[('query_business_sql',accepted)];facts=catalog(results,{},'display')
+        self.assertTrue(assess_selection(request,['display:r0.result'],facts,results)['complete'])
+
+    def test_unproved_projection_does_not_waive_filter_or_group_proof(self):
+        from app.tool_registry import handle_tool
+        request=self.requirement()
+        sql=self.sql.replace('SUM(amount_cents) AS cents',
+            'SUM(amount_cents) AS cents,ROUND(SUM(amount_cents)/100.0,2) AS yuan')
+        values={'company_id':['C001'],'periods':[(2026,9),(2026,10)]}
+        variants=[(sql.replace("seller_name='玄野服务有限公司'","seller_name LIKE '%玄野%'"),'SCOPE_MISMATCH'),
+                  (sql.replace("purpose='展会物料'","purpose='展会物料' AND amount_cents+0>0"),'SQL_EVIDENCE_UNSUPPORTED')]
+        for candidate,expected in variants:
+            with self.subTest(sql=candidate),closing(BusinessSQL(self.book,'U002',ScopeProof('U002',values,
+                    dict.fromkeys(values,'user_current')))) as workspace:
+                result=handle_tool('query_business_sql',json.dumps({'sql':candidate}),'U002',self.book,
+                                   sql_workspace=workspace,business_request=request)
+                self.assertEqual(result['status'],expected,result);self.assertIsNone(result['data'])

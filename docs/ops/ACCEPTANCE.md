@@ -1,5 +1,21 @@
 # 验收（V3；不同SHA不拼接）
 
+## 普通请求入口与分发闭环候选（O 原分保持）
+
+用户已核实单位“金额换成元”触发旧 invoice_intent_source，导致 O 两题跳过独立要求。根另以公开虚构“金额以元显示／金额换算为元”在 05b 动态复现同类入口分歧；证据 `../evidence-root/unit-display-entry-1795179080837136600/RESULT.json`。当前改动让普通只读轮进入要求阶段，不再依据旧修改关键词跳过；读取期间推导亦不取该关键词判断。已绑定读取要求后，由该要求持有当前动作解释。
+
+Agent 财务分发独立于旧 _business_contract_required 开关验证：当前 BusinessRequest，或既有 WriteCoordinator 中经核对的显式单票编辑 Session。后者只允许相同企业＋票号的 get_invoice，不能授权汇总、SQL、其他票或失效状态；权限仍在执行处 fresh 核对。before-handler trace 与结果 evidence.read_basis 记录实际依据；没有依据即零 Handler。
+
+O01 投影能力限制另修：仅请求已绑定路径允许保留已证明的原 SUM/COUNT，未归因的附加展示列先从结果投影删除；完整保留原 SQL/hash、原列归因与映射。WHERE、范围、日期、分组、单位与指标核验照旧；默认旧路径仍 UNKNOWN。COUNT 非空字段等价只依据同一 SQLite 读事务捕获的 NOT NULL 约束；nullable、DISTINCT 不泛化。is_blank 空串统一为证明器 True，False 保留非空语义，不重算金额。
+
+106 项定向/架构通过。独立闭环 17 项有效控制通过；两个无权限正例的无效夹具记录保留后仅补验。原公开 9 项、两组两轮及新 J 同一源码全部通过：J 原 B 加“金额换成元”，先要求再执行，卡片/末答 1797、2357 元／各 2 张／差 560 元，新增 ROUND 列不作为金额事实，原 Scope/条件不变。证据：项目根 `business-request-matrix/ENTRY-CLOSURE-PUBLIC-REGRESSION-1795181100193228500.json`，`../v3-c2-acceptance/UNIT-ENTRY-DISPATCH-PROJECTION-INDEPENDENT-REVIEW.public.json`。自然写入测试夹具增加必经的 kind=legacy 回复，原待确认/零审计业务断言保留；显式编辑 fresh get→prepare 仍待真人确认，未提交。
+
+05b 完整回归 1124 项／426FAIL／186ERROR／680.262 秒不通过；不能迁移为本候选成绩。本源完整回归正在运行。修后新主路线尚无同版真实模型通过结论，O 原首 O01 FAIL、O02 PASS、整对 FAIL 永久保留。
+
+O 外发初拒后，用户已明确授权各一次首执；已完成 2 个请求，不因重复答复增执行次数。统一账本现 53／544661／522563 微元峰价上界，余 11／155339／1677437，原 64／700000／2.20 元总限不增，历史总支出 UNKNOWN。私题/完整回包公开仍未授权，不披露不绕过；新公开 D01 J 标准模型回归仅准备、未收费，不重跑 O。
+
+---
+
 ## 读取要求结构重述候选（首分不重算）
 
 针对已获准的无业务值结构摘要，只加强有限 JSON 协议并沿用 Agent 原 Loop 允许一次结构重述。仅合法 JSON 的 `kind=read`、纯结构 INVALID_ARGUMENTS 且已有模型槽可用时进入；输入仍只有原独立要求上下文和静态错误提示，不读取失败回复/SQL/执行提案。严格 bind、重复键、ACL、来源、范围、对象消歧和卡片/末答核对不放宽；全部调用计原预算，无新 Loop 或草稿 owner。

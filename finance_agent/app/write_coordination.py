@@ -1,6 +1,8 @@
 """轻量连续修改意图、草稿协调与权威回执，不是持久任务。"""
 import sqlite3
 import re
+import hashlib
+from pathlib import Path
 from datetime import date
 from uuid import uuid4
 from .updates import UpdateSession, confirm_draft, commit_invoice_update, inspect_request, result as tool_result
@@ -17,6 +19,30 @@ class WriteCoordinator:
         self.pending = None
         self.unverified_draft = None
         self.events = []
+
+    def read_basis(self, name, arguments, *, actor, book):
+        """A current explicit single-invoice edit may read only that invoice.
+
+        This is evidence from the existing owner, not a model route or a new
+        approval. Statistics and arbitrary discovery never inherit this basis.
+        """
+        session = self.session
+        scope = session.expected_scope or {}
+        if (name != 'get_invoice' or actor != self.user_id or session.user_id != actor
+                or Path(book).resolve() != Path(self.db_path).resolve()
+                or not session.allow_prepare or not session.explicit_edit_only
+                or not session.turn_id or not session.source_request or scope.get('_conflict')
+                or self.unverified_draft is not None):
+            return None
+        for field in ('company_id', 'invoice_no'):
+            values = scope.get(field)
+            if not isinstance(values, (list, tuple)) or len(values) != 1 or arguments.get(field) != values[0]:
+                return None
+        return {'kind':'invoice_update_session', 'actor':actor,
+                'session_id':session.session_id, 'turn_id':session.turn_id,
+                'company_id':scope['company_id'][0], 'invoice_no':scope['invoice_no'][0],
+                'source_hash':hashlib.sha256(session.source_request.encode('utf-8')).hexdigest(),
+                'authorization':False}
 
     def begin(self, text, allow_prepare=False, continue_edit=False, edit_scope=None, edit_correction=False):
         if self.unverified_draft is not None:

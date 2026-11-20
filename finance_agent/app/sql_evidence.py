@@ -24,7 +24,7 @@ class Unsupported(ValueError):
     pass
 
 
-def describe(sql, columns, snapshot, tables, reads):
+def describe(sql, columns, snapshot, tables, reads, *, allow_partial_projection=False):
     base = {'scope': None, 'filters': (), 'conditions': [], 'columns': [],
             'sql_sha256': hashlib.sha256(sql.encode()).hexdigest(), 'status': 'UNKNOWN'}
     try:
@@ -235,7 +235,16 @@ def describe(sql, columns, snapshot, tables, reads):
             if isinstance(node, exp.Star) or isinstance(node, exp.Column) and isinstance(node.this, exp.Star):
                 projected.extend({'name': name, **attribution(exp.column(name))} for name in fields)
             else:
-                projected.append({'name': expression.alias_or_name, **attribution(node)})
+                try:
+                    meta = attribution(node)
+                except Unsupported as error:
+                    if not allow_partial_projection:
+                        raise
+                    # Only the request-bound adapter may retain independently
+                    # attributed columns and discard this unproved expression.
+                    # WHERE, grouping and set completeness still need proof.
+                    meta = {'kind':'unattributed','unit':None,'reason':str(error)}
+                projected.append({'name': expression.alias_or_name, **meta})
         if len(projected) != len(columns) or len(set(columns)) != len(columns):
             raise Unsupported('projection_columns')
         for meta, name in zip(projected, columns):
@@ -272,6 +281,7 @@ def describe(sql, columns, snapshot, tables, reads):
         return {**base, 'status': 'VERIFIED', 'scope': {'company_ids': companies, 'periods': tuple(actual_periods)},
                 'conditions': conditions, 'filters': filters, 'date_field': date_field, 'table': table_name,
                 'columns': projected, 'limited': bool(tree.args.get('limit') or tree.args.get('offset')),
+                'projection_complete':all(p['kind'] != 'unattributed' for p in projected),
                 'query_set_complete': not bool(tree.args.get('limit') or tree.args.get('offset'))}
     except (Unsupported, ValueError, TypeError, OverflowError, sqlglot.errors.ParseError) as error:
         return {**base, 'reason': str(error)}

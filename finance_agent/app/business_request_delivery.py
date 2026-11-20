@@ -122,9 +122,47 @@ def _condition_key(condition):
     return json.dumps(condition, ensure_ascii=False, sort_keys=True)
 
 
+def _proof_filter(condition):
+    value=list(condition.value) if isinstance(condition.value,tuple) else condition.value
+    # Empty-string spells positive blank. False must remain False.
+    if condition.operator=='is_blank' and type(value) is str and value=='':value=True
+    return {'field':condition.field,'operator':condition.operator,'value':value}
+
+
 def _expected_filters(target):
-    return [{'field': f.field, 'operator': f.operator,
-             'value': list(f.value) if isinstance(f.value, tuple) else f.value} for f in target.filters]
+    return [_proof_filter(f) for f in target.filters]
+
+
+def canonical_sql_result(result):
+    # Canonicalize consumer metadata from same-transaction constraints only.
+    # Original attribution, SQL/hash and rows are retained; no new reads occur.
+    from hashlib import sha256
+    data=result.get('data') or {};query=(result.get('evidence') or {}).get('query_scope') or {}
+    version=data.get('read_version') or {};constraints=version.get('schema_constraints') or {}
+    columns=constraints.get('not_null_columns');sql=data.get('sql')
+    if (query.get('status')!='VERIFIED' or version.get('consistency')!='one_sqlite_read_transaction'
+            or constraints.get('source')!='same_sqlite_read_transaction' or type(columns) is not dict
+            or not version.get('scope_snapshot_sha256') or type(sql) is not str
+            or query.get('sql_sha256')!=sha256(sql.encode('utf-8')).hexdigest()
+            or constraints.get('sha256')!=sha256(json.dumps(columns,sort_keys=True,
+                separators=(',', ':')).encode()).hexdigest()):
+        return result
+    declared=columns.get(query.get('table'),())
+    if type(declared) not in (list,tuple) or any(type(name) is not str for name in declared):return result
+    changes=[i for i,column in enumerate(query.get('columns',()))
+             if column.get('kind')=='count_nonnull' and column.get('field') in declared]
+    if not changes:return result
+    accepted=deepcopy(result);evidence=accepted['evidence'];current=evidence['query_scope']
+    evidence.setdefault('original_query_scope',deepcopy(query))
+    for index in changes:
+        column=current['columns'][index];original=deepcopy(column);field=column.pop('field')
+        column['kind']='count_rows'
+        column['original_attribution']=original
+        column['equivalence']={'rule':'count_nonnull_equals_rows_on_not_null',
+            'table':query['table'],'field':field,'source':'same_sqlite_read_transaction',
+            'schema_sha256':constraints['sha256'],'scope_snapshot_sha256':version['scope_snapshot_sha256'],
+            'sql_sha256':query['sql_sha256']}
+    return accepted
 
 
 def _check_conditions(target, conditions, actor, book, *, seller_partition=False):
@@ -341,6 +379,7 @@ def project_sql_result(request, result, actor, book):
     if not facts:
         return original
     columns = query['columns']
+    source_projection_complete = query.get('projection_complete')
     requested = {int(key.rsplit('.', 1)[1]) for key, (_, fact) in facts.items()
                  if any(t.object == query['table'] and _metric_matches(t, fact) for t in request.targets)}
     if not requested:
@@ -403,8 +442,11 @@ def project_sql_result(request, result, actor, book):
         data['derived'] = [data['derived'][r] for r in rows]
     data['row_count'] = len(rows)
     data['request_projection'] = {'original_columns': old_columns, 'source_column_indices': keep,
+                                  'source_columns': deepcopy(columns),
+                                  'source_projection_complete': source_projection_complete,
                                   'source_query_set_complete': query.get('query_set_complete'),
                                   'source_row_indices': rows, 'identity_only': identity_only}
+    query['projection_complete'] = all(c.get('kind') != 'unattributed' for c in query['columns'])
     if len(rows) != len(result['data']['rows']) or identity_only:
         query['query_set_complete'] = False
     accepted = annotate(original, request, sorted(ids))
@@ -512,8 +554,7 @@ def check_dedicated(request, name, result, actor, book):
                 if row.get('seller_name') not in target.seller.names:
                     continue
             if all(_matching([cents(row.get('amount')) if f.field == 'amount_cents' else row.get(f.field)],
-                             [{'field': f.field, 'operator': f.operator,
-                               'value': list(f.value) if isinstance(f.value, tuple) else f.value}])
+                             [_proof_filter(f)])
                    for f in target.filters):
                 matches.append(target)
         if not matches:
@@ -534,7 +575,7 @@ def accept_result(request, name, result, actor, book):
         return result
     if name == 'query_business_sql':
         _frame(request, actor, book)
-        projected = project_sql_result(request, result, actor, book)
+        projected = project_sql_result(request, canonical_sql_result(result), actor, book)
         if projected.get('data', {}).get('request_projection'):
             return projected
         proofs = []

@@ -338,9 +338,16 @@ class BusinessSQL:
                 dates = ([f"{scope['year']:04d}-"] if "periods" not in scope else
                          [f"{year:04d}-{month:02d}-" for year, month in scope["periods"]])
                 rows_left, bytes_left = MAX_SOURCE_ROWS, MAX_SOURCE_BYTES
+                not_null_columns = {}
                 for table, schema in TABLES.items():
                     columns = tuple(column.split()[0] for column in schema.split(", "))
                     date_column = columns[2]
+                    # Schema constraints and rows belong to the same source snapshot.
+                    declared = {row['name']: bool(row['notnull'])
+                                for row in source.execute(f'PRAGMA table_info({table})')}
+                    not_null_columns[table] = [name for name in columns if declared.get(name) is True]
+                    snapshot_hash.update(json.dumps([table,not_null_columns[table]],
+                                                    separators=(',', ':')).encode())
                     # Company and dates are bound values, never model SQL.
                     company_params = ",".join("?" for _ in companies)
                     date_params = ",".join("?" for _ in dates)
@@ -363,7 +370,11 @@ class BusinessSQL:
                 memory.commit()
                 self.read_version = {'scope_snapshot_sha256': snapshot_hash.hexdigest(),
                     'book_stamp_before': before_stamp, 'book_stamp_after': book_read_stamp(self.path),
-                    'consistency': 'one_sqlite_read_transaction', 'global_revision_known': False}
+                    'consistency': 'one_sqlite_read_transaction', 'global_revision_known': False,
+                    'schema_constraints': {'source':'same_sqlite_read_transaction',
+                        'not_null_columns':not_null_columns,
+                        'sha256':hashlib.sha256(json.dumps(not_null_columns,sort_keys=True,
+                            separators=(',', ':')).encode()).hexdigest()}}
                 memory.create_function("is_blank", 1, lambda value: value is None or not str(value).strip(),
                                        deterministic=True)
                 memory.execute("PRAGMA query_only=ON")
@@ -417,7 +428,8 @@ class BusinessSQL:
                 if not reads:
                     raise BusinessSQLError("SQL_REJECTED", "查询必须读取至少一张业务投影表")
                 columns = [column[0] for column in cursor.description]
-                attributed = describe_sql(sql, columns, scope, TABLES, reads)
+                attributed = describe_sql(sql, columns, scope, TABLES, reads,
+                    allow_partial_projection=self.business_request is not None)
                 units = ([p['unit'] for p in attributed['columns']] if attributed['scope'] is not None
                          else _projection_units(sql, columns))
                 rows, derived, truncated = _bounded_rows(cursor, columns, units)

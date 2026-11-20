@@ -420,9 +420,22 @@ class Agent:
             'count_invoice_fields','list_annual_blank_purpose','invoice_total','bank_income_total',
             'bank_expense_total','summary','resolve_recent_invoice','resolve_invoice_reference','check_missing_purpose'}
         req=self.business_request
-        if self._business_contract_required and financial and req is None:
-            return tool_result('DENIED',evidence={'source':'business_request'},
-                               error='本轮尚未绑定独立读取要求，不能执行财务查询。')
+        read_basis = None
+        if financial and req is None:
+            # Dispatch checks current runtime ownership independently of the
+            # early route switch. A language hint cannot disable this gate.
+            try:
+                raw=args[1] if len(args)>1 else kwargs.get('raw_arguments')
+                arguments=validate_arguments(name,raw)
+                actor=args[2] if len(args)>2 else kwargs.get('user_id',self.user_id)
+                book=args[3] if len(args)>3 else kwargs.get('db_path',self.db_path)
+                if actor == self.user_id and Path(book).resolve() == self.db_path.resolve():
+                    read_basis=self.coordinator.read_basis(name,arguments,actor=actor,book=book)
+            except (ValueError, TypeError, OSError):
+                pass
+            if read_basis is None:
+                return tool_result('DENIED',evidence={'source':'business_request'},
+                                   error='本轮尚未绑定独立读取要求或有效办理依据，不能执行财务查询。')
         if req is not None:
             try:req.require_current(self.user_id,self.db_path,turn_id=self.trace_id)
             except BusinessRequestError as error:
@@ -445,7 +458,15 @@ class Agent:
                 kwargs['provenance']=ScopeProof(req.actor,values,dict.fromkeys(values,'controlled_read_scope'))
                 kwargs['expected_scope']=dict(values)
             kwargs['business_request']=req
-        return handle_tool(*args, **kwargs, assistant_id=self.assistant_id)
+            if financial:
+                read_basis={'kind':'business_request','revision':req.revision,
+                            'request_hash':req.request_hash,'turn_id':req.turn_id}
+        if read_basis is not None:
+            self.trace('tool.read_basis',{'tool':name,'basis':read_basis})
+        result=handle_tool(*args, **kwargs, assistant_id=self.assistant_id)
+        if read_basis is not None:
+            result.setdefault('evidence',{})['read_basis']=read_basis
+        return result
 
     def switch_model(self,connection):
         """可信轮次边界重建协议会话；仅携带可重查的业务范围和历史用户目标。"""
@@ -587,6 +608,7 @@ class Agent:
         business_preflight = False
         business_format_repair_used = False
         business_format_error = None
+        business_entry = None
         current_request = text
         self.paused_invoice_candidate = None
         self.ticket_preview_candidate = None
@@ -861,7 +883,9 @@ class Agent:
                 corrected = True
         literal_periods = set(explicit.get("periods", ()))
         missing_year_months = set(explicit.get("month", ())) - {month for _, month in literal_periods}
-        multi_month_read = read_only and not invoice_intent_source(text_request)
+        # Literal read-period binding must not depend on an old lexical edit
+        # hint; the independent stage decides this ordinary turn's action.
+        multi_month_read = read_only
         if supplemental_year is not None and (multi_month_read or len(missing_year_months) == 1):
             literal_periods.update((supplemental_year, month) for month in missing_year_months)
             missing_year_months.clear()
@@ -902,11 +926,16 @@ class Agent:
             if not literal_periods:
                 date_sources["year"] = "current_sqlite"
         invoice_write = invoice_proposals and bool(scoped_edit or invoice_intent_source(text_request))
-        # This flag controls the source of a possible task note; the workbench
-        # sends it for ordinary queries too.  Management intent has its own owner.
-        business_preflight = can_continue_query and read_only and not (invoice_write or mixed
-            or active_pending and (active_pending.get('change') or active_pending.get('business_action')=='single_invoice'))
+        # Ordinary natural-language turns reach the independent requirements
+        # stage even when a legacy lexical write hint happens to match.
+        pending_owner = bool(active_pending and (active_pending.get('change')
+                             or active_pending.get('business_action')=='single_invoice'))
+        business_preflight = can_continue_query and read_only and not pending_owner
         self._business_contract_required = business_preflight
+        business_entry={'can_continue_query':bool(can_continue_query),'read_only':bool(read_only),
+                        'pending_owner':pending_owner,'legacy_write_hint':bool(invoice_write),
+                        'independent_preflight':business_preflight}
+        self.trace('business_request.entry',business_entry)
 
         previous_results = (self.last_response or {}).get("tool_results", ())
         explain_payment = bool(re.search(r"付款|回款|支付|付清|结清|已付|付过|(?:发票.*流水|流水.*发票).*(?:关联|对应)", text))
@@ -1434,6 +1463,8 @@ class Agent:
                 # comparison/ref was delivered. Never reuse the old tool-name goal.
                 response['single_query_verified']=bool(delivery['complete'])
                 response['single_query_partial']=bool(facts) and not delivery['complete']
+            if business_entry is not None:
+                response['business_request_entry']=dict(business_entry)
             if goal_coverage:
                 response["goal_coverage"] = goal_coverage
             if page_read:
@@ -2280,6 +2311,10 @@ class Agent:
                             execution.stop('WAITING_USER')
                             return finish(question,store=False,category='clarification',chat_notice=question,final_only=True)
                         req.require_current(actor,self.db_path,turn_id=self.trace_id)
+                        # The fixed read request owns this turn's interpretation;
+                        # legacy lexical hints no longer describe its action.
+                        invoice_write = False
+                        scoped_edit = None
                         if sql_workspace is not None:sql_workspace.close()
                         values={'company_id':sorted({c for t in req.targets for c in t.company_ids}),
                                 'periods':sorted({p for t in req.targets for p in t.periods})}
