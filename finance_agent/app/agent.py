@@ -15,12 +15,15 @@ from .intent_contract import (IntentContractError, sidecar as intent_sidecar, va
     infer_proposal as infer_proposal_intent, apply_pending as apply_intent_pending,
     proposal_edit as intent_proposal_edit, read_proof as intent_read_proof, READ_TOOLS)
 from .request_budget import BudgetExceeded
+from .business_request import (BusinessRequest, BusinessRequestError, read_catalog as request_catalog,
+    messages as request_messages, bind as bind_business_request)
+from .seller_semantic_review import load_review
 from .pending_transition import (contract_error as pending_contract_error, transition as apply_pending_transition,
     PendingTransitionError)
 from .invoice_action import change_invoice as execute_invoice_action, public_state as invoice_business_state
 from .write_coordination import WriteCoordinator
 from .updates import commit_invoice_update, edit_scope_error
-from .provenance import SOURCES, ScopeProof, supplement_read_literals, current_sql_invoice_identity
+from .provenance import SOURCES, READ_SOURCES, ScopeProof, supplement_read_literals, current_sql_invoice_identity
 from .business_sql import BusinessSQL, BusinessSQLError, TABLES as SQL_TABLES
 from .invoice_continuity import InvoiceQueryChain, InvoiceRead
 from .tui_intent import (invoice_choice_reply, invoice_followup_action, invoice_intent_source,
@@ -178,6 +181,9 @@ class Agent:
                     "content 只写一个符合前述字段约定的 JSON 对象。不要附加字段、Markdown 代码围栏、"
                     "解释性前后缀或工具结果副本。")
 
+        self.business_request = None
+        self._last_business_request = None
+        self._business_contract_required = False
         self._active=False
         self._retired=False
         self.continuity=None
@@ -408,6 +414,37 @@ class Agent:
         finally: self._active=False
 
     def dispatch_tool(self, *args, **kwargs):
+        name=args[0] if args else kwargs.get('name')
+        financial = name in {'query_business_sql','get_finance_summary','get_annual_finance_summary',
+            'get_invoice','list_invoices','list_invoice_directory','list_bank_transactions','list_annual_bank_income',
+            'count_invoice_fields','list_annual_blank_purpose','invoice_total','bank_income_total',
+            'bank_expense_total','summary','resolve_recent_invoice','resolve_invoice_reference','check_missing_purpose'}
+        req=self.business_request
+        if self._business_contract_required and financial and req is None:
+            return tool_result('DENIED',evidence={'source':'business_request'},
+                               error='本轮尚未绑定独立读取要求，不能执行财务查询。')
+        if req is not None:
+            try:req.require_current(self.user_id,self.db_path,turn_id=self.trace_id)
+            except BusinessRequestError as error:
+                return tool_result(error.status,evidence={'source':'business_request'},error=str(error))
+            if name in {'change_invoice','prepare_invoice_update','propose_invoice_changes',
+                        'manage_task','manage_preference','manage_display_preference'}:
+                return tool_result('DENIED',evidence={'source':'business_request'},error='本次只读要求不授予修改或管理许可。')
+            if financial:
+                values={'company_id':sorted({c for target in req.targets for c in target.company_ids}),
+                        'periods':sorted({p for target in req.targets for p in target.periods})}
+                values['year']=sorted({y for y,m in values['periods']})
+                values['month']=sorted({m for y,m in values['periods']})
+                numbers={f.value for target in req.targets if target.object=='invoices' for f in target.filters
+                         if f.field=='invoice_no' and f.operator=='=' and isinstance(f.value,str)}
+                existing=kwargs.get('provenance')
+                if (isinstance(existing,ScopeProof) and existing.actor==req.actor
+                        and existing.sources.get('invoice_no') in READ_SOURCES):
+                    numbers.update(existing.values.get('invoice_no',()))
+                if numbers:values['invoice_no']=sorted(numbers)
+                kwargs['provenance']=ScopeProof(req.actor,values,dict.fromkeys(values,'controlled_read_scope'))
+                kwargs['expected_scope']=dict(values)
+            kwargs['business_request']=req
         return handle_tool(*args, **kwargs, assistant_id=self.assistant_id)
 
     def switch_model(self,connection):
@@ -544,6 +581,10 @@ class Agent:
         self._check_identity()
         if self.workbook_guard:
             self.workbook_guard()
+        previous_business_request = self.business_request or self._last_business_request
+        self.business_request = None
+        self._business_contract_required = False
+        business_preflight = False
         current_request = text
         self.paused_invoice_candidate = None
         self.ticket_preview_candidate = None
@@ -568,6 +609,7 @@ class Agent:
         budget_close_active = False
         budget_refusal = None
         bound_answer = None
+        answer_selection_assessment = None
         grounded_model_text = None
         natural = None
         pending_action = None
@@ -579,15 +621,24 @@ class Agent:
         read_finish_reason = None
         completed_read_calls = {}
 
+        def select_current_answer(answer, catalog):
+            nonlocal answer_selection_assessment
+            answer_selection_assessment = None
+            rendered = select_answer(answer, catalog)
+            if rendered is None or self.business_request is None:
+                return rendered
+            from .business_request_delivery import assess_selection
+            answer_selection_assessment = assess_selection(self.business_request, answer, catalog, read_results)
+            self.trace('business_request.selection', answer_selection_assessment)
+            if not answer_selection_assessment['valid']:
+                return None
+            if not answer_selection_assessment['complete']:
+                rendered += '\n本次仅交付已核实部分，仍有请求的指标或比较未交付。'
+            return rendered
+
         def workbook_stamp():
-            stamp = []
-            for path in (self.db_path, Path(str(self.db_path) + '-wal')):
-                try:
-                    info = Path(path).stat()
-                    stamp.append((info.st_size, info.st_mtime_ns))
-                except FileNotFoundError:
-                    stamp.append(None)
-            return tuple(stamp)
+            from .read_version import book_read_stamp
+            return book_read_stamp(self.db_path)
 
         def read_signature(function):
             try:
@@ -631,7 +682,7 @@ class Agent:
             pending = None
         chain = self.invoice_query_chain if can_continue_query and self.context.db_path == self.db_path else None
         invoice_action = invoice_followup_action(text, chain) if chain else None
-        if invoice_action:
+        if invoice_action and (not business_preflight or invoice_action[0] in {'cancel','clarify'}):
             action, position, supplied = invoice_action
             if action == "read":
                 item = chain.item(position)
@@ -849,6 +900,12 @@ class Agent:
             if not literal_periods:
                 date_sources["year"] = "current_sqlite"
         invoice_write = invoice_proposals and bool(scoped_edit or invoice_intent_source(text_request))
+        # This flag controls the source of a possible task note; the workbench
+        # sends it for ordinary queries too.  Management intent has its own owner.
+        business_preflight = can_continue_query and read_only and not (invoice_write or mixed
+            or active_pending and (active_pending.get('change') or active_pending.get('business_action')=='single_invoice'))
+        self._business_contract_required = business_preflight
+
         previous_results = (self.last_response or {}).get("tool_results", ())
         explain_payment = bool(re.search(r"付款|回款|支付|付清|结清|已付|付过|(?:发票.*流水|流水.*发票).*(?:关联|对应)", text))
         previous_facts = self.context.explanation_facts(previous_results, explicit, historical=True) if read_only else {}
@@ -908,7 +965,9 @@ class Agent:
                 # change_invoice still validates scope and rereads the row.
                 self.trace('reference.deferred_to_business_turn', {'status':reference['status']})
                 reference = None
-        if reference and reference["ok"]:
+        if business_preflight and reference and reference['ok']:
+            reference = None
+        if reference and reference["ok"] and not business_preflight:
             self.context.accept_reference(reference['evidence'])
             if selections is not None:
                 scope = reference["evidence"]["scope"]
@@ -1228,7 +1287,7 @@ class Agent:
                     self.pending_intent["change"] = {key: [value] for key, value in model_change.items()}
                 elif active_pending and pending_action in {'continue', 'replace'} and active_pending.get('change'):
                     self.pending_intent['change'] = dict(active_pending['change'])
-            if comparison and category == "database_query":
+            if comparison and category == "database_query" and self.business_request is None:
                 current = next((result["data"] for name, result in read_results
                                 if name == "get_invoice" and result["status"] == "SUCCESS"
                                 and result["evidence"].get("source") == "current_sqlite"
@@ -1314,7 +1373,7 @@ class Agent:
                 invoice_sql = max(invoice_sql_results, key=lambda item:
                                   item[1]["data"].get(invoice_coverage, {}).get("shown", -1), default=None)
             metric_notice = None
-            if metric_request:
+            if metric_request and self.business_request is None:
                 metric = metric_request[1]
                 if metric.startswith("银行"):
                     key = "bank_income_total" if metric.startswith("银行收入") else "bank_expense_total"
@@ -1354,6 +1413,25 @@ class Agent:
                                                      or (invoice_sql and invoice_sql[1]["data"].get(invoice_coverage)
                                                          and not invoice_sql_verified)
                                                      or (referenced and not referenced["displayed_set_complete"]))}
+            if self.business_request is not None:
+                response['business_request']=self.business_request.metadata()
+                assessment={'status':'unresolved','complete':False,'targets':[],
+                            'missing':['execution_evidence_assessor_unavailable']}
+                try:
+                    from .business_request_delivery import assess_results
+                    assessment=assess_results(self.business_request,read_results)
+                except (ImportError,ValueError,TypeError) as error:
+                    self.trace('business_request.coverage_unresolved',{'reason':type(error).__name__})
+                response['business_request_execution_coverage']=assessment
+                delivery = answer_selection_assessment or {
+                    'status':'partial','complete':False,'coverage_kind':'displayed_fact_selection',
+                    'final_delivery_verified':False,'missing':['final_selection_not_verified']}
+                response['business_request_final_coverage']=delivery
+                response['business_request_coverage']=delivery
+                # Execution coverage alone does not prove every requested final
+                # comparison/ref was delivered. Never reuse the old tool-name goal.
+                response['single_query_verified']=bool(delivery['complete'])
+                response['single_query_partial']=bool(facts) and not delivery['complete']
             if goal_coverage:
                 response["goal_coverage"] = goal_coverage
             if page_read:
@@ -1665,7 +1743,7 @@ class Agent:
                 "error": outcome["error"],
             }
             return answer
-        if rule_reference:
+        if rule_reference and not business_preflight:
             selection = pending.get("displayed_invoices") if pending_from else displayed_invoices
             if not selection:
                 notice = "请先查询并展示一组明确的发票，再引用这批发票核对规则。"
@@ -1757,16 +1835,16 @@ class Agent:
             # A failed read reference is visible history, not a resumable query hint.
             return finish(notice, store=not read_only,
                           category="reference_error" if read_only else "clarification", chat_notice=notice)
-        if year_error:
+        if year_error and not business_preflight:
             execution.stop(year_error)
             notice = ("当前账号没有所请求企业的读取权限。" if year_error == "DENIED"
                       else "无法核验当前账簿的可用年份，请检查工作账簿。")
             return finish(notice, store=False, chat_notice=notice)
-        if infer_year and missing_year_months - inferred.keys():
+        if infer_year and missing_year_months - inferred.keys() and not business_preflight:
             return finish(render_clarification({"missing_fields": ["year"]}), store=False,
                           category="clarification", missing_fields=("year",))
 
-        if current_month and not (read_workspace or {}).get("periods"):
+        if current_month and not (read_workspace or {}).get("periods") and not business_preflight:
             fields = ("year", "month") if scope_companies else ("company_id", "year", "month")
             return finish(render_clarification({"missing_fields": fields}), store=False,
                           category="clarification", missing_fields=fields)
@@ -1789,7 +1867,7 @@ class Agent:
             return finish(render_clarification({"missing_fields": missing_dates}), store=False,
                           category="clarification", missing_fields=missing_dates)
 
-        if summary_needs_period and (summary_request or metric_request) and not has_dates:
+        if summary_needs_period and (summary_request or metric_request) and not has_dates and not business_preflight:
             return ask_summary_period()
 
         if (read_only and task_note_from_request
@@ -1891,6 +1969,15 @@ class Agent:
         if multi_month_read and len(requested_periods) > 1:
             confirmed_fields.update(("year", "month"))
         scope_reminder_sent = False
+        business_phase = business_preflight
+        business_trusted = {key:list(values) for key,values in self.context.proof().values.items()
+                            if self.context.proof().sources.get(key) in READ_SOURCES}
+        if read_workspace:
+            for key in ('company_id','year','month','periods'):
+                if read_workspace.get(key):business_trusted[key]=list(read_workspace[key])
+        if annual_year is not None:
+            business_trusted.update(year=[annual_year],month=list(range(1,13)),
+                                    periods=[(annual_year,month) for month in range(1,13)])
         for index in range(self.max_requests):
             model_text = model_change = rejected_reply = None
             try:
@@ -2048,6 +2135,25 @@ class Agent:
                     '不提供工具，不得调用工具。仅选择当前answer_catalog事实或有限派生回答；'
                     '仍未办完必须说明，不能宣称新增读取、预览、提交或保存。需要终止未提交事项可用turn_action:stop。'})
             context.append(answer_prompt(answer_catalog(read_results, self.write_receipt, self.trace_id)))
+            if business_phase:
+                try:
+                    if previous_business_request is not None:
+                        previous_business_request.require_context(actor,self.db_path)
+                    context = request_messages(current_request,request_catalog(self.db_path,actor),
+                        trusted_scope=business_trusted,previous_request=previous_business_request)
+                except (BusinessRequestError,ValueError,OSError,sqlite3.Error) as error:
+                    execution.stop('ERROR')
+                    return finish('无法核实当前业务目录，请重新打开账簿。',store=False,category='clarification',final_only=True)
+                request_tools = []
+                if len(json.dumps(context,ensure_ascii=False)) > self.context.max_chars:
+                    execution.stop('CONTEXT_LIMIT')
+                    return finish('当前完整业务目录超过可处理范围，请缩小企业范围。',store=False,category='clarification',final_only=True)
+                self.trace('business_request.semantic_input',{'tools_allowed':False,'sql_supplied':False,
+                                                             'previous_requirement':previous_business_request is not None})
+            elif self.business_request is not None:
+                context.append({'role':'user','name':'business_request',
+                    'content':'以下是已固定的当前读取要求，不是操作授权。所有提案必须保留其对象/条件/指标/未决项：'
+                    +json.dumps(self.business_request.metadata(),ensure_ascii=False)})
             if not diagnostic_request:
                 self.trace("model_input", redact({"messages": context, "tools": request_tools}))
             try:
@@ -2079,6 +2185,9 @@ class Agent:
             except BudgetExceeded as error:
                 self.trace('budget.refused', error.metadata())
                 budget_refusal = error.metadata()
+                if business_phase:
+                    execution.stop('REQUEST_BUDGET_EXCEEDED')
+                    return finish('读取要求尚未核实；本次预算不足，未执行财务查询。',store=False,category='clarification',final_only=True)
                 if read_finish_active and read_finish_reason is not None:
                     execution.stop('REQUEST_BUDGET_EXCEEDED')
                     return finish_reference_fallback('REQUEST_BUDGET_EXCEEDED')
@@ -2110,7 +2219,110 @@ class Agent:
                 return finish("请求失败：API请求失败或模型响应结构无效，未确认业务成功。")
             if not diagnostic_request:
                 self.trace("model_reply", redact(wire_reply))
+            if business_phase:
+                if calls:
+                    self.messages.append(reply)
+                    for forbidden in calls:
+                        execution.requested_tools += 1
+                        result=tool_result('DENIED',evidence={'source':'business_request'},
+                            error='当前步骤只解释要求，未执行工具。')
+                        self.messages.append({'role':'tool','tool_call_id':forbidden['id'],
+                                              'content':json.dumps(result,ensure_ascii=False)})
+                        self.trace('tool_result',{'request':forbidden,'result':result})
+                    execution.stop('AMBIGUOUS')
+                    return finish('读取要求尚未核实，未执行查询。请明确对象、范围和条件。',store=False,
+                                  category='clarification',final_only=True)
+                try:
+                    route=load_review(reply.get('content'))
+                    if type(route) is not dict:raise BusinessRequestError('读取要求结构无效。')
+                    if route.get('kind')=='legacy' and set(route)=={'kind'}:
+                        business_phase=False
+                        self.trace('business_request.legacy_route',{'read_authorization':False})
+                        continue
+                    if route.get('kind')=='general' and set(route)=={'kind','text'} and type(route['text']) is str:
+                        conflict=reply_evidence_conflict(route['text'],read_results,current_request,actor=self.user_id)
+                        if explicit:
+                            # A general envelope supplies no fact refs for a
+                            # current registered business object/date request.
+                            conflict = conflict or 'general_without_current_business_evidence'
+                        if conflict:
+                            self.trace('reply.rejected',{'reason':conflict,'source':'business_request_general'})
+                            execution.stop('UNVERIFIED_RESULT')
+                            return finish('本轮没有取得可核实的业务事实或保存回执。请明确要查询的对象和范围。',
+                                store=False,category='general_unverified',final_only=True)
+                        business_phase=False
+                    else:
+                        revision=previous_business_request.revision+1 if isinstance(previous_business_request,BusinessRequest) else 1
+                        req=bind_business_request(reply.get('content'),actor=actor,book=self.db_path,turn_id=self.trace_id,
+                            request=current_request,revision=revision,trusted_scope=business_trusted,
+                            previous_request=previous_business_request)
+                        self.business_request=req
+                        self._last_business_request=req
+                        self.trace('business_request.bound',req.metadata())
+                        if req.unresolved:
+                            names=sorted({n for t in req.targets if t.seller and t.seller.mode=='ambiguous' for n in t.seller.names})
+                            fields=[]
+                            if any(v.endswith('.company_id') for v in req.unresolved):fields.append('企业')
+                            if any(v.endswith('.periods') for v in req.unresolved):fields.append('完整年月账期')
+                            if any(v.endswith('.metrics') for v in req.unresolved):fields.append('所需金额、张数或明细')
+                            question=('请明确'+'、'.join(fields)+'。' if fields else
+                                '当前读取要求仍待明确，请补充对象、指标或筛选条件。')
+                            if names and not fields:question='请先明确完整销售方，或明确要查名称包含范围。可区分候选：'+'、'.join(names[:20])+'。'
+                            execution.stop('WAITING_USER')
+                            return finish(question,store=False,category='clarification',chat_notice=question,final_only=True)
+                        req.require_current(actor,self.db_path,turn_id=self.trace_id)
+                        if sql_workspace is not None:sql_workspace.close()
+                        values={'company_id':sorted({c for t in req.targets for c in t.company_ids}),
+                                'periods':sorted({p for t in req.targets for p in t.periods})}
+                        values['year']=sorted({y for y,m in values['periods']});values['month']=sorted({m for y,m in values['periods']})
+                        sql_workspace=BusinessSQL(self.db_path,actor,ScopeProof(actor,values,
+                            dict.fromkeys(values,'controlled_read_scope')),request=current_request)
+                        turn_resources.callback(sql_workspace.close)
+                        sql_context={'trusted_scope':sql_workspace.scope(),'tables':SQL_TABLES}
+                        execution.unscheduled_sql=True
+                        if 'query_business_sql' in self.allowed_tools and not any(t['function']['name']=='query_business_sql' for t in turn_tools):
+                            turn_tools.extend(t for t in self.tools if t['function']['name']=='query_business_sql')
+                        from .business_request_delivery import CAPABILITIES, SUPPORT_TOOLS
+                        turn_tools = [t for t in turn_tools
+                                      if t['function']['name'] in CAPABILITIES or t['function']['name'] in SUPPORT_TOOLS]
+                        business_phase=False
+                        continue
+                except (BusinessRequestError,ValueError,TypeError,sqlite3.Error) as error:
+                    status=getattr(error,'status','AMBIGUOUS');execution.stop(status)
+                    notice=str(error)
+                    names=getattr(error,'candidates',())
+                    if names:notice+='可区分候选：'+'、'.join(names[:20])+'。'
+                    return finish(notice,store=False,category='clarification',chat_notice=notice,final_only=True)
             self.messages.append(reply)
+            if self.business_request is not None:
+                mutable_tools={'change_invoice','prepare_invoice_update','propose_invoice_changes',
+                               'manage_task','manage_preference','manage_display_preference'}
+                state_candidate=False
+                try:
+                    envelope=load_review(reply.get('content')) if reply.get('content') else None
+                    if isinstance(envelope,dict):
+                        state_candidate=bool(set(envelope)&{'pending','pending_change','turn_action'})
+                        intent=envelope.get('intent')
+                        state_candidate=state_candidate or isinstance(intent,dict) and intent.get('action')!='read'
+                except (ValueError,TypeError,RecursionError):
+                    content=reply.get('content')
+                    # Malformed/duplicate JSON cannot fall through to an older
+                    # last-wins intent/pending decoder. Tool-call prose is not
+                    # a state envelope and keeps the existing wire contract.
+                    state_candidate=isinstance(content,str) and content.lstrip().startswith(('{','['))
+                if state_candidate or any(call['function'].get('name') in mutable_tools for call in calls):
+                    notice='本轮已经固定为只读核对，不会创建修改预览、待补或管理候选。需要修改时请另行明确要求。'
+                    for blocked in calls:
+                        execution.requested_tools += 1
+                        result=tool_result('DENIED',evidence={'source':'business_request'},error=notice)
+                        self.messages.append({'role':'tool','tool_call_id':blocked['id'],
+                                              'content':json.dumps(result,ensure_ascii=False)})
+                        self.trace('tool_result',{'request':blocked,'result':result})
+                        read_results.append((blocked['function'].get('name'),result))
+                    self.trace('business_request.write_denied',{'state_candidate':state_candidate,
+                        'tool_ids':[call['id'] for call in calls],'preview_created':False})
+                    execution.stop('DENIED')
+                    return finish(notice,store=False,category='clarification',chat_notice=notice,final_only=True)
             reference_repair_turn = read_finish_active and read_finish_reason is not None
             pending_repair_active = False
             read_finish_active = False
@@ -2130,7 +2342,7 @@ class Agent:
                         or set(repaired) - {'kind', 'text', 'answer', 'missing_fields'}):
                     self.messages.pop()
                     return finish_reference_fallback('INVALID_REPAIR_ENVELOPE')
-                bound_answer = select_answer(repaired['answer'], answer_catalog(read_results, self.write_receipt, self.trace_id))
+                bound_answer = select_current_answer(repaired['answer'], answer_catalog(read_results, self.write_receipt, self.trace_id))
                 self.messages.pop()
                 if bound_answer is None:
                     return finish_reference_fallback('SECOND_INVALID_SELECTION')
@@ -2157,7 +2369,7 @@ class Agent:
                         self.cancel_update()
                     elif closing_reply and closing_reply.get('turn_action') == 'pause':
                         self.pause_invoice_update()
-                    answer = (select_answer(closing_reply.get('answer'), answer_catalog(read_results,self.write_receipt,self.trace_id))
+                    answer = (select_current_answer(closing_reply.get('answer'), answer_catalog(read_results,self.write_receipt,self.trace_id))
                               if closing_reply else None) or render_information(read_results)
                 return finish(answer, store=False, category='database_query', chat_notice=answer)
             try:
@@ -2273,7 +2485,7 @@ class Agent:
                     execution.stop('INVALID_RESPONSE')
                     return finish('待补结构补正仍不完整；没有提交修改，请重新明确要求。', store=False)
                 current_catalog = answer_catalog(read_results, self.write_receipt, self.trace_id)
-                bound_answer = select_answer(natural.get('answer'), current_catalog) if natural else None
+                bound_answer = select_current_answer(natural.get('answer'), current_catalog) if natural else None
                 if natural is not None and 'answer' in natural and bound_answer is None:
                     self.trace('reply.references_rejected', {'reason': 'unknown_or_invalid_current_fact_ref'})
                     actual_reads = read_results and all(result.get('status') in {'SUCCESS', 'NO_DATA'}

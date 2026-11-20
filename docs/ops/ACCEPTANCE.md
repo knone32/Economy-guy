@@ -1,5 +1,19 @@
 # 验收（V3；不同SHA不拼接）
 
+## 独立读取要求：第一步候选（2026-11-20）
+
+当前分支仍为 `sprint/2026-11-20-contract-followup`，保留 `097d04d` 及此前所有提交。`Agent.ask` 先独立形成只读要求，再绑定企业/销售方、执行并核对卡片和末答；要求判定不读取拟执行 SQL。实现边界见 [读取契约](../BUSINESS_REQUEST_CONTRACT.md)。这是模型语义解释，不是形式证明或写入授权。
+
+79 项新要求/分发/结果/末答/架构组件通过。最终源码真实 Textual 9 项公开程序对照全通过，显式只读 replace 与默认 update 两组各两轮对照也通过（同一 app hash 集）；此前入口漏接和合法集合误拒的原 FAIL 记录保留。最终程序证据：项目根 business-request-matrix/run-1795176300849900700 与 relation-run-1795176427532020200；卡片和末答 B 为 560 元、C 合法集合为 8560 元，业务零写入。独立 Agent 末答控制已验证反向补正正确与再次反向安全回退；并非 Live 或真人验收。
+
+初版全量 1103 项／427FAIL／186ERROR／683.395 秒，不通过。相较 7914d9a，191 个旧参数化测试标题仍失败，新增 422 个标题；14 个旧标题在 FAIL/ERROR 间转换。新增失败没有一律归为旧 mock：已实证显式新查询被旧筛选束缚（现补只读 replace）和未适配工具能力限制。原断言全部保留，最终源码全量正在运行。证据 `business-20261120/evidence-root/business-request-full-first.log` 及独立 `d01-semantic-review-work/artifacts/business-request-full-triage/FULL-LOG-COMPARISON.json`。
+
+N01/N02 仍未首执，必须新冻结源、同账授权和零收费标准传输重绑定后各一次。原 K01/K02 仍仅属于 92f708e 且均 FAIL；不能改分。账本仍 49 请求／511727 tokens／445084 微元峰价上界，原总限 64／700000／2.20 元不增，历史 42 元累计 UNKNOWN 保留。
+
+范围尚有限：只适配登记的 SQL/汇总/发票与银行列表等接口；未适配工具不算支持。多轮改票要求与原草稿修订关联、新工具通用接入尚未完成；D07、整行引用相减和真人批准/提交/重启仍另列。无业务写入、无自动批准、未合 main、未推送。
+
+---
+
 ## D01 92f708e 首执 FAIL（不可改分）
 
 后续证据能力分类：36项定向通过。实际Textual原SQL加合法但尚不归因算术谓词→SQL_EVIDENCE_UNSUPPORTED／dataNone／“统计核验能力受限”；精确卖方换广LIKE→SCOPE_MISMATCH／dataNone／范围不一致。两个首工具后停止，卡片与末答无统计数值，零API／业务零写。总项目根 k01-proof-classification/run-1795168283439703700 保存raw，旧文案harness误判记录保留，不当产品失败或真实Live成绩。

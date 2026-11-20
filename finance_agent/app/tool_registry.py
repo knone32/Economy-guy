@@ -440,7 +440,7 @@ def register_invoice_selection(selections, keys, scope, source):
     return selection_id
 
 
-def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allowed_tools=None, expected_scope=None, management_intent=None, reference_context=None, execution=None, management_confirmation=None, management_proposals=None,provenance=None,display_preference=None,recent_context=None,sql_workspace=None,invoice_selections=None,assistant_id=None):
+def _handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allowed_tools=None, expected_scope=None, management_intent=None, reference_context=None, execution=None, management_confirmation=None, management_proposals=None,provenance=None,display_preference=None,recent_context=None,sql_workspace=None,invoice_selections=None,assistant_id=None):
     """严格按 Schema 校验，身份仅取可信 Session，并复用业务函数。"""
     try:
         if not isinstance(name, str) or name not in REGISTRY:
@@ -837,3 +837,76 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
     except (ValueError, TypeError, sqlite3.Error) as error:
         return tool_result("ERROR" if isinstance(error, sqlite3.Error) else "INVALID_ARGUMENTS",
                            error="数据库不可用" if isinstance(error, sqlite3.Error) else str(error))
+
+
+def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allowed_tools=None, expected_scope=None, management_intent=None, reference_context=None, execution=None, management_confirmation=None, management_proposals=None,provenance=None,display_preference=None,recent_context=None,sql_workspace=None,invoice_selections=None,assistant_id=None,business_request=None):
+    """One dispatch boundary: existing execution, then request-bound evidence.
+
+    business_request is runtime context, never part of a model tool schema.
+    Trusted direct Python callers retain the existing service interface.
+    """
+    from .business_request_delivery import CAPABILITIES, preflight, accept_result, failure, RequestDeliveryError
+    from .business_request import BusinessRequestError
+    arguments = locals().copy()
+    for key in ('business_request', 'CAPABILITIES', 'preflight', 'accept_result', 'failure',
+                'RequestDeliveryError', 'BusinessRequestError'):
+        arguments.pop(key, None)
+    if business_request is not None:
+        try:
+            parsed = validate_arguments(name, raw_arguments,
+                                        directory_sort=provenance.directory_sort if provenance else False)
+            preflight(business_request, name, parsed, user_id, db_path)
+        except RequestDeliveryError as error:
+            return failure(error, business_request)
+        except (ValueError, TypeError) as error:
+            return tool_result('INVALID_ARGUMENTS', error=str(error))
+        except (sqlite3.Error, OSError):
+            return tool_result('ERROR', evidence={'source': 'business_request'},
+                               error='读取要求的当前账簿状态不可用，未执行查询。')
+    temporary_workspace = None
+    if business_request is not None and name == 'query_business_sql':
+        from .business_sql import BusinessSQL
+        if 'read_scope' in parsed:
+            from .provenance import ScopeProof
+            execution_scope = parsed['read_scope']
+            values = {'company_id': [execution_scope['company_id']],
+                      'periods': [(p['year'], p['month']) for p in execution_scope['periods']]}
+            temporary_workspace = BusinessSQL(db_path, user_id,
+                ScopeProof(user_id, values, dict.fromkeys(values, 'controlled_read_scope')),
+                request=business_request.current_source.quote)
+            temporary_workspace.business_request = business_request
+            arguments['sql_workspace'] = temporary_workspace
+            arguments['raw_arguments'] = json.dumps({'sql': parsed['sql']}, ensure_ascii=False)
+        elif sql_workspace is not None:
+            sql_workspace.business_request = business_request
+    read_stamp = None
+    if business_request is not None and name in CAPABILITIES:
+        from .read_version import book_read_stamp
+        read_stamp = book_read_stamp(db_path)
+    try:
+        result = _handle_tool(**arguments)
+    finally:
+        if temporary_workspace is not None:
+            temporary_workspace.close()
+    if business_request is not None and name in CAPABILITIES:
+        try:
+            accepted = accept_result(business_request, name, result, user_id, db_path)
+            if accepted.get('status') in {'SUCCESS', 'NO_DATA'}:
+                from hashlib import sha256
+                version = ((result.get('data') or {}).get('read_version')
+                           if isinstance(result.get('data'), dict) else None)
+                accepted['evidence']['read_version'] = version or {
+                    'book_stamp_before': read_stamp, 'book_stamp_after': book_read_stamp(db_path),
+                    'result_sha256': sha256(json.dumps(result.get('data'), sort_keys=True,
+                        ensure_ascii=True, default=repr).encode()).hexdigest(),
+                    'consistency': 'dedicated_read_interval', 'global_revision_known': False}
+                accepted['evidence']['business_request']['execution_scope'] = result['evidence'].get('scope')
+            return accepted
+        except RequestDeliveryError as error:
+            return failure(error, business_request)
+        except BusinessRequestError as error:
+            return failure(RequestDeliveryError(str(error), error.status), business_request)
+        except (sqlite3.Error, OSError):
+            return tool_result('ERROR', evidence={'source': 'business_request'},
+                               error='当前账簿状态不可用，尚未交付查询结果。')
+    return result

@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import date, timedelta
 from decimal import Decimal
 import json
+import hashlib
 import math
 import re
 import sqlite3
@@ -266,6 +267,8 @@ class BusinessSQL:
         self.request = request
         self.read_binding = None
         self.seller_binding = None
+        self.business_request = None
+        self.read_version = None
         self.connection = None
 
     def bind_read_scope(self,binding):
@@ -291,7 +294,7 @@ class BusinessSQL:
         proof = replace(self.proof,values=values,sources=dict.fromkeys(values,'controlled_read_scope'),read_workspace=None)
         if self.connection is not None and _scope(proof,self.actor)!=self.scope():
             raise BusinessSQLError('SCOPE_MISMATCH','本轮SQL快照已建立，不能替换企业或账期')
-        if 'seller' in binding:
+        if 'seller' in binding and self.business_request is None:
             try:
                 resolve_seller(self.request, seller_catalog(self.path, self.actor,
                     _scope(proof, self.actor)['company_ids']), binding['seller'])
@@ -324,6 +327,9 @@ class BusinessSQL:
 
             memory = sqlite3.connect(":memory:", cached_statements=0)
             try:
+                from .read_version import book_read_stamp
+                before_stamp = book_read_stamp(self.path)
+                snapshot_hash = hashlib.sha256(json.dumps(scope, sort_keys=True).encode())
                 memory.execute("PRAGMA temp_store=MEMORY")
                 source.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, MAX_CELL_BYTES)
                 deadline = monotonic() + 2
@@ -351,8 +357,13 @@ class BusinessSQL:
                                           len(value) if isinstance(value, bytes) else 8 for value in row)
                         if rows_left < 0 or bytes_left < 0:
                             raise BusinessSQLError("SQL_SCOPE_LIMIT", "查询范围数据过大，请缩小企业或账期")
+                        snapshot_hash.update(json.dumps([table, tuple(row)], ensure_ascii=True,
+                                                        default=repr, separators=(',', ':')).encode())
                         memory.execute(f"INSERT INTO {table} VALUES ({placeholders})", tuple(row))
                 memory.commit()
+                self.read_version = {'scope_snapshot_sha256': snapshot_hash.hexdigest(),
+                    'book_stamp_before': before_stamp, 'book_stamp_after': book_read_stamp(self.path),
+                    'consistency': 'one_sqlite_read_transaction', 'global_revision_known': False}
                 memory.create_function("is_blank", 1, lambda value: value is None or not str(value).strip(),
                                        deterministic=True)
                 memory.execute("PRAGMA query_only=ON")
@@ -419,8 +430,9 @@ class BusinessSQL:
             # Coverage and selection checks keep the read-only guard without counting as user SQL.
             db.set_authorizer(_authorizer)
         try:
-            seller_scope = verify_seller_scope(self.path, self.actor, scope, self.request,
-                self.seller_binding, attributed, reads)
+            seller_scope = (None if self.business_request is not None else
+                verify_seller_scope(self.path, self.actor, scope, self.request,
+                    self.seller_binding, attributed, reads))
         except SellerReadError as error:
             raise BusinessSQLError(error.status, str(error), evidence=error.evidence) from None
         if seller_scope is not None:
@@ -431,6 +443,7 @@ class BusinessSQL:
         data = {"sql": sql, "columns": columns, "rows": rows, "row_count": len(rows),
                 "truncated": truncated, "derived": derived,
                 "query_scope": attributed}
+        data['read_version'] = dict(self.read_version or {})
         if seller_scope is not None:
             data["seller_scope"] = seller_scope
         projection = _invoice_projection(sql, columns)

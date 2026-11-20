@@ -827,6 +827,8 @@ def render_invoice_field_count(data):
 def render_sql_evidence(data):
     columns = data["columns"]
     lines = ["SQL", data["sql"], "列 " + " · ".join(columns)]
+    if data.get('request_identity_evidence_only'):
+        lines.insert(0, '以下仅为对象与条件线索，不是请求的金额或张数统计。')
     for row, derived in zip(data["rows"], data["derived"]):
         amount = [f"{columns[int(key)]} = ¥{value}" for key, value in derived.items() if key != "percentage"]
         if "percentage" in derived:
@@ -1001,13 +1003,16 @@ def render_query_conclusion(results, *, invoice_coverage=None, include_source=Fa
         heading = (render_scope(evidence, conversational=True) if include_source
                    else " ".join(filter(None, ("、".join(companies), period))))
         if name in {"get_finance_summary", "get_annual_finance_summary"}:
+            from .business_request_delivery import render_projected_summary
+            projected = render_projected_summary(data, evidence)
             rule = evidence.get("rule") or {}
             rule_id = rule.get("rule_id") or rule.get("id")
             basis = f"（{rule_id} v{rule['version']}）" if rule_id and rule.get("version") else ""
-            detail = (f"发票价税合计 {data['invoice_total']} 元，银行收入 {data['bank_income_total']} 元，"
+            detail = (projected if projected is not None else
+                      f"发票价税合计 {data['invoice_total']} 元，银行收入 {data['bank_income_total']} 元，"
                       f"支出 {data['bank_expense_total']} 元{basis}。")
             if outcome["status"] == "NO_DATA":
-                detail = "该账期没有发票或银行流水。" + detail
+                detail = ("所列对象没有符合条件的记录。" if projected is not None else "该账期没有发票或银行流水。") + detail
             if include_source and (explanation := render_summary_basis(rule)):
                 detail += "\n" + explanation
         elif name == "count_invoice_fields":
@@ -1125,6 +1130,13 @@ def render_information(results):
             continue
         add_scope(outcome.get("evidence", {}))
         if name in {"get_finance_summary", "get_annual_finance_summary"}:
+            from .business_request_delivery import render_projected_summary
+            projected = render_projected_summary(data, outcome.get('evidence', {}))
+            if projected is not None:
+                parts.append('本轮查询：' + projected)
+                if basis := render_summary_basis(outcome.get('evidence', {}).get('rule')):
+                    parts.append(basis)
+                continue
             parts.append(f"本轮查询：发票价税合计 {data['invoice_total']} 元（{data['invoice_count']}张）；"
                          f"银行收入 {data['bank_income_total']} 元（{data['bank_income_count']}条）；"
                          f"银行支出 {data['bank_expense_total']} 元（{data['bank_expense_count']}条）。")
@@ -1263,7 +1275,7 @@ def render_clarification(value):
 
 def render_tool_failure(status, tool=None, outcome=None):
     """User-facing guidance; diagnostic codes and provider details stay in Trace."""
-    if (outcome or {}).get("evidence", {}).get("source") == "seller_request_scope":
+    if (outcome or {}).get("evidence", {}).get("source") in {"seller_request_scope", "business_request"}:
         return outcome["error"]
     if status == "DENIED" and (outcome or {}).get("evidence", {}).get("source") == "tool_dispatch":
         return "模型请求了本轮不可用的操作，该操作未执行。"

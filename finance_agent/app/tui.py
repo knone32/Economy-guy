@@ -1319,6 +1319,10 @@ class AgentWorkspace(ConversationUI, App):
         if not isinstance(data, dict):
             return None
         if tool in {"get_finance_summary", "get_annual_finance_summary"}:
+            from .business_request_delivery import render_projected_summary
+            projected = render_projected_summary(data, evidence)
+            if projected is not None:
+                return "账期合计", projected
             return ("账期合计", "\n".join(
                 f"{label} ¥{data[key + '_total']}（{data[key + '_count']} {unit}）"
                 for label, key, unit in (("发票价税合计", "invoice", "张"), ("银行收入", "bank_income", "条"),
@@ -1328,6 +1332,8 @@ class AgentWorkspace(ConversationUI, App):
         if tool == "query_business_sql":
             lines = sql_display_rows(data)
             shown = len(lines)
+            if data.get('request_identity_evidence_only'):
+                return '查询对象线索', '以下仅用于核对对象与条件，不是金额或张数统计。\n' + '\n'.join(lines)
             seller = (evidence.get("query_scope") or {}).get("seller_requirement")
             if seller:
                 lines.insert(0, "本次销售方范围：" + "、".join(seller["names"]))
@@ -1445,9 +1451,11 @@ class AgentWorkspace(ConversationUI, App):
         entries = []
         directories = {}
         for tool, outcome in results:
-            if (tool == "query_business_sql" and outcome["status"] not in {"SUCCESS", "NO_DATA"}
-                    and outcome.get("evidence", {}).get("source") == "seller_request_scope"):
+            if ((tool == "query_business_sql" or outcome.get('evidence', {}).get('source') == 'business_request')
+                    and outcome["status"] not in {"SUCCESS", "NO_DATA"}
+                    and outcome.get("evidence", {}).get("source") in {"seller_request_scope", "business_request"}):
                 title = ("统计核验能力受限" if outcome["status"] == "SQL_EVIDENCE_UNSUPPORTED"
+                         else "查询条件尚未落实" if outcome.get('evidence', {}).get('source') == 'business_request'
                          else "销售方范围待核实")
                 self.business_message(title, outcome["error"], [])
             if outcome["status"] not in {"SUCCESS", "NO_DATA", "NO_CHANGE"}:

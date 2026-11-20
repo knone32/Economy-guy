@@ -1,5 +1,7 @@
 # 后续修复候选（尚未通过产品Live验收）
 
+> 最新第一步候选状态见 [总控状态](docs/ops/STATE.md)：独立只读要求已接入，完整回归仍失败，新陌生题待同版首执；下文为历史。
+
 > 当前总控状态以 [docs/ops/STATE.md](docs/ops/STATE.md) 和 [docs/ops/ACCEPTANCE.md](docs/ops/ACCEPTANCE.md) 为准。2026-11-20最新D01首执仍FAIL，OR误拒离线修复已提交；下文保留历史，不代表当前候选参数或签收状态。
 
 分支 sprint/2026-11-20-contract-followup；独立于7a1fdf4原冻结。已合入35a8b57的输出截断分类与d689474的受控只读绑定；旧C成绩仅属于7a1fdf4，不迁移为本分支通过。
