@@ -61,7 +61,7 @@ def catalog(path,actor):
             'usage':'名称仅可与已登记编号、全称或简称精确绑定；未登记缩写或多个候选须追问。账期用于核验只读归一化，不授予修改许可。'}
 
 
-def bind(binding,request,current_catalog):
+def bind(binding,request,current_catalog,*,trusted_scope=None):
     validate_shape(binding)
     if (type(request) is not str or not request
             or any(binding[key] not in request for key in ('company_quote','period_quote'))):
@@ -90,6 +90,14 @@ def bind(binding,request,current_catalog):
                  and all((year,month) in available for month in months)}
         if len(years)!=1:
             raise ReadBindingError('两位年份不能在当前账簿中唯一核实，请提供四位年份。')
+    elif not years and months and trusted_scope:
+        # A redundant optional sidecar must not discard the already validated
+        # current year. The catalog alone never supplies this missing year.
+        if tuple(trusted_scope.get('company_ids', ())) == (company['company_id'],):
+            prior = {tuple(p) for p in trusted_scope.get('periods', ()) if p[1] in months}
+            prior_years = {y for y, _ in prior}
+            if len(prior_years) == 1 and {m for _, m in prior} == months:
+                years = prior_years
     if not years or not months:
         raise ReadBindingError('只读范围尚缺可核对的完整年份或月份。')
     pairs = set(parsed.get('periods',())) if not short_years else set()

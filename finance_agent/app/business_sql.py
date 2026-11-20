@@ -269,7 +269,13 @@ class BusinessSQL:
         if not isinstance(self.proof,ScopeProof) or self.proof.actor!=self.actor:
             raise BusinessSQLError('DENIED','当前查询没有可信会话身份')
         try:
-            values = bind(binding,self.request,catalog(self.path,self.actor))
+            trusted_scope = _scope(self.proof,self.actor)
+        except BusinessSQLError as error:
+            if error.status != 'AMBIGUOUS':
+                raise
+            trusted_scope = None
+        try:
+            values = bind(binding,self.request,catalog(self.path,self.actor),trusted_scope=trusted_scope)
         except ReadBindingError as error:
             raise BusinessSQLError(error.status,str(error)) from None
         prior = {**self.proof.values,**(self.proof.read_workspace or {})}
