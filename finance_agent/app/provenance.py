@@ -33,7 +33,7 @@ class ScopeProof:
         return {'values':deepcopy(self.values),'sources':dict(self.sources), **({'annual_year': self.annual_year} if self.annual_year else {})}
 
 
-def supplement_read_literals(proof, expected, raw):
+def supplement_read_literals(proof, expected, raw, *, raw_sources=None):
     """Fill missing read-only literal slots without inventing cross-quote pairs.
 
     Only the get_invoice dispatcher uses this. Existing current/reference slots
@@ -56,7 +56,7 @@ def supplement_read_literals(proof, expected, raw):
     for key in keys:
         if candidates[key] and not expected.get(key) and not proof.values.get(key):
             values[key] = candidates[key]
-            sources[key] = 'user_current'
+            sources[key] = (raw_sources or {}).get(key, 'user_current')
             scope[key] = candidates[key]
     return replace(proof, values=values, sources=sources), scope
 
@@ -79,7 +79,7 @@ def validate_scope(proof,user_id,name,args,partial=False):
     filtered = directory and args.get('year', 0) != 0 and args.get('month', 0) != 0
     if is_annual_query(name, args):
         company = (proof.read_workspace or {}).get("company_id") or proof.values.get("company_id")
-        source_ok = bool(proof.read_workspace or proof.sources.get("company_id") in SOURCES)
+        source_ok = bool(proof.read_workspace or proof.sources.get("company_id") in accepted_sources)
         missing = [key for key, present in (("company_id", source_ok and company and len(company) == 1),
                                              ("year", proof.annual_year is not None)) if not present]
         if missing:

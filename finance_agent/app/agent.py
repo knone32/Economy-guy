@@ -9,7 +9,6 @@ from .tool_registry import (TOOLS, TEACHING_TOOLS, REGISTRY, handle_tool, tool_r
                             remaining_work_allowed, validate_arguments, register_invoice_selection)
 from .trace import redact, write_trace, warn_trace_degraded
 from .responses import merge_pending_scope
-from .responses import explicit_scope as literal_scope
 from .answer_evidence import catalog as answer_catalog, select as select_answer, prompt as answer_prompt
 from .intent_contract import (IntentContractError, sidecar as intent_sidecar, validate as validate_intent,
     infer_proposal as infer_proposal_intent, apply_pending as apply_intent_pending,
@@ -303,6 +302,20 @@ class Agent:
                 unique[month] = next(iter(years))
         return unique
 
+    def _current_read_objects(self, text, *, invoice_candidates=()):
+        """Resolve current registered data once; opaque ID digits are not dates."""
+        from .business_object_sources import amendment_sources
+        try:
+            current, _, _ = amendment_sources(text, None, actor=self.user_id, book=self.db_path,
+                                               invoice_candidates=invoice_candidates)
+            return current
+        except (OSError, ValueError, sqlite3.Error):
+            # An unavailable catalog supplies no object authority. The actual
+            # handler still reports database/permission failures independently.
+            self.trace('context.object_sources', {'status': 'UNAVAILABLE'})
+            return {key: values for key, values in explicit_scope(text, True).items()
+                    if key not in {'company_id', 'invoice_no'}}
+
     def _workspace_read_scope(self, selection, text, *, current_month=False):
         """Use only a caller-selected company/period that the current actor can read."""
         if selection is None:
@@ -310,12 +323,11 @@ class Agent:
         import re
         from contextlib import closing
         from .permissions import check_permission
-        from .responses import explicit_scope
         from .stage2_schema import open_existing
         company, year, month = selection
         if type(year) is not int or type(month) is not int or not (1 <= year <= 9999 and 0 <= month <= 12):
             raise ValueError("工作区账期无效")
-        explicit = explicit_scope(text, include_update_aliases=True)
+        explicit = self._current_read_objects(text)
         if explicit.get("company_id", [company]) != [company]:
             return None
         with closing(open_existing(self.db_path, readonly=True)) as db:
@@ -718,7 +730,8 @@ class Agent:
             r"(?P<period>[\d一二三四五六七八九十年月日份号/\-\s]+?)\s*(?:的\s*)?(?:用途)?规则"
             r"(?:中|下)?\s*(?:违规|不合规|不符合(?:规则|要求)?|缺少必填用途)(?:的)?"
             r"(?:所有|全部)?(?:发票)?\s*[。！？!?]?\s*", pending_from or query_text)
-        explicit = {} if rule_reference else explicit_scope(query_text, include_update_aliases=True)
+        explicit = ({} if rule_reference else self._current_read_objects(query_text) if read_only
+                    else explicit_scope(query_text, include_update_aliases=True))
         goal = query_goal(query_text) if mixed or deferred else None
         corrected = False
         date_sources = dict(followup_sources)
@@ -2165,7 +2178,8 @@ class Agent:
                         try:
                             self.pending_intent = apply_pending_transition(active_pending, transition,
                                 actor=self.user_id, book=self.db_path, current_id=self.trace_id,
-                                current_request=current_request, current_scope=explicit_scope(current_request, True),
+                                current_request=current_request, current_scope=(self._current_read_objects(current_request)
+                                    if read_only else explicit_scope(current_request, True)),
                                 missing_fields=natural.get('missing_fields', ()), change=model_change)
                         except (PendingTransitionError, TypeError, ValueError) as error:
                             model_text = None
@@ -2518,8 +2532,15 @@ class Agent:
                             tool_proof.values.pop("invoice_no", None)
                             tool_proof.sources.pop("invoice_no", None)
                         if fn.get('name') == 'get_invoice':
+                            try:
+                                object_args = validate_arguments('get_invoice', fn.get('arguments'))
+                            except (TypeError, ValueError):
+                                object_args = {}
                             tool_proof, tool_scope = supplement_read_literals(tool_proof, tool_scope,
-                                literal_scope(current_request, include_update_aliases=True))
+                                self._current_read_objects(current_request,
+                                    invoice_candidates=(object_args.get('invoice_no'),)),
+                                raw_sources={'company_id': 'controlled_read_scope',
+                                             'invoice_no': 'controlled_read_scope'})
                         if fn.get("name") == "manage_task" and len(prior_task_scopes) == 1 and annual_year is None:
                             company, year, month = next(iter(prior_task_scopes))
                             checked = {"company_id": company, "year": year, "month": month}

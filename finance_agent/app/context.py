@@ -87,13 +87,13 @@ class ContextBuilder:
             registered, _, _ = amendment_sources(text, None, actor=self.user_id,
                                                  book=self.db_path, metadata=metadata)
             self.object_source_metadata = {**metadata, 'message_index': message_index, 'read_only': True}
-            old_companies = explicit.pop('company_id', None)
+            explicit.pop('company_id', None)
             companies = registered.get('company_id')
             if companies:
                 explicit['company_id'] = companies
                 # Existing exact literal sources keep their original contract.
                 # Newly resolved registered names supply read scope only.
-                object_sources['company_id'] = ('user_current' if companies == old_companies else 'controlled_read_scope')
+                object_sources['company_id'] = ('user_current' if companies == literal.get('company_id') else 'controlled_read_scope')
                 owners = {}
                 for mention in metadata.get('company_mentions', ()):
                     owners.setdefault(tuple(mention['span']), set()).add(mention['company_id'])
@@ -101,7 +101,7 @@ class ContextBuilder:
                     object_sources['company_id'] = 'ambiguous_registered_company'
             invoices = registered.get('invoice_no')
             if invoices:
-                object_sources['invoice_no'] = ('user_current' if invoices == explicit.get('invoice_no')
+                object_sources['invoice_no'] = ('user_current' if invoices == literal.get('invoice_no')
                                                 else 'controlled_read_scope')
                 explicit['invoice_no'] = invoices
             # The shared helper masks complete registered identifiers before
