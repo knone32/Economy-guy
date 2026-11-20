@@ -98,7 +98,7 @@ class TicketCandidates:
         return found
 
     def resume_invoice_candidate(self, candidate_id, revision):
-        """Explicit trusted selection. Recheck ACL before returning any candidate."""
+        """Claim a fresh revision; restoring identical data retires old approvals."""
         from .business_sources import recover_candidate
         self.validate()
         with self.connection() as db:
@@ -110,9 +110,18 @@ class TicketCandidates:
                 raise ValueError('单票候选已更新或结束，请重新查看待续单票。')
             pending = json.loads(row['pending'])
             recover_candidate(pending,actor=self.actor,book=self.workbook)
-            db.execute('UPDATE chats SET candidate_id=?,candidate_revision=?,invoice_pending=? WHERE id=?',
-                       (candidate_id,revision,self._invoice_pending_json(pending),self.chat))
-        self.invoice_token = candidate_id,revision
+            changed = db.execute('''UPDATE invoice_candidates SET revision=revision+1,state='PAUSED',updated=CURRENT_TIMESTAMP
+                WHERE id=? AND revision=? AND workbook=? AND actor=? AND state IN ('ACTIVE','PAUSED')''',
+                (candidate_id,revision,self.identity,self.actor)).rowcount
+            if changed != 1:
+                raise ValueError('单票候选已更新或结束，请重新查看待续单票。')
+            claimed = revision+1
+            changed = db.execute('''UPDATE chats SET candidate_id=?,candidate_revision=?,invoice_pending=?
+                WHERE id=? AND workbook=? AND actor=? AND state='ACTIVE' ''',
+                (candidate_id,claimed,self._invoice_pending_json(pending),self.chat,self.identity,self.actor)).rowcount
+            if changed != 1:
+                raise ValueError('Invoice candidate is outside the active chat')
+        self.invoice_token = candidate_id,claimed
         return pending
 
     def pause_invoice_candidate(self):

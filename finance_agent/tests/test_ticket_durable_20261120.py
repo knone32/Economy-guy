@@ -1,6 +1,7 @@
 """Public candidate lifecycle and stale-revision counterexamples; no HTTP."""
 from copy import deepcopy
 from contextlib import closing
+import os
 import sqlite3
 import unittest
 from app.session_store import SessionStore
@@ -134,4 +135,89 @@ class DurableTicketTests(unittest.IsolatedAsyncioTestCase):
             with app.conversation.connection() as db:
                 self.assertEqual(tuple(db.execute('SELECT state,revision FROM invoice_candidates WHERE id=?',(candidate_id,)).fetchone()),
                                  ('CANCELLED',revision+1))
+        self.no_write()
+
+    async def test_same_content_resume_claim_retires_old_visible_approval(self):
+        await self.seed()
+        old = self.app({'invoice_no':'F006'})
+        async with old.run_test(size=(150,42)) as old_pilot:
+            await self.sign_in(old,old_pilot)
+            await self.send(old,old_pilot,'继续单票，编号 F006，给我预览。')
+            await self.await_state(old_pilot,lambda: isinstance(old.screen,Approval))
+            old_chat = old.conversation.chat
+            candidate_id,revision = old.conversation.invoice_token
+            original, = old.conversation.list_invoice_candidates()
+            self.assertEqual(original['state'],'PAUSED')
+            old.conversation.validate_invoice_revision()
+            # Ordinary same-path windows are locked out. Use a second supported
+            # session path to the same isolated SQLite file to exercise a late
+            # window's revision guard; no lock/candidate/approval is mocked.
+            alternate = self.root/'second-session-path'
+            alternate.mkdir()
+            alias = alternate/'sessions.sqlite3'
+            os.link(self.sessions,alias)
+            self.assertTrue(os.path.samefile(self.sessions,alias))
+            with old.conversation.connection() as db:
+                self.assertEqual(db.execute('PRAGMA journal_mode').fetchone()[0],'delete')
+            new = self.app()
+            new.session_path = alias
+            async with new.run_test(size=(150,42)) as new_pilot:
+                await self.sign_in(new,new_pilot)
+                new.request_new_chat()
+                await self.await_state(new_pilot,lambda: isinstance(new.screen,Approval) and new.screen.is_mounted)
+                new.screen.answer(True)  # program-simulated new-chat choice
+                await self.await_state(new_pilot,lambda: new.conversation.chat != old_chat)
+                await self.send(new,new_pilot,f'/resume {candidate_id} {revision}')
+                self.assertEqual(new.resume_invoice_pending,original['pending'])
+                self.assertIsNone(new.agent)  # resume restores no draft/approval
+                # First red: unchanged revision lets this exact guard pass.
+                with self.assertRaises(ValueError):
+                    old.conversation.validate_invoice_revision()
+                self.assertEqual(new.conversation.invoice_token,(candidate_id,revision+1))
+                with new.conversation.connection() as db:
+                    self.assertEqual(tuple(db.execute('SELECT candidate_id,candidate_revision FROM chats WHERE id=?',
+                                                     (old_chat,)).fetchone()),(candidate_id,revision))
+                with self.assertRaises(ValueError):
+                    new.conversation.resume_invoice_candidate(candidate_id,revision)
+            # Return to the old App's Textual context before answering its UI.
+            old.screen.answer(True)  # deliberately confirm the old window
+            await self.await_state(old_pilot,lambda: not old.busy)
+            current, = old.conversation.list_invoice_candidates()
+            self.assertEqual(current['pending'],original['pending'])
+            self.assertEqual(current['revision'],revision+1)
+            with old.conversation.connection() as db:
+                self.assertEqual(db.execute('PRAGMA integrity_check').fetchone()[0],'ok')
+        self.no_write()
+
+    async def test_same_store_resume_claim_invalidates_old_token_without_file_alias(self):
+        await self.seed()
+        store = SessionStore(self.sessions,self.book,'U001')
+        self.addCleanup(store.close)
+        store.pause_invoice_candidate()
+        old_chat,old_token = store.chat,store.invoice_token
+        before, = store.list_invoice_candidates()
+        store.new_chat(None)
+        new_chat = store.chat
+        restored = store.resume_invoice_candidate(*old_token)
+        new_token = store.invoice_token
+        self.assertEqual(restored,before['pending'])
+        self.assertEqual(new_token,(old_token[0],old_token[1]+1))
+        # Restore only the old owner's captured view in the same service;
+        # candidate contents/SQLite/locks are never altered by this fixture.
+        store.chat,store.invoice_token = old_chat,old_token
+        with self.assertRaises(ValueError):
+            store.validate_invoice_revision()
+        store.chat,store.invoice_token = new_chat,new_token
+        store.validate_invoice_revision()
+        store.chat = 'not-an-active-chat'
+        with self.assertRaises(ValueError):
+            store.resume_invoice_candidate(*new_token)
+        store.chat = new_chat
+        store.validate_invoice_revision()  # failed target bind rolled claim back
+        current, = store.list_invoice_candidates()
+        self.assertEqual(current['pending'],before['pending'])
+        self.assertEqual(current['revision'],new_token[1])
+        with store.connection() as db:
+            self.assertEqual(tuple(db.execute('SELECT candidate_id,candidate_revision FROM chats WHERE id=?',(old_chat,)).fetchone()),old_token)
+            self.assertEqual(db.execute('PRAGMA integrity_check').fetchone()[0],'ok')
         self.no_write()
