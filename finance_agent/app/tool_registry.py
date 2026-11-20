@@ -449,6 +449,12 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
         permitted = {tool["function"]["name"] for tool in TOOLS} if allowed_tools is None else allowed_tools
         if name not in permitted:
             return tool_result("DENIED", evidence={"source": "tool_dispatch"}, error="工具未授权给当前运行上下文")
+        # Bind the trusted SQL context before consulting this workbook's
+        # capability configuration. A mismatched path is not a resource to open.
+        if name == "query_business_sql":
+            if (sql_workspace is None or sql_workspace.actor != user_id
+                    or Path(sql_workspace.path).resolve() != Path(db_path).resolve()):
+                return tool_result("DENIED", evidence={"source": "tool_context"}, error="本轮没有可用的可信 SQL 工作区")
         from .assistant_config import tool_enabled
         if not tool_enabled(db_path, user_id, name):
             return tool_result("DENIED", evidence={"source":"tool_configuration"}, error="工具已停用，请刷新助手配置")
@@ -475,9 +481,6 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
                 return tool_result('DENIED', error=str(error))
             return tool_result('SUCCESS', data, {'source':'shared_skill_configuration'})
         if name == "query_business_sql":
-            if (sql_workspace is None or sql_workspace.actor != user_id
-                    or Path(sql_workspace.path).resolve() != Path(db_path).resolve()):
-                return tool_result("DENIED", evidence={"source": "tool_context"}, error="本轮没有可用的可信 SQL 工作区")
             if execution:
                 rejection = execution.guard(name, args)
                 if rejection:
