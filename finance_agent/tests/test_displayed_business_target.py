@@ -117,6 +117,40 @@ class DisplayedBusinessTargetTests(unittest.TestCase):
         agent.ask('另改C001的F005，备注填“样件已签收”。')
         self.assertIsNone(agent.last_response.get('invoice_change'))
 
+    def display_calls(self, agent, calls):
+        index = 0
+        def model(messages, tools):
+            nonlocal index
+            if index < len(calls):
+                selected = calls[index]
+                index += 1
+                return selected
+            return final(answer=[f['ref'] for f in facts(messages) if f['type'] == 'result'])
+        agent.model = model
+        agent.ask('查看C001 2026年9月的指定候选发票用途和备注。')
+        return agent.record_query_display(agent.last_response['tool_results'])
+
+    def test_same_object_sql_and_fresh_detail_sources_do_not_create_target_ambiguity(self):
+        agent = self.agent()
+        anchors = self.display_calls(agent, [tool('query_business_sql', sql=SQL),
+            tool('get_invoice', company_id='C001', invoice_no='F006')])
+        self.assertEqual(len(anchors), 2, 'Keep both actual display sources for provenance')
+        from app.references import resolve_reference
+        self.assertEqual(resolve_reference(self.book, 'U001', None,
+            display_ids=agent.context.display_ids)['status'], 'AMBIGUOUS', 'Global resolver default is unchanged')
+        self.edit(agent)
+        self.assertEqual(agent.last_response['execution']['stop_reason'], 'WAITING_CONFIRMATION')
+        self.assertEqual(agent.last_response['invoice_change']['invoice_nos'], ('F006',))
+        self.assertFalse(agent.update_session.confirmations)
+
+    def test_two_distinct_singleton_sources_are_still_ambiguous(self):
+        agent = self.agent()
+        anchors = self.display_calls(agent, [tool('query_business_sql', sql=SQL),
+            tool('query_business_sql', sql=SQL.replace("'%006%'", "'%005%'"))])
+        self.assertEqual(len(anchors), 2)
+        self.edit(agent)
+        self.assertIsNone(agent.last_response.get('invoice_change'))
+
     def test_omitted_object_is_not_implicit_selection_of_last_display(self):
         for request in ('还有一张票要改备注，票号稍后给，内容“样件已签收”。',
                         '另改C001的F005，备注填“样件已签收”。'):
@@ -131,6 +165,41 @@ class DisplayedBusinessTargetTests(unittest.TestCase):
 class DisplayedTargetWorkbenchTests(unittest.IsolatedAsyncioTestCase):
     setUp = DisplayedBusinessTargetTests.setUp
     tearDown = DisplayedBusinessTargetTests.tearDown
+
+    async def test_sql_fresh_detail_and_two_display_sources_continue_to_same_preview(self):
+        from app.model_config import DEFAULT_TEMPLATE
+        from app.tui import AgentWorkspace
+        from app.tui_screens import Approval
+        from tests import test_tui_p0 as helpers
+        count = 0
+        def model(messages, tools):
+            nonlocal count
+            count += 1
+            if count == 1:
+                return tool('query_business_sql', sql=SQL)
+            if count == 2:
+                return tool('get_invoice', company_id='C001', invoice_no='F006')
+            if count == 3:
+                return final(answer=[f['ref'] for f in facts(messages) if f['type'] == 'result'])
+            return tool('change_invoice', company_id='C001', invoice_no='F006', year=2026, month=9,
+                        field='remark', new_value='样件已签收')
+        app = AgentWorkspace(self.book, DEFAULT_TEMPLATE, self.book.parent / 'none.json', model=model,
+            trace_path=self.book.parent / 'trace.jsonl', session_path=self.book.parent / 'sessions.sqlite')
+        app.mode = 'mock'
+        async with app.run_test(size=(150, 42)) as pilot:
+            await helpers.P0Test.sign_in(self, app, pilot)
+            await helpers.P0Test.send(self, app, pilot, '查看C001 2026年9月票号含006的票据用途和备注。')
+            await helpers.P0Test.await_state(self, pilot, lambda: not app.busy)
+            await helpers.P0Test.send(self, app, pilot, '就这张，备注改成“样件已签收”，用途别动。')
+            await helpers.P0Test.await_state(self, pilot, lambda: isinstance(app.screen, Approval)
+                and app.screen.is_mounted and bool(app.screen.query('#cancel')))
+            self.assertIn('F006', app.screen.body)
+            self.assertIn('新值　样件已签收', app.screen.body)
+            origin = app.agent.ticket_preview_candidate['provenance']['invoice_no']['reference']
+            self.assertEqual(len(origin['equivalent_anchor_ids']), 2)
+            self.assertFalse(app.agent.update_session.confirmations)
+            app.screen.answer(False)  # Program rejection only.
+            await helpers.P0Test.await_state(self, pilot, lambda: not app.busy)
 
     async def test_real_workbench_display_then_relative_edit_mounts_preapproval(self):
         from app.model_config import DEFAULT_TEMPLATE

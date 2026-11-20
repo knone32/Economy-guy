@@ -37,7 +37,8 @@ def change_invoice(agent, args, previous, request):
         if (previous is None and all(key in args for key in ('company_id', 'invoice_no'))
                 and not agent.context.references_blocked
                 and isinstance(displays, list) and displays):
-            resolved = resolve_reference(agent.db_path, agent.user_id, None, display_ids=displays)
+            resolved = resolve_reference(agent.db_path, agent.user_id, None, display_ids=displays,
+                                         coalesce_identical_singletons=True)
             if resolved['status'] == 'SUCCESS':
                 scope = resolved['evidence']['scope']
                 if all(key not in args or args[key] == scope[key]

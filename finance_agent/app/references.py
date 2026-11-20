@@ -118,7 +118,8 @@ def reference_catalog(path, user_id, scope=None, *, display_ids=None):
         connection.close()
 
 
-def resolve_reference(path, user_id, ordinal, scope=None, anchor_id="", *, display_ids=None):
+def resolve_reference(path, user_id, ordinal, scope=None, anchor_id="", *, display_ids=None,
+                      coalesce_identical_singletons=False):
     """先找用户实际展示锚点，再鉴权并重读SQLite；不足以唯一定位则追问。"""
     try:
         connection = open_existing(path,readonly=True)
@@ -131,6 +132,26 @@ def resolve_reference(path, user_id, ordinal, scope=None, anchor_id="", *, displ
             if not check_permission(connection,user_id,company,"read").allowed:
                 return result("DENIED",error="没有企业读取权限")
         rows = _candidates(connection,user_id,scope,anchor_id,authorized_only=False,display_ids=display_ids)
+        equivalent_anchors = []
+        if coalesce_identical_singletons and ordinal is None and display_ids and len(rows) > 1:
+            signatures = []
+            for candidate in rows:
+                try:
+                    keys = json.loads(candidate['keys_json'])
+                    if (type(keys) is not list or len(keys) != 1 or type(keys[0]) is not dict
+                            or set(keys[0]) != {'company_id', 'invoice_no'}
+                            or any(type(value) is not str or not value for value in keys[0].values())
+                            or keys[0]['company_id'] != candidate['company_id']):
+                        break
+                    signatures.append((candidate['company_id'], candidate['year'], candidate['month'],
+                                       keys[0]['company_id'], keys[0]['invoice_no']))
+                except (ValueError, TypeError, KeyError):
+                    break
+            # Several actual display sources can describe one object. Never
+            # merge a multi-key source, differing period or differing object.
+            if len(signatures) == len(rows) and len(set(signatures)) == 1:
+                equivalent_anchors = [row['anchor_id'] for row in rows]
+                rows = rows[-1:]
         if len(rows) != 1:
             return result("AMBIGUOUS",error="没有唯一可信展示列表，请提供企业、年月或已展示的anchor编号")
         row = rows[0]
@@ -154,6 +175,8 @@ def resolve_reference(path, user_id, ordinal, scope=None, anchor_id="", *, displ
         current = get_invoice(connection,user_id,**key)
         evidence = {"source":"current_sqlite","reference":{"anchor_id":row["anchor_id"],
                     "display_id":row["display_id"],"source":row["source"],"ordinal":ordinal},"scope":dict(key)}
+        if equivalent_anchors:
+            evidence['reference']['equivalent_anchor_ids'] = equivalent_anchors
         if current is None:
             return result("NOT_FOUND",evidence=evidence,error="已展示对象当前不存在，请重新列出")
         evidence["scope"].update(year=int(current["invoice_date"][:4]),month=int(current["invoice_date"][5:7]))
