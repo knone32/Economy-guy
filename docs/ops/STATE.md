@@ -1,5 +1,15 @@
 # V3当前状态（总控权威；上海2026-11-20）
 
+## 最新快照：15:04，R3正式执行中
+
+- 当前唯一冻结SHA为2431b6fe07fdedc688181788372fccc75806bb56，独立目录../frozen-v3-r3；以下旧段落保留时间顺序，不是当前冻结指针。
+- 同版全量951项，754通过、168FAIL、29ERROR，385.819秒；完整结果../evidence-root/V3-2431b6f-FULL-RESULT.json。新增14个失败名称正在由A/B逐项归因，不能以总失败减少宣称安全回归全关。
+- C2支持范围v2正式首执进行中，D01/D02采集完成、独立评分待完成；D04/D08待依序首次执行。未将采集完成当业务通过，原5b四对0/4不变。
+- D03普通工作台已出现真实逐张修改预览，request cdf5db9eec8b46afb8e1657b4741f2af；SZ-48614用途展会物料→巡检备件，备注不改。15:04独立fresh读取仍旧值、该请求审计0、进程39904存活，准确状态待真人操作。用户可见性答复不构成批准，不代点。D05/D06/D07尚未启动，避免多个确认窗混淆。
+- 原账累计29请求/297951tokens/284134微元峰价保守上界；unknown_usage=false。R3内部执行器限61请求/599911tokens/2.20元，根保留3请求/100089tokens，原授权64/700000/2.20不变；全部25条旧前缀保留。授权与分配证据V3-AUTHORIZATION-2431b6f.json、V3-R3-ALLOCATION.json。
+- R3交付包根独立核280/280源码hash相同、无运行DB/私有配置/Trace目录，整体包hash bcaab727cfe1432e9c6a7e04387e661a7a2078daa391ffa5a3abf7b68fb67c52；仅完整性通过，非业务验收。审查证据V3-R3-PACKAGE-ROOT-REVIEW.json。
+- 15:00左右本地只读命令自动审核超时，未执行；一次重试成功，当前无持续环境阻断。未改正式库，未合main，未推送。
+
 - 权威任务：FINAL-MISSION.md。11月20日16:00阶段门禁仍未到；21日集成、22日晚冻结准备，正式比赛提交时刻待官方通知。
 - 唯一集成工作区：business-20261120/contract-followup，sprint/2026-11-20-contract-followup。开工真实HEAD718d812干净；阶段产品曾冻结到1819a5bb6cd2205ba72e95b3594cb5a876b6b8ba；只读修复已集成50d7d0cf1ba281a683cb23e226990d7123f3adae，最终重冻以../evidence-root/V3-FREEZE-R2.json记录为准。E:/beside旧main3111bd7未修改。
 - 已建立独立冻结：../frozen-v3-1819a5b，detached完整SHA1819a5bb6cd2205ba72e95b3594cb5a876b6b8ba。C及最终程序均只运行它，根后续文档更新不改变冻结代码。
