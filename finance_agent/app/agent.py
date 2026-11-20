@@ -34,6 +34,7 @@ from .responses import (DIRECTORY_INLINE_LIMIT, directory_complete, directory_co
                         verified_query_goal, render_goal_coverage, render_bank_income_comparison, render_hypothetical_purpose_rules, scope_mismatch)
 from .persistence import ManagementIntent, ManagementTurn, ManagementProposals
 from .context import ContextBuilder, ContextLimitError, RELATIVE_PERIOD, reference_hint
+from .business_object_sources import unreadable_company_mentions
 from .scheduler import BudgetPolicy, TurnExecution
 from .thinking_protocol import ThinkingProtocol, ProtocolError
 from .model_config import resolve_connection,ProfileError
@@ -698,6 +699,19 @@ class Agent:
         read_results = []
         retrieval_corrected = False
         read_only = not (allow_prepare or management or self.teaching)
+        current_read_denial = None
+        if read_only:
+            try:
+                constraints = unreadable_company_mentions(current_request, actor=self.user_id, book=self.db_path)
+                if constraints:
+                    current_read_denial = ('DENIED' if any(item['constraint'] == 'read_denied' for item in constraints)
+                                           else 'SCOPE_MISMATCH')
+            except (OSError, ValueError, sqlite3.Error):
+                current_read_denial = 'ERROR'
+        current_read_notice = ('当前账号没有权限读取所请求企业。' if current_read_denial == 'DENIED'
+            else '当前明确的企业标识无法在登记目录核实；不能改用已选企业，请核对企业。'
+            if current_read_denial == 'SCOPE_MISMATCH'
+            else '无法核验当前账簿和企业权限，请重新打开工作账簿。')
         invoice_proposals = read_only and not (bulk_no_confirmation or unresolved_receipt)
         selections = {} if invoice_proposals else None
         invoice_change = None
@@ -1030,7 +1044,7 @@ class Agent:
                                           or simple_directory or all_invoices)
         sql_workspace = None
         sql_context = None
-        if sql_analysis:
+        if sql_analysis and current_read_denial is None:
             sql_workspace = BusinessSQL(self.db_path, self.user_id, self.context.proof(
                 read_workspace, annual_year=annual_year),request=current_request)
             turn_resources.callback(sql_workspace.close)
@@ -1040,7 +1054,7 @@ class Agent:
             except BusinessSQLError as error:
                 sql_context = {"scope_status": error.status, "message": str(error),
                                "missing_fields": error.missing, "tables": SQL_TABLES}
-        else:
+        elif not sql_analysis:
             turn_tools = [tool for tool in turn_tools if tool["function"]["name"] != "query_business_sql"]
         trusted_scope = {**self.context.scope, **(read_workspace or {}), **explicit}
         companies = trusted_scope.get("company_id", ())
@@ -1509,6 +1523,11 @@ class Agent:
         if blocked_edit:
             execution.stop("UNKNOWN_OUTCOME")
             return finish(unresolved_receipt["message"], chat_notice=unresolved_receipt["message"])
+
+        if (current_read_denial and not invoice_write
+                and (query_goal(query_text) == 'finance' and not explicit.get('periods') or not sql_analysis)):
+            execution.stop(current_read_denial)
+            return finish(current_read_notice, store=False, chat_notice=current_read_notice)
 
         if choice_reply and choice_reply.get("cancel"):
             receipt = self.cancel_update()
@@ -2114,6 +2133,9 @@ class Agent:
                     execution.stop('CANCELLED')
                     return finish('已停止本轮继续办理；此前已执行的事项不会撤销。\n操作回执：'
                                   + self.write_receipt['message'], store=False)
+                if current_read_denial and not invoice_write:
+                    execution.stop(current_read_denial)
+                    return finish(current_read_notice, store=False, chat_notice=current_read_notice)
                 if reconciliation_edit and not execution.schedule:
                     if self.user_id == actor and self.workbook_available():
                         if not read_results:
@@ -2446,7 +2468,12 @@ class Agent:
                     self.trace('read.final_only', {'original_call_id': previous_read['id'],
                         'suppressed_call_id': call['id'], 'no_new_handler_or_progress': True})
                     continue
-                if isinstance(fn.get("name"), str) and fn["name"] not in permitted:
+                if current_read_denial and fn.get('name') in READ_TOOLS:
+                    result = tool_result(current_read_denial,
+                        evidence={'source':'current_request_denial_constraint', 'scope_grant':False},
+                        error=current_read_notice)
+                    stop = True
+                elif isinstance(fn.get("name"), str) and fn["name"] not in permitted:
                     result = tool_result("DENIED", evidence={"source": "tool_dispatch"},
                                          error="工具未授权给当前Agent")
                     stop = True

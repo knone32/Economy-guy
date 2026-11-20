@@ -8,6 +8,7 @@ from contextlib import closing
 import re
 
 from .controlled_read_scope import catalog
+from .permissions import check_permission
 from .responses import _QUOTED_DATA, _without_quoted_data, request_scope
 from .stage2_schema import open_existing
 
@@ -53,6 +54,37 @@ def registered_company_mentions(text, companies):
     return [item for item in found if not any(
         other['span'][0] <= item['span'][0] and other['span'][1] >= item['span'][1]
         and other['span'] != item['span'] for other in found)]
+
+
+def unreadable_company_mentions(request, *, actor, book, include_quoted=False):
+    """Internal negative constraints, never a public catalog or scope grant.
+
+    Dropping an unreadable current object must not reactivate an old selected
+    object. An invisible namesake does not veto an otherwise readable unique
+    name: a literal span is a denial only when all its registered matches are
+    unreadable. Callers must keep this result outside model context/authority.
+    """
+    text = (_QUOTED_DATA.sub(lambda match: ' ' + match[0][1:-1] + ' ', request)
+            if include_quoted else _without_quoted_data(request))
+    with closing(open_existing(book, readonly=True)) as db:
+        companies = [dict(row) for row in db.execute('SELECT company_id,name,short_name FROM companies')]
+        matches = registered_company_mentions(text, companies)
+        readable = {item['company_id'] for item in matches
+                    if check_permission(db, actor, item['company_id'], 'read').allowed}
+    readable_spans = {tuple(item['span']) for item in matches if item['company_id'] in readable}
+    constraints = [{**item, 'constraint': 'read_denied'} for item in matches
+                   if item['company_id'] not in readable and tuple(item['span']) not in readable_spans]
+    registered_ids = {row['company_id'] for row in companies}
+    registered_spans = {tuple(item['span']) for item in matches}
+    # Keep the existing canonical-ID grammar as a negative constraint, even
+    # when no catalog row exists. It supplies no company scope or permission.
+    for identifier in request_scope(text, True).get('company_id', ()):
+        if identifier not in registered_ids:
+            for span in literal_spans(text, identifier, company_component=True):
+                if span not in registered_spans:
+                    constraints.append({'company_id': identifier, 'quote': identifier,
+                        'span': list(span), 'constraint': 'unregistered_company'})
+    return constraints
 
 
 def amendment_sources(request, current_value, *, actor, book, invoice_candidates=(), metadata=None):
