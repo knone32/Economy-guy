@@ -129,6 +129,15 @@ def describe(sql, columns, snapshot, tables, reads):
             if isinstance(node, exp.Column):
                 name = field(node)
                 return {'unit': 'cents' if name == 'amount_cents' else 'text', 'kind': 'column', 'field': name}
+            if isinstance(node, exp.Substring):
+                # ISO date prefixes are dimensions, never measures. Only the
+                # business table's actual date column can establish a period.
+                name = field(node.this)
+                start, length = literal(node.args.get('start')), literal(node.args.get('length'))
+                if name != date_field or start != 1 or length not in (4, 7):
+                    raise Unsupported('unsupported_date_bucket')
+                return {'unit': 'text', 'kind': 'date_bucket', 'field': name,
+                        'granularity': 'year' if length == 4 else 'month'}
             if isinstance(node, exp.Window):
                 if (node.args.get('partition_by') or node.args.get('order') or node.args.get('spec')
                         or node.args.get('alias') or tree.args.get('group') or tree.args.get('distinct')):
@@ -169,9 +178,33 @@ def describe(sql, columns, snapshot, tables, reads):
             raise Unsupported('projection_columns')
         for meta, name in zip(projected, columns):
             meta['name'] = name
-        groups = [field(v) for v in tree.args['group'].expressions] if tree.args.get('group') else []
-        aggregate = any(p['kind'] != 'column' and not p.get('extent') for p in projected)
-        if aggregate and any(p['field'] not in groups for p in projected if p['kind'] == 'column'):
+        dimension_kinds = {'column', 'date_bucket'}
+
+        def dimension(meta):
+            if meta['kind'] not in dimension_kinds:
+                raise Unsupported('unsupported_group_expression')
+            return (meta['kind'], meta['field'], meta.get('granularity'))
+
+        groups = []
+        for expression in tree.args['group'].expressions if tree.args.get('group') else ():
+            if isinstance(expression, exp.Literal) and not expression.is_string:
+                ordinal = literal(expression)
+                if not 1 <= ordinal <= len(projected):
+                    raise Unsupported('group_ordinal')
+                meta = projected[ordinal - 1]
+            elif (isinstance(expression, exp.Column) and not expression.table
+                  and expression.name.lower() not in fields):
+                # SQLite resolves a source field before a same-named alias.
+                aliases = [p for p in projected if p['name'].lower() == expression.name.lower()]
+                if len(aliases) != 1:
+                    raise Unsupported('group_alias')
+                meta = aliases[0]
+            else:
+                meta = attribution(expression)
+            groups.append(dimension(meta))
+        aggregate = any(p['kind'] not in dimension_kinds and not p.get('extent') for p in projected)
+        if (aggregate or groups) and any(dimension(p) not in groups
+                                         for p in projected if p['kind'] in dimension_kinds):
             raise Unsupported('ungrouped_column')
         filters = (tree.args['where'].this.sql(dialect='sqlite'),) if tree.args.get('where') else ()
         return {**base, 'status': 'VERIFIED', 'scope': {'company_ids': companies, 'periods': tuple(actual_periods)},

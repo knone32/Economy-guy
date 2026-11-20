@@ -48,7 +48,29 @@ def sql_scalars(result, parent_ref, scope_text):
             continue
         dimensions = {m['field']: v for m, v in zip(columns, row)
                       if m.get('kind') == 'column' and m.get('unit') == 'text' and m.get('field')}
+        row_scope = {**query['scope']}
+        periods = tuple(map(tuple, row_scope['periods']))
+        valid = True
+        for meta, value in zip(columns, row):
+            if meta.get('kind') != 'date_bucket':
+                continue
+            granularity = meta['granularity']
+            expected = (lambda y, m: f'{y:04d}-{m:02d}') if granularity == 'month' else (lambda y, m: f'{y:04d}')
+            periods = tuple((y, m) for y, m in periods if expected(y, m) == value)
+            if type(value) is not str or not periods:
+                valid = False
+                break
+            dimensions[meta['field'] + '_' + granularity] = value
+        if not valid:
+            continue
+        row_scope['periods'] = periods
+        if 'company_id' in dimensions:
+            company = dimensions['company_id']
+            if company not in row_scope['company_ids']:
+                continue
+            row_scope['company_ids'] = (company,)
         identity = ' / '.join(f'{k}={v}' for k,v in dimensions.items())
+        row_scope_text = scope_text + ('；分组：' + identity if identity else '')
         for column_index, (meta, value) in enumerate(zip(columns, row)):
             kind = meta.get('kind')
             if kind not in operations or type(value) is not int:
@@ -63,7 +85,7 @@ def sql_scalars(result, parent_ref, scope_text):
                 label += '（' + json.dumps(meta['conditions'], ensure_ascii=False) + '）'
             subject = (identity + ' · ' if identity else '') + label
             info = scalar(value, unit=meta.get('unit'), metric=metric, cohort=cohort, subject=subject,
-                          scope=query['scope'], scope_text=scope_text, parent_ref=parent_ref, dimensions=dimensions)
+                          scope=row_scope, scope_text=row_scope_text, parent_ref=parent_ref, dimensions=dimensions)
             if info:
                 output[f'cell.{row_index}.{column_index}'] = (label, info)
     return output
