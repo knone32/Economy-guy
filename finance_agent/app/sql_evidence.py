@@ -61,6 +61,17 @@ def describe(sql, columns, snapshot, tables, reads):
         operations = {exp.EQ: '=', exp.NEQ: '!=', exp.GT: '>', exp.GTE: '>=', exp.LT: '<', exp.LTE: '<=', exp.Like: 'LIKE'}
 
         def predicate_target(node):
+            if isinstance(node, exp.Trim):
+                # SQLite's one-argument TRIM removes U+0020 at both ends.
+                # Retain that transform in the cohort, never treating it as
+                # raw equality or as normalization of identity/date/money.
+                if any(value is not None for key, value in node.args.items() if key != 'this'):
+                    raise Unsupported('unsupported_text_trim')
+                name = field(node.this)
+                if name not in {'seller_name', 'item_name', 'purpose', 'remark',
+                                'direction', 'counterparty_name'}:
+                    raise Unsupported('unsupported_text_trim_field')
+                return {'field': name, 'transform': 'trim_ascii_space'}
             if isinstance(node, exp.Substring):
                 name = field(node.this)
                 start, length = literal(node.args.get('start')), literal(node.args.get('length'))
