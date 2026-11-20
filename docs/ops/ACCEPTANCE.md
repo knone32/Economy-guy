@@ -1,5 +1,13 @@
 # 验收（V3；不同SHA不拼接）
 
+## D01 92f708e 首执 FAIL（不可改分）
+
+公开零API A/B/C程序对照通过，不等于陌生题通过。K01精确卖方正确SQL被runtime误拒；K02歧义简称跨卖方合计被放行，两题正式同版DeepSeek首执均FAIL。新增3物理请求／34835tokens，业务表零写入。证据 ../v3-c5-sealed/k01-k02-sealed/public/K-FIRST-92f708e-REPORT.json。
+
+首执披露后定位：月份OR触发sql_evidence unsupported_predicate，改成等价IN静态对照VERIFIED。后续OR修复及同题检查统一标AFTER_DISCLOSURE_SCRIPTED，不当Live或改首分；新版本正式Live尚未执行。K02用户关系约束仍是实际漏口。
+
+K01 OR修复：35项定向通过。B真实Textual原用户／原SQL／原read_scope脚本模型回归通过，卡片6895元／3张、8300元／2张；末答差额1405元、数量差-1张。产物总项目根 k01-or-repair/run-1795167617925099800；外连0、业务表零写、原fixture哈希不变、运行中app哈希一致。仅程序修后成绩，不移用为新SHA真实Live成绩。
+
 ## R5待正式同版验收
 当前新切片仅有77根核心、37独立fresh控制、重复展示修复66根相关项及独立窄边界证据（有重叠，不合计成唯一测试数）；实际Textual完整查询→fresh详情→继续修改预览通过属脚本模型程序控制。全量及新陌生Live尚待独立冻结，人工链仍未验，不能宣称R4原失败已翻分。C5仅已封题/未建正式fixture/无模型授权，实际可能触发预算或人工依赖NOT_RUN。最新可交付已审查包仍R4 f31fc88且整体不通过；下一包需新SHA重新核。
 

@@ -1,5 +1,15 @@
 # V3当前状态（总控权威；上海2026-11-20）
 
+## D01 当前判定（92f708e 后续修复中）
+
+实际分支 sprint/2026-11-20-contract-followup，保留27b024d之后提交。92f708e公开A/B/C程序对照通过：扩大查询拒绝；精确560元及分期金额张数可交付；明确模糊合计8560元仍可交付。该SHA全量1033项／159FAIL／31ERROR，非全绿。
+
+独立同版DeepSeek K01/K02首执均FAIL，原分不可改。K01合法完整身份SQL因月份OR谓词归因UNKNOWN而误拒；K02模型把简称的全部发票解释成跨销售方contains，真实卡片展示合计且未追问。故D01尚未修复完成，不晋级main。公开证据 ../v3-c5-sealed/k01-k02-sealed/public/K-FIRST-92f708e-REPORT.json。
+
+当前离线修复K01归因：同一目标的等值／IN析取按等价IN归因，混合目标、变换、AND分支继续UNKNOWN；35项定向通过。B按原用户、原SQL进行实际Textual脚本模型回归通过：卡片6895元／3张、8300元／2张；末答增加1405元、减少1张。证据 ../../k01-or-repair/run-1795167617925099800（相对总项目根核对路径），标AFTER_DISCLOSURE_SCRIPTED_NONLIVE；原首FAIL不改，全量回归另记。K02需要独立于SQL生成的用户业务关系约束，禁止用词表补丁或一律禁LIKE掩盖。
+
+统一预算累计49请求／511727tokens／445084成本微元（峰价记账上界，非账单）；未知用量false，原46条前缀保持，原总限64／700000／2.20元不增加。真人批准／提交／重启回读仍未验；D07及整行引用相减另记。
+
 ## R5冻结前（上海11月20日下午）
 
 - 新程序已集成至efe39a5：9d4948e仅按本轮明确企业的真实目录唯一casefold补读取来源；5004578默认TRIM真实业务文本列，保留transform至cohort；a29caf9只补能力边界说明；b820ab7/27b024d把本轮完整、未分页、哈希一致的SQL原列唯一身份接到call-local get_invoice；efe39a5仅native合并同display下完全同jointkey/企业年月的单键等价来源，保留原anchors/global默认/ordinal。不同对象及多key来源仍拒。

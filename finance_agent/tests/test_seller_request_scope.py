@@ -5,7 +5,9 @@ import sqlite3
 from tempfile import TemporaryDirectory
 import unittest
 
-from app.business_sql import BusinessSQL, BusinessSQLError
+from app.business_sql import BusinessSQL, BusinessSQLError, TABLES
+from app.sql_evidence import describe
+from app.fact_arithmetic import sql_scalars, derive
 from app.cli_workspaces import import_workspace
 from app.provenance import ScopeProof
 
@@ -101,6 +103,53 @@ class SellerRequestScopeTests(unittest.TestCase):
         w = self.workspace('C001 2026年9月，查青屿会展有限公司。')
         with self.assertRaises(BusinessSQLError):
             w.query('SELECT COUNT(*), SUM(amount_cents) FROM invoices')
+
+    def test_same_date_target_disjunction_delivers_period_scalars_and_difference(self):
+        with closing(sqlite3.connect(self.book)) as db, db:
+            db.execute('INSERT INTO invoices VALUES (?,?,?,?,?,?,?,?)',
+                       ('C001', 'C', '2026-10-04', self.target, '虚构项目', 235700, '物料', ''))
+        self.values['periods'].append((2026, 10))
+        w = self.workspace('C001 2026年9月和10月，比较青屿会展有限公司金额和张数。')
+        sql = ("SELECT substr(invoice_date,1,7) AS ym,COUNT(*) AS n,SUM(amount_cents) AS cents "
+               "FROM invoices WHERE seller_name='青屿会展有限公司' AND "
+               "(substr(invoice_date,1,7)='2026-09' OR substr(invoice_date,1,7)='2026-10') "
+               "GROUP BY ym ORDER BY ym")
+        scope, data, _ = w.query(sql)
+        self.assertEqual(data['rows'], [('2026-09', 1, 179700), ('2026-10', 1, 235700)])
+        result = {'status': 'SUCCESS', 'data': data, 'evidence': {
+            'source': 'current_sqlite', 'scope': scope, 'query_scope': data['query_scope']}}
+        facts = {key: fact for key, (_, fact) in sql_scalars(result, 'sql.result', '本轮') .items()}
+        difference = derive({'op': 'subtract', 'left': 'cell.1.2', 'right': 'cell.0.2'}, facts)
+        self.assertIn('560.00 元', difference)
+
+    def test_disjunction_cannot_weaken_full_seller_identity(self):
+        w = self.workspace('C001 2026年9月，查青屿会展有限公司。')
+        with self.assertRaises(BusinessSQLError) as caught:
+            w.query("SELECT SUM(amount_cents) FROM invoices WHERE "
+                    "seller_name='青屿会展有限公司' OR seller_name='青屿设备有限公司'")
+        self.assertEqual(caught.exception.status, 'SCOPE_MISMATCH')
+
+    def test_only_identical_target_equality_unions_gain_attribution(self):
+        snapshot = {'company_ids': ('C001',), 'periods': ((2026, 9), (2026, 10))}
+        for condition in (
+            "(seller_name='a' OR (seller_name IN ('b','c') OR seller_name='a'))",
+            "(TRIM(seller_name)='a' OR TRIM(seller_name)='b')",
+        ):
+            with self.subTest(condition=condition):
+                q = describe('SELECT COUNT(*) FROM invoices WHERE '+condition, ['n'], snapshot, TABLES, {'invoices'})
+                self.assertEqual(q['status'], 'VERIFIED', q)
+                self.assertEqual(len(q['conditions']), 1)
+                self.assertEqual(q['conditions'][0]['operator'], 'IN')
+        for condition in (
+            "seller_name='a' OR purpose='b'",
+            "seller_name='a' OR TRIM(seller_name)='b'",
+            "seller_name='a' OR seller_name LIKE '%b%'",
+            "seller_name='a' OR (seller_name='b' AND purpose='x')",
+            "substr(invoice_date,1,7)='2026-09' OR substr(invoice_date,1,4)='2026'",
+        ):
+            with self.subTest(condition=condition):
+                q = describe('SELECT COUNT(*) FROM invoices WHERE '+condition, ['n'], snapshot, TABLES, {'invoices'})
+                self.assertEqual(q['status'], 'UNKNOWN', q)
 
 
 if __name__ == '__main__':

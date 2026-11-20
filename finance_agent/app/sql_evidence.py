@@ -85,6 +85,28 @@ def describe(sql, columns, snapshot, tables, reads):
                 return predicates(node.this)
             if isinstance(node, exp.And):
                 return predicates(node.this) + predicates(node.expression)
+            if isinstance(node, exp.Or):
+                # A union of equalities on one identical target is exactly IN.
+                # Keep all other disjunctions unknown: distributing unrelated
+                # predicates could enlarge the attributed seller/date cohort.
+                def alternatives(part):
+                    if isinstance(part, exp.Paren):
+                        return alternatives(part.this)
+                    if isinstance(part, exp.Or):
+                        return alternatives(part.this) + alternatives(part.expression)
+                    items = predicates(part)
+                    if len(items) != 1 or items[0]['operator'] not in {'=', 'IN'}:
+                        raise Unsupported('unsupported_disjunction')
+                    return items
+
+                items = alternatives(node)
+                target = {k: v for k, v in items[0].items() if k not in {'operator', 'value'}}
+                if any({k: v for k, v in item.items() if k not in {'operator', 'value'}} != target
+                       for item in items):
+                    raise Unsupported('mixed_disjunction_targets')
+                values = [value for item in items for value in
+                          (item['value'] if item['operator'] == 'IN' else [item['value']])]
+                return [{**target, 'operator': 'IN', 'value': list(dict.fromkeys(values))}]
             if isinstance(node, exp.Between) and not node.args.get('symmetric'):
                 name = field(node.this)
                 return [{'field': name, 'operator': '>=', 'value': literal(node.args['low'])},
