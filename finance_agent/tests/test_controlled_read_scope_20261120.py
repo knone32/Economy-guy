@@ -10,6 +10,7 @@ import unittest
 from app.agent import Agent, SYSTEM
 from app.business_sql import BusinessSQL
 from app.cli_workspaces import import_workspace
+from app.context import ContextBuilder, ContextLimitError
 from app.provenance import ScopeProof, validate_scope
 from app.tool_registry import handle_tool, TOOLS, validate_arguments
 from tests.test_model_intent import call, final
@@ -127,3 +128,42 @@ class ControlledReadScopeTests(unittest.TestCase):
         agent.ask('C001 2026年9月，统计发票张数。')
         self.assertTrue(any(name=='query_business_sql' and result['status']=='SUCCESS'
                             for name,result in agent.last_response['tool_results']))
+
+    def test_first_turn_without_recognized_scope_delivers_read_catalog_to_model(self):
+        seen = []
+        before = snapshot(self.book)
+        request = '澄曜这本账，先看一眼。'
+        def model(messages,tools):
+            seen.append(messages)
+            return final(kind='general',text='请明确需要读取的期间和指标。')
+        agent = Agent('U002',self.book,model,mode='mock')
+        agent.ask(request)
+        self.assertEqual(agent.context.proof().metadata(),{'values':{},'sources':{}})
+        self.assertEqual(len(seen),1)
+        contexts = [m for m in seen[0] if m.get('name')=='context_data']
+        self.assertEqual(len(contexts),1,'The actual first model request must include the catalog even with empty scope')
+        data = json.loads(contexts[0]['content'])
+        catalog = data['read_catalog']
+        self.assertTrue(catalog['read_only'])
+        companies = {row['company_id']:row for row in catalog['companies']}
+        self.assertEqual(set(companies),{'C001','ZX-83'})
+        self.assertEqual(set(companies['ZX-83']['periods']),{'2037-08','2037-09'})
+        self.assertNotIn('C002',companies)
+        self.assertIn({'role':'user','content':request},seen[0])
+        self.assertFalse(agent.update_session.drafts)
+        self.assertFalse(agent.update_session.confirmations)
+        self.assertEqual(snapshot(self.book),before)
+
+    def test_catalog_omits_under_existing_limit_without_displacing_current_request(self):
+        builder = ContextBuilder('U002',self.book,max_chars=200)
+        current = {'role':'user','content':'澄曜这本账，先看一眼。'}
+        messages = [{'role':'system','content':'system'},current]
+        selected,selection = builder.build(messages)
+        self.assertEqual(selected,messages)
+        self.assertIn('context_data',selection['omitted'])
+        self.assertNotIn('context_data',selection['sources'])
+        self.assertTrue(selection['trimmed'])
+        self.assertLessEqual(selection['chars'],selection['max_chars'])
+        self.assertEqual(builder.proof().metadata(),{'values':{},'sources':{}})
+        with self.assertRaises(ContextLimitError):
+            builder.build([messages[0],{'role':'user','content':'范围不变。'*100}])

@@ -499,7 +499,8 @@ class ContextBuilder:
             data["explanation_facts"] = explanation_facts
             data_origins["explanation_facts"] = "runtime.verified_read_results"
         extras = [{"role":"user","name":"context_data","content":json.dumps(data,ensure_ascii=False)}] if (
-            self.scope or read_workspace or explanation_facts or previous_directory or recent_invoices or data.get("references") or data.get("personal_display")) else []
+            self.scope or read_workspace or explanation_facts or previous_directory or recent_invoices or data.get("references") or data.get("personal_display")
+            or data.get('read_catalog',{}).get('source') == 'current_authorized_workbook') else []
         if self.restored_turns and self.history_start == 1:
             extras.append({"role":"assistant","name":"harness_history","content":json.dumps({
                 "source":"local_session","historical":True,
