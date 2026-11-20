@@ -1015,7 +1015,7 @@ class AgentWorkspace(ConversationUI, App):
         if command in {'/material-upload','/material-update','/materials','/source'}:
             event.input.value = ''
             try:
-                from .materials import import_docx, list_materials, get_paragraph
+                from .materials import import_material, list_materials, get_paragraph
                 from .stage2_schema import open_existing
                 from contextlib import closing
                 if command in {'/material-upload','/material-update'}:
@@ -1024,9 +1024,9 @@ class AgentWorkspace(ConversationUI, App):
                     parts = shlex.split(argument, posix=True)
                     needed = 3 if command == '/material-update' else 2
                     if len(parts) != needed:
-                        raise ValueError('用法：/material-upload 企业ID "路径.docx"；/material-update 企业ID 资料ID "路径.docx"（路径用正斜线）')
+                        raise ValueError('用法：/material-upload 企业ID "文件路径"；/material-update 企业ID 资料ID "文件路径"（docx/xlsx/文字PDF，路径用正斜线）')
                     company, filename = parts[0], parts[-1]
-                    result = import_docx(self.db,self.user,company,filename,material_id=parts[1] if needed==3 else None)
+                    result = import_material(self.db,self.user,company,filename,material_id=parts[1] if needed==3 else None)
                     self.chat_message('资料上传 · 本次未执行制度发布',json.dumps(result,ensure_ascii=False,indent=2))
                 else:
                     with closing(open_existing(self.db,readonly=True)) as db:
@@ -1287,9 +1287,10 @@ class AgentWorkspace(ConversationUI, App):
     @staticmethod
     def business_card(tool, data, evidence):
         if tool == 'open_material_reference':
-            return ('资料原文', f"{data['name']} · v{data['version']} · 第{data['paragraph_id']}段\n{data['text']}\nSHA256 {data['sha256']}")
+            from .materials import source_label
+            return ('资料原文', f"{data['name']} · v{data['version']} · {source_label(data)}\n{data['text']}\nSHA256 {data['sha256']}")
         if tool == 'list_materials':
-            return ('资料版本目录', '\n'.join(f"{r['name']} v{r['version']}（{r['paragraph_count']}段）\n/source {r['material_id']} {r['version']} 1" for r in data) or '当前账号没有可访问资料。')
+            return ('资料版本目录', '\n'.join(f"{r['name']} v{r['version']}（{r['paragraph_count']}处来源）\n/source {r['material_id']} {r['version']} 1" for r in data) or '当前账号没有可访问资料。')
         if tool == 'use_skill':
             return ('共享能力', f"{data['name']} · v{data['revision']}\n" + '\n'.join(data['steps']))
         if evidence.get("source") != "current_sqlite":

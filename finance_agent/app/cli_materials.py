@@ -1,7 +1,7 @@
 """Explicit local material management; no model or invoice writes."""
 import argparse
 import json
-from .materials import import_docx, list_materials, get_paragraph
+from .materials import import_material, list_materials, get_paragraph
 from .stage2_schema import open_existing
 
 
@@ -46,7 +46,7 @@ def main(argv=None):
                          help="可信本地模拟管理身份，授予独立rule.manage；不是生产认证")
     args = parser.parse_args(argv)
     if args.action == "upload":
-        result = import_docx(args.db, args.user, args.company, args.file, args.name, args.material_id)
+        result = import_material(args.db, args.user, args.company, args.file, args.name, args.material_id)
     elif args.action == "publish-rule":
         from .rules import publish_material_rule
         if not args.simulate_manager:

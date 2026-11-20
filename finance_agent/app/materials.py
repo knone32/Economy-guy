@@ -1,4 +1,5 @@
-"""User-owned immutable Word versions. Upload never publishes executable rules."""
+"""User-owned immutable source versions. Upload never publishes executable rules."""
+import json
 from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4
@@ -22,6 +23,12 @@ CREATE TABLE IF NOT EXISTS material_paragraphs (
  material_id TEXT NOT NULL, version INTEGER NOT NULL, paragraph_id INTEGER NOT NULL,
  text TEXT NOT NULL, PRIMARY KEY(material_id,version,paragraph_id),
  FOREIGN KEY(material_id,version) REFERENCES material_versions(material_id,version));
+CREATE TABLE IF NOT EXISTS material_locations (
+ material_id TEXT NOT NULL, version INTEGER NOT NULL, paragraph_id INTEGER NOT NULL,
+ source_type TEXT NOT NULL, location_json TEXT NOT NULL,
+ PRIMARY KEY(material_id,version,paragraph_id),
+ FOREIGN KEY(material_id,version,paragraph_id)
+ REFERENCES material_paragraphs(material_id,version,paragraph_id));
 CREATE TABLE IF NOT EXISTS rule_material_sources (
  rule_id TEXT NOT NULL, rule_version TEXT NOT NULL, material_id TEXT NOT NULL,
  version INTEGER NOT NULL, paragraph_id INTEGER NOT NULL, effective_to TEXT,
@@ -45,6 +52,11 @@ def _authorize(connection, user_id, company_id):
         raise PermissionError("没有资料企业读取权限")
 
 
+class _NoDoctype(ET.TreeBuilder):
+    def doctype(self, name, pubid, system):
+        raise ValueError('不支持Word实体声明')
+
+
 def _paragraphs(payload):
     try:
         with ZipFile(BytesIO(payload)) as archive:
@@ -55,7 +67,7 @@ def _paragraphs(payload):
         # ElementTree does not resolve external entities; reject DTDs explicitly.
         if b"<!DOCTYPE" in xml or b"<!ENTITY" in xml:
             raise ValueError("不支持Word实体声明")
-        root = ET.fromstring(xml)
+        root = ET.fromstring(xml, parser=ET.XMLParser(target=_NoDoctype()))
         ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
         paragraphs = ["".join((node.text or "") if node.tag == ns + "t" else
                               "\t" if node.tag == ns + "tab" else "\n"
@@ -70,9 +82,16 @@ def _paragraphs(payload):
 
 
 def import_docx(path, user_id, company_id, source_path, name=None, material_id=None):
+    if Path(source_path).suffix.lower() != '.docx':
+        raise ValueError('仅支持docx资料')
+    return import_material(path, user_id, company_id, source_path, name, material_id)
+
+
+def import_material(path, user_id, company_id, source_path, name=None, material_id=None):
     source = Path(source_path)
-    if source.suffix.lower() != ".docx":
-        raise ValueError("仅支持docx资料")
+    kind = source.suffix.lower().lstrip('.')
+    if kind not in {'docx', 'xlsx', 'pdf'}:
+        raise ValueError('仅支持docx、xlsx和文字PDF资料')
     name = source.name if name is None else name
     if type(name) is not str or not name.strip() or len(name) > 255:
         raise ValueError("资料名称无效")
@@ -82,9 +101,17 @@ def import_docx(path, user_id, company_id, source_path, name=None, material_id=N
     finally:
         connection.close()
     if source.stat().st_size > 10_000_000:
-        raise ValueError("Word文件过大")
+        raise ValueError("资料文件过大")
     payload = source.read_bytes()
-    paragraphs = _paragraphs(payload)  # Complete parse before any database mutation.
+    if len(payload) > 10_000_000:
+        raise ValueError('资料文件过大')
+    if kind == 'docx':
+        units = [(text, {'kind': 'word_paragraph', 'paragraph': i})
+                 for i, text in enumerate(_paragraphs(payload), 1)]
+    else:
+        from .material_readers import read_units
+        units = read_units(payload, kind)
+    paragraphs = [text for text, _ in units]  # Complete parse before any mutation.
     digest = sha256(payload).hexdigest()
     migrate(path)
     connection = open_existing(path)
@@ -117,6 +144,9 @@ def import_docx(path, user_id, company_id, source_path, name=None, material_id=N
                 connection.execute("INSERT INTO material_versions VALUES (?,?,?,?)", (material_id, version, digest, payload))
                 connection.executemany("INSERT INTO material_paragraphs VALUES (?,?,?,?)",
                                        [(material_id, version, i, text) for i, text in enumerate(paragraphs, 1)])
+                connection.executemany('INSERT INTO material_locations VALUES (?,?,?,?,?)',
+                    [(material_id, version, i, kind, json.dumps(location, ensure_ascii=False))
+                     for i, (_, location) in enumerate(units, 1)])
                 status = "SUCCESS_CHANGED"
         return {"status": status, "material_id": material_id, "version": version,
                 "sha256": digest, "paragraph_count": len(paragraphs), "published": False}
@@ -133,7 +163,23 @@ def get_paragraph(connection, user_id, material_id, version, paragraph_id):
     if row is None or row["owner"] != user_id:
         raise PermissionError("资料不存在或不可访问")
     _authorize(connection, user_id, row["company_id"])
-    return {key: row[key] for key in ("material_id", "version", "paragraph_id", "company_id", "name", "text", "sha256")}
+    result = {key: row[key] for key in ("material_id", "version", "paragraph_id", "company_id", "name", "text", "sha256")}
+    # Pre-migration Word sources remain readable without writing on a read path.
+    exists = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='material_locations'").fetchone()
+    location = connection.execute('SELECT source_type,location_json FROM material_locations WHERE material_id=? AND version=? AND paragraph_id=?',
+                                  (material_id, version, paragraph_id)).fetchone() if exists else None
+    result['source_type'] = location['source_type'] if location else 'docx'
+    result['location'] = json.loads(location['location_json']) if location else {'kind': 'word_paragraph', 'paragraph': paragraph_id}
+    return result
+
+
+def source_label(source):
+    location = source.get('location', {})
+    if location.get('kind') == 'excel_row':
+        return f"工作表“{location['sheet']}” · 原第{location['row']}行"
+    if location.get('kind') == 'pdf_page':
+        return f"PDF第{location['page']}页"
+    return f"Word第{source['paragraph_id']}段"
 
 
 def list_materials(connection, user_id, company_id):

@@ -1,4 +1,21 @@
-# Word资料与规则来源最小契约
+# 资料与规则来源契约
+
+V3增加 `import_material`，正式CLI upload和工作台 `/material-upload`、`/material-update` 共同调用，
+支持 docx、xlsx、文字PDF。保留原 `import_docx` 的仅Word兼容契约。所有格式均完整解析后才写入资料表，
+不修改发票、银行数据或自动发布规则；同一归属的内容SHA去重，显式资料ID更新版本。
+
+来源单元继续以 `material_id/version/paragraph_id` 唯一定位；`paragraph_id` 是通用内部单元编号，
+Excel不能把物理行号直接当编号。读取回执增加 `source_type` 与 `location`，工作台显示真实来源位置：
+
+- Word：原段编号，含空段及表格中的段落；旧版本没有location表时仍按Word原段读取。
+- Excel：工作表名与原始行号，每个非空行一个单元；单元内保留单元格地址、类型与值。公式保留原文，不计算，不宣称其结果已核实。空行不入单元但不重编号物理行。
+- 文字PDF：每页一个单元，页码从1开始（含空页）；不支持扫描件OCR、加密PDF或版式/表格结构还原。
+
+文件原始字节仍保存在不可变版本中；位置通过加法新表material_locations保存，旧数据不重导。
+全格式文件限10MB；Excel限制解压内容、工作表行列与累计文本；PDF限制页数与累计提取文本。
+读取每次核当前用户私有归属和企业ACL。资料不共享给其他企业用户，发布规则也不授予原件访问权。
+
+运行依赖增加pypdf（6.x）；Excel复用openpyxl。针对来源与重复/版本/权限的程序测试不等于Live或真人验收。
 
 `app.materials.import_docx(db, user_id, company_id, source_path, name=None, material_id=None)`
 只接收 docx，完整解析成功才写入；返回 `status/material_id/version/sha256/paragraph_count/published=False`。
