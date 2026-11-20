@@ -20,7 +20,7 @@ from .pending_transition import (contract_error as pending_contract_error, trans
 from .invoice_action import change_invoice as execute_invoice_action, public_state as invoice_business_state
 from .write_coordination import WriteCoordinator
 from .updates import commit_invoice_update, edit_scope_error
-from .provenance import SOURCES, ScopeProof, supplement_read_literals
+from .provenance import SOURCES, ScopeProof, supplement_read_literals, current_sql_invoice_identity
 from .business_sql import BusinessSQL, BusinessSQLError, TABLES as SQL_TABLES
 from .invoice_continuity import InvoiceQueryChain, InvoiceRead
 from .tui_intent import (invoice_choice_reply, invoice_followup_action, invoice_intent_source,
@@ -2685,6 +2685,12 @@ class Agent:
                                 tool_proof, tool_scope = supplement_read_literals(tool_proof, tool_scope,
                                     read_literals, raw_sources=dict.fromkeys(
                                         ('company_id', 'invoice_no', 'year', 'month', 'periods'), 'controlled_read_scope'))
+                                if not current_read_denial:
+                                    sql_identity = current_sql_invoice_identity(
+                                        read_results, object_args, tool_proof, tool_scope)
+                                    tool_proof, tool_scope = supplement_read_literals(tool_proof, tool_scope,
+                                        sql_identity, raw_sources=dict.fromkeys(
+                                            ('company_id', 'invoice_no'), 'controlled_read_scope'))
                         if fn.get("name") == "manage_task" and len(prior_task_scopes) == 1 and annual_year is None:
                             company, year, month = next(iter(prior_task_scopes))
                             checked = {"company_id": company, "year": year, "month": month}

@@ -1,6 +1,7 @@
 """可信运行层的范围证据；模型参数和自报来源不能构造此许可。"""
 from dataclasses import dataclass, replace
 from copy import deepcopy
+import hashlib
 
 SOURCES={'user_current','session_confirmed','trusted_reference','current_sqlite'}
 READ_SOURCES = SOURCES | {'model_read_candidate','controlled_read_scope'}
@@ -59,6 +60,59 @@ def supplement_read_literals(proof, expected, raw, *, raw_sources=None):
             sources[key] = (raw_sources or {}).get(key, 'user_current')
             scope[key] = candidates[key]
     return replace(proof, values=values, sources=sources), scope
+
+
+def current_sql_invoice_identity(results, target, proof, expected):
+    """Return only a unique current SQL original key, for one read call.
+
+    The runtime owns results; model labels/text never establish identity. All
+    complete direct invoice projections contribute, so two singleton results
+    cannot silently choose one another. No date or write source is created.
+    """
+    identities = set()
+    known = {key: expected.get(key) or proof.values.get(key)
+             or (proof.read_workspace or {}).get(key) or ()
+             for key in ('company_id', 'year', 'month', 'periods')}
+    for name, result in results:
+        evidence = result.get('evidence', {})
+        data = result.get('data') or {}
+        query = evidence.get('query_scope') or {}
+        if (name != 'query_business_sql' or result.get('status') != 'SUCCESS'
+                or evidence.get('source') != 'current_sqlite'
+                or query.get('status') != 'VERIFIED' or query.get('table') != 'invoices'
+                or query.get('query_set_complete') is not True
+                or query.get('limited') is not False or query.get('display_truncated') is not False
+                or data.get('truncated') is not False or type(data.get('sql')) is not str
+                or query.get('sql_sha256') != hashlib.sha256(data['sql'].encode('utf-8')).hexdigest()):
+            continue
+        columns, rows = data.get('columns', ()), data.get('rows', ())
+        projected, indexes = query.get('columns', ()), data.get('invoice_display_identity', {})
+        if (not rows or len(projected) != len(columns)
+                or any(meta.get('kind') != 'column' for meta in projected)
+                or any(type(indexes.get(key)) is not int or not 0 <= indexes[key] < len(columns)
+                       or projected[indexes[key]].get('field') != key
+                       or projected[indexes[key]].get('name') != columns[indexes[key]]
+                       for key in ('company_id', 'invoice_no'))):
+            continue
+        scope = query.get('scope') or {}
+        periods = tuple(map(tuple, scope.get('periods', ())))
+        if ((known['periods'] and not set(periods) <= set(map(tuple, known['periods'])))
+                or (known['year'] and any(y not in known['year'] for y, _ in periods))
+                or (known['month'] and any(m not in known['month'] for _, m in periods))):
+            return {}
+        for row in rows:
+            if len(row) != len(columns):
+                return {}
+            key = tuple(row[indexes[field]] for field in ('company_id', 'invoice_no'))
+            if (any(type(value) is not str or not value for value in key)
+                    or key[0] not in scope.get('company_ids', ())):
+                return {}
+            identities.add(key)
+    selected = (target.get('company_id'), target.get('invoice_no'))
+    if len(identities) != 1 or selected not in identities:
+        return {}
+    return {'company_id': [selected[0]], 'invoice_no': [selected[1]]}
+
 
 def validate_scope(proof,user_id,name,args,partial=False):
     """权限由Handler先检查；来源缺失和已知范围冲突分别返回。"""
