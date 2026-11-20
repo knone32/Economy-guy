@@ -98,7 +98,7 @@ def use_skill(path, actor, skill_id, company_id, permitted):
 
 def dispatch_allowed(path, actor, assistant_id, tool, skill_id=None):
     if not assistant_id:
-        return True
+        return tool != 'use_skill'
     with closing(connect(path)) as db:
         assistant = read(db,actor,'assistant',assistant_id)
         if not assistant or not assistant['enabled'] or tool not in assistant['body']['tools']:

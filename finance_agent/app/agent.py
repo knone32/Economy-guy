@@ -1896,7 +1896,8 @@ class Agent:
             diagnostic_request = (self.transport and self.model is _BUILTIN_LIVE_MODEL
                                   and self.transport.diagnose_next_request)
             # The same set is advertised to the model, scheduler and dispatcher.
-            turn_tools = [tool for tool in turn_tools if tool["function"]["name"] in self.allowed_tools]
+            turn_tools = [tool for tool in turn_tools if tool["function"]["name"] in self.allowed_tools
+                          and (tool['function']['name'] != 'use_skill' or self.active_skills)]
             request_tools = [] if pending_repair_active or read_finish_active or budget_close_active else turn_tools
             if business_repair_source is not None:
                 request_tools = [t for t in request_tools if t['function']['name'] == 'change_invoice']
