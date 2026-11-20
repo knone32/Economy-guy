@@ -1,13 +1,13 @@
 """Trusted assistant configuration; shared skill versions never grant user ACLs."""
 import json
-import sqlite3
 from contextlib import closing
 from .permissions import check_permission
+from .stage2_schema import open_existing
 
 
 def connect(path):
-    db = sqlite3.connect(path)
-    db.row_factory = sqlite3.Row
+    # Explicit configuration initialization may add tables, never a workbook.
+    db = open_existing(path)
     db.execute('CREATE TABLE IF NOT EXISTS assistant_config(kind TEXT, owner TEXT, id TEXT, revision INTEGER, enabled INTEGER, body TEXT, PRIMARY KEY(kind,owner,id))')
     db.execute('CREATE TABLE IF NOT EXISTS assistant_config_history(kind TEXT, owner TEXT, id TEXT, revision INTEGER, enabled INTEGER, body TEXT, PRIMARY KEY(kind,owner,id,revision))')
     db.commit()
@@ -47,13 +47,15 @@ def configure(path, actor, kind, identifier, body, *, enabled=True, expected_rev
 
 
 def read(db, actor, kind, identifier):
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='assistant_config'").fetchone():
+        return None
     row = db.execute('SELECT * FROM assistant_config WHERE owner=? AND kind=? AND id=?', (actor,kind,identifier)).fetchone()
     return None if row is None else {**dict(row), 'body':json.loads(row['body'])}
 
 
 def tool_enabled(path, actor, name):
     # No migration during ordinary dispatch on an unconfigured legacy book.
-    with closing(sqlite3.connect(path)) as db:
+    with closing(open_existing(path, readonly=True)) as db:
         if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='assistant_config'").fetchone():
             return True
         row = db.execute("SELECT enabled FROM assistant_config WHERE kind='tool' AND owner=? AND id=?", (actor,name)).fetchone()
@@ -64,7 +66,7 @@ def refresh_assistant(agent):
     identifier = getattr(agent, 'assistant_id', None)
     if not identifier:
         return
-    with closing(connect(agent.db_path)) as db:
+    with closing(open_existing(agent.db_path, readonly=True)) as db:
         config = read(db, agent.user_id, 'assistant', identifier)
         if not config or not config['enabled']:
             raise PermissionError('助手已停用或不属于当前账号')
@@ -83,7 +85,7 @@ def refresh_assistant(agent):
 
 
 def use_skill(path, actor, skill_id, company_id, permitted):
-    with closing(connect(path)) as db:
+    with closing(open_existing(path, readonly=True)) as db:
         if not check_permission(db, actor, company_id, 'read').allowed:
             raise PermissionError('当前用户无企业读取权限')
         skill = read(db, actor, 'skill', skill_id)
@@ -99,7 +101,7 @@ def use_skill(path, actor, skill_id, company_id, permitted):
 def dispatch_allowed(path, actor, assistant_id, tool, skill_id=None):
     if not assistant_id:
         return tool != 'use_skill'
-    with closing(connect(path)) as db:
+    with closing(open_existing(path, readonly=True)) as db:
         assistant = read(db,actor,'assistant',assistant_id)
         if not assistant or not assistant['enabled'] or tool not in assistant['body']['tools']:
             return False
