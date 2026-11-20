@@ -303,10 +303,19 @@ class Agent:
                 unique[month] = next(iter(years))
         return unique
 
-    def _current_read_objects(self, text, *, invoice_candidates=()):
+    def _current_read_objects(self, text, *, invoice_candidates=(), include_quoted=False):
         """Resolve current registered data once; opaque ID digits are not dates."""
         from .business_object_sources import amendment_sources
         try:
+            if include_quoted:
+                from .business_object_sources import unreadable_company_mentions
+                from .responses import _QUOTED_DATA
+                if unreadable_company_mentions(text, actor=self.user_id, book=self.db_path, include_quoted=True):
+                    self.trace('context.read_literal_sources', {'status': 'UNREADABLE_FRAME_NOT_SUPPLEMENTED'})
+                    return {}
+                # Only this turn-local get_invoice adapter may read quoted
+                # object data. It neither changes Context nor creates an action.
+                text = _QUOTED_DATA.sub(lambda match: ' ' + match[0][1:-1] + ' ', text)
             current, _, _ = amendment_sources(text, None, actor=self.user_id, book=self.db_path,
                                                invoice_candidates=invoice_candidates)
             return current
@@ -2565,9 +2574,9 @@ class Agent:
                                 object_args = {}
                             tool_proof, tool_scope = supplement_read_literals(tool_proof, tool_scope,
                                 self._current_read_objects(current_request,
-                                    invoice_candidates=(object_args.get('invoice_no'),)),
-                                raw_sources={'company_id': 'controlled_read_scope',
-                                             'invoice_no': 'controlled_read_scope'})
+                                    invoice_candidates=(object_args.get('invoice_no'),), include_quoted=True),
+                                raw_sources=dict.fromkeys(('company_id', 'invoice_no', 'year', 'month', 'periods'),
+                                                          'controlled_read_scope'))
                         if fn.get("name") == "manage_task" and len(prior_task_scopes) == 1 and annual_year is None:
                             company, year, month = next(iter(prior_task_scopes))
                             checked = {"company_id": company, "year": year, "month": month}
