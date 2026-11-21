@@ -25,3 +25,19 @@ class VerifiedSQLCardTests(unittest.TestCase):
         unknown=deepcopy(self.result);unknown['evidence']['query_scope']['status']='UNKNOWN'
         _,body=AgentWorkspace.business_card('query_business_sql',unknown['data'],unknown['evidence'])
         self.assertNotIn('发票数量',body);self.assertNotIn('发票金额合计',body)
+
+    def test_detail_amounts_survive_a_verified_window_count(self):
+        mixed=self.fixture.actual_result(
+            "SELECT invoice_no,amount_cents,COUNT(*) OVER() AS total_rows FROM invoices "
+            "WHERE seller_name='玄野服务有限公司' AND purpose='展会物料' ORDER BY invoice_no")
+        query=mixed['evidence']['query_scope']
+        self.assertEqual(query['status'],'VERIFIED')
+        self.assertEqual(query['row_shape'],'window')
+        self.assertEqual(query['columns'][-1]['kind'],'count_rows')
+        original=deepcopy(mixed)
+        _,body=AgentWorkspace.business_card('query_business_sql',mixed['data'],mixed['evidence'])
+        for number,money in (('A','¥1,797.00'),('B','¥2,357.00')):
+            row=next(line for line in body.splitlines() if number in line)
+            self.assertIn(money,row)
+            self.assertIn('total_rows：2',row)
+        self.assertEqual(mixed,original)

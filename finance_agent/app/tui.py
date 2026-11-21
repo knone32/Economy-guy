@@ -1332,9 +1332,16 @@ class AgentWorkspace(ConversationUI, App):
         if tool == "query_business_sql":
             from .fact_arithmetic import sql_scalars
             outcome={'data':data,'evidence':evidence}
-            if sql_scalars(outcome,'display',''):
+            scalars=sql_scalars(outcome,'display','')
+            columns=(evidence.get('query_scope') or {}).get('columns',())
+            columns_rendered=all(
+                column.get('kind') in {'column','date_bucket'} and column.get('unit')=='text'
+                or all(f'cell.{row}.{index}' in scalars for row in range(len(data['rows'])))
+                for index,column in enumerate(columns))
+            if scalars and columns_rendered:
                 # Reuse attributed facts/units, independent of SQL aliases or
-                # the narrower legacy display regex. This grants no coverage.
+                # the legacy regex, only if every column is represented. Raw
+                # detail amounts plus window statistics keep the full row view.
                 return (f"业务查询 · 已显示 {len(data['rows'])} 行",
                         render_sql_business_result(outcome))
             lines = sql_display_rows(data)

@@ -2,6 +2,8 @@
 
 ## 契约修复已交付，读取／改口／Skill Live已结束
 
+展示收尾补充：f9acd59的整卡切换会在“逐票金额＋COUNT(*) OVER()”中遗漏明细金额，已用真实SQLite→归因→卡片的零API检查复现。现在只有全部输出列均被现有维度或scalar事实覆盖才替换整卡；混合结果保留原逐列展示。新增混合检查修前失败，修后连同原纯统计及UNKNOWN共3项通过，原结果/证明不变；无Live、无账簿写入，不扩展SQL支持或GUI签收范围。旧回包和成绩不改。
+
 已完成第一刀：query_business_sql工具说明明确顶层仅sql/read_scope、销售方仅read_scope.seller；已绑定BusinessRequest后不重复搬运一份销售方候选，由SQL落实所需筛选/指标/分组，Runtime继续核同一要求及可信快照。原A03工具描述的“可选seller”未标嵌套位置是新增确认的系统指引问题；参数本身不合法，校验拒绝正确，两者分别记账。未接收顶层seller、未删除范围参数、未放宽Schema或核验。3项零API契约检查通过（含红例先复现），随后同版必要Live已执行，见下文。
 
 后续程序进展：Skill沿原配置owner/revision增加可选结构化business_terms，首个独立语义输入仅投影启用版本的术语及既有对象/指标，不搬运steps、SQL、答案或权限；旧三字段Skill兼容，旧steps不自动推断定义，需显式配置。实际Agent入口的采集检查已确认接通，非Live词义成绩。
