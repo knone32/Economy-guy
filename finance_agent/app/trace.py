@@ -55,7 +55,10 @@ def redact(value):
         value=re.sub(r'https?://[^\s\"\'<>]+',_url,value)
         value=re.sub(r'(?i)\b(?:authorization|proxy-authorization)\s*[:=]\s*[^\r\n,;]+','Authorization: [REDACTED]',value)
         value=re.sub(r'(?i)\b(?:reasoning_content|reasoning|thinking|chain_of_thought)\s*[:=]\s*("(?:\\.|[^"\\])*"|\'[^\']*\'|[^\r\n;]+)','reasoning_content=[PRIVATE_PROTOCOL_HIDDEN]',value)
-        value = re.sub(r"(?i)(bearer\s+|sk-)[A-Za-z0-9_.-]+", "[REDACTED]", value)
+        # Match a credential token, not the suffix of a business word or path
+        # component (for example, "task-chain"). Candidate storage rejects
+        # redacted payloads, so false positives also destroy resumable state.
+        value = re.sub(r"(?i)(bearer\s+|(?<![A-Za-z0-9_])sk-)[A-Za-z0-9_.-]+", "[REDACTED]", value)
         value=re.sub(r'(?i)\bbasic\s+[A-Za-z0-9+/=_-]+','[REDACTED]',value)
         return re.sub(r'(?i)(\b(?:api[_ -]?key|password|access_token|refresh_token|token|secret|密钥|口令)\s*["\']?\s*[:=：]\s*)("(?:\\.|[^"\\])*"|\'[^\']*\'|[^\s,;}]+)',r'\1[REDACTED]',value)
     return value

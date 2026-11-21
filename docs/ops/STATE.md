@@ -2,6 +2,8 @@
 
 ## 当前主任务：可读、可恢复并由真人完成的一条办理链
 
+ed2e79f真实续办已通过选中VX-A→原change_invoice fresh读取→用途待补，随后模型正确输出turn_action=pause，原Runtime暂缓回执正确。但会话第6/7轮仍RUNNING、候选表为空，恢复节点停止。源码定位：候选存储拒绝被redact改变的载荷；脱敏正则未限制sk-的词边界，误命中真实账簿路径task-chain，实际输入亦可见accountant-ta[REDACTED]。现在仅收紧密钥token边界，结构化密钥字段、Bearer及独立sk-凭据仍按原逻辑遮蔽，不放宽候选来源/权限/修订。依用户最新指示不再运行零API测试，提交后直接Live重走尚未持久化的办理段；不重查已签收查询。原失败保留。新增4HTTP/29912tokens/42562微元，同原账108/963780/1495974，三限null、unknown_usage=false，零业务写入与自动批准。证据为本地run-05/OBSERVATION.public.json。
+
 59d7d38原链Live回归：查询PASS，独立要求保留四个details(field)，首卡与末答均显示VX-A、3478.50元、用途/备注未填写，与独立SQLite真值相同。下一句开始用途修改并暂缺新值时，模型错误输出read并继承查询指标，将待填用途记为读取unresolved；现有legacy route可表达办理，未被选中。该节点未调用业务工具，无候选/预览/批准/提交，依赖停止。4HTTP新增35682tokens/87718微元，同原账104/933868/1453412，三限null、unknown_usage=false；旧失败及本次新失败均保留。证据：本地evidence-root/accountant-task-chain-20261121/run-04/OBSERVATION.public.json。
 
 下一修订只明确原语义入口已有route的业务边界：先判本轮读取或变更，再继承前文；缺待写新值归原办理owner，不作为读取未决。无新增Schema/Loop/owner，不自动将错误read输出转写，不改SQL或批准机制。原Agent查询后交legacy→待补及相关原生上下文共9项零API检查通过；这是程序接线证据，不证明模型选路正确。冻结后仅从原已展示查询的真实会话续办，不重查已通过节点。
