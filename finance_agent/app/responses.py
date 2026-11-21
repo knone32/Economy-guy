@@ -911,6 +911,17 @@ def render_sql_business_result(outcome):
     data = outcome['data']
     if data.get('request_identity_evidence_only'):
         return '以下仅为对象线索，尚未交付所需统计。\n' + '\n'.join(sql_display_rows(data))
+    query = outcome.get('evidence', {}).get('query_scope') or {}
+    if (query.get('status') == 'VERIFIED' and query.get('row_shape') == 'detail'
+            and data.get('request_projection', {}).get('detail_columns_only')
+            and all(c.get('kind') == 'column' and c.get('field') in BUSINESS_FIELD_LABELS
+                    for c in query.get('columns', ()))):
+        records = [{column['field']: row[index] for index, column in enumerate(query['columns'])}
+                   for row in data['rows']]
+        text = render_business_records(records)
+        if data.get('truncated'):
+            text += '\n仅显示部分记录，显示数量不代表全部数量。'
+        return text
     scalars = sql_scalars(outcome, 'display', '')
     if scalars:
         return '\n'.join(f'{fact["subject"]}：{display(fact["value"], fact["unit"], fact["metric"])}。'

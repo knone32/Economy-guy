@@ -382,3 +382,92 @@ class BusinessRequestDeliveryTests(unittest.TestCase):
         full=accept_result(request,'query_business_sql',self.actual_result('SELECT '+columns+',item_name'+tail),'U002',self.book)
         self.assertTrue(assess_results(request,[('query_business_sql',full)])['complete'])
         self.assertEqual(full['evidence']['business_request']['missing'],[])
+
+
+class RequestedDetailFieldsTests(unittest.TestCase):
+    """Display coverage and fresh continuation identity are separate contracts."""
+    # Reuse the fixture, not the aggregate tests, for this bounded regression.
+    setUp = BusinessRequestDeliveryTests.setUp
+
+    def detail(self, fields=('invoice_no', 'amount_cents', 'purpose', 'remark')):
+        labels = {'invoice_no':'票号','amount_cents':'金额','purpose':'用途','remark':'备注'}
+        requested = '列出全部业务字段' if fields == ('*',) else '列出' + '、'.join(labels[f] for f in fields)
+        text = '查C001 2026年9月销售方玄野服务有限公司用途展会物料的发票，' + requested + '。'
+        target = {**self.target, 'periods': [[2026, 9]], 'period_quote': '2026年9月',
+                  'group_by': [], 'metrics': [
+                      {'operation': 'details', 'field': field, 'quote': requested}
+                      for field in fields]}
+        request = bind({'kind': 'read', 'targets': [target], 'unresolved': []},
+                       actor='U001', book=self.book, turn_id='detail', request=text)
+        return request
+
+    def detail_result(self, request, columns):
+        from app.tool_registry import handle_tool
+        values = {'company_id': ['C001'], 'periods': [(2026, 9)]}
+        with closing(BusinessSQL(self.book, 'U001', ScopeProof('U001', values,
+                     dict.fromkeys(values, 'user_current')))) as workspace:
+            return handle_tool('query_business_sql', json.dumps({'sql': 'SELECT ' + columns +
+                " FROM invoices WHERE seller_name='玄野服务有限公司' AND purpose='展会物料'"}),
+                'U001', self.book, sql_workspace=workspace, business_request=request)
+
+    def test_four_requested_fields_complete_in_first_card_and_final_fact(self):
+        from app.answer_evidence import catalog, select
+        from app.business_request_delivery import assess_selection
+        from app.tui import AgentWorkspace
+        request = self.detail()
+        result = self.detail_result(request, 'invoice_no,amount_cents,purpose,remark')
+        self.assertEqual(result['status'], 'SUCCESS', result)
+        results = [('query_business_sql', result)]; facts = catalog(results, {}, 'detail')
+        self.assertTrue(assess_selection(request, ['detail:r0.result'], facts, results)['complete'])
+        _, card = AgentWorkspace.business_card('query_business_sql', result['data'], result['evidence'])
+        final = select(['detail:r0.result'], facts)
+        for text in (card, final):
+            for value in ('发票编号：A', '1797.00 元', '用途：展会物料', '备注：未填写'):
+                self.assertIn(value, text)
+            self.assertNotIn('SQL 列名', text)
+        self.assertEqual(result['data']['columns'], ['invoice_no','amount_cents','purpose','remark'])
+
+    def test_missing_requested_field_and_full_record_are_still_partial(self):
+        from app.business_request_delivery import assess_results
+        for fields, columns, missing in (
+                (('invoice_no','amount_cents','purpose','remark'), 'invoice_no,amount_cents,purpose', ['remark']),
+                (('*',), 'invoice_no,amount_cents,purpose,remark', ['company_id','invoice_date','item_name','seller_name'])):
+            with self.subTest(fields=fields):
+                request = self.detail(fields); result = self.detail_result(request, columns)
+                self.assertEqual(result['status'], 'SUCCESS', result)
+                self.assertFalse(assess_results(request, [('query_business_sql', result)])['complete'])
+                self.assertEqual(result['evidence']['business_request']['missing'][0]['missing_columns'], missing)
+
+    def test_continuation_needs_real_display_identity_and_fresh_read(self):
+        from app.agent import Agent
+        from app.invoice_action import change_invoice
+        from app.business_request_delivery import assess_results
+        for fields in (('invoice_no','amount_cents','purpose','remark'), ('amount_cents','purpose','remark')):
+            with self.subTest(fields=fields):
+                request = self.detail(fields)
+                result = self.detail_result(request, ','.join(fields))
+                self.assertTrue(assess_results(request, [('query_business_sql', result)])['complete'])
+                agent = Agent('U001', self.book, lambda *_: self.fail('No API'), mode='mock',
+                              trace_path=self.book.with_suffix('.jsonl'))
+                agent.trace_id = 'continuation'
+                # Match the GUI's actual displayed-turn allowlist.
+                agent.context.display_ids = []
+                agent.record_query_display([('query_business_sql', result)])
+                with closing(sqlite3.connect(self.book)) as db, db:
+                    db.execute("UPDATE invoices SET remark='新读值' WHERE company_id='C001' AND invoice_no='A'")
+                outcome, pending, planned, reads = change_invoice(agent,
+                    {'company_id':'C001','invoice_no':'A','field':'purpose'}, None,
+                    '这张先准备补充用途，具体内容稍后提供。')
+                self.assertIsNone(planned)
+                if 'invoice_no' in fields:
+                    self.assertEqual(outcome['status'], 'WAITING_USER', outcome)
+                    self.assertEqual(pending['scope']['invoice_no'], ['A'])
+                    self.assertEqual(pending['missing_fields'], ('new_value',))
+                    self.assertEqual(reads[0][1]['data']['remark'], '新读值')
+                else:
+                    self.assertEqual(outcome['status'], 'SCOPE_MISMATCH', outcome)
+                    self.assertIsNone(pending)
+                    self.assertFalse(reads)
+                self.assertFalse(agent.update_session.drafts)
+                with closing(sqlite3.connect(self.book)) as db:
+                    self.assertEqual(db.execute('SELECT count(*) FROM invoice_audit').fetchone()[0], 0)

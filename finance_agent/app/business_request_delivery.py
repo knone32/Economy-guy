@@ -394,9 +394,6 @@ def _project_detail_result(request, original, actor, book):
     if not targets:return original
     keep=[i for i,c in enumerate(columns) if c.get('kind')=='column']
     fields={columns[i]['field'] for i in keep}
-    identity={'company_id','invoice_no','invoice_date'} if query['table']=='invoices' else {
-        'company_id','transaction_no','transaction_date'}
-    if not identity<=fields:return original
     # Scope/filters are proved before even a partial card is released. Removing
     # a display expression cannot conceal a broader seller or a date restriction.
     ids=[];matched=[];errors=[]
@@ -419,10 +416,17 @@ def _project_detail_result(request, original, actor, book):
         'source_query_set_complete':query.get('query_set_complete'),
         'source_row_indices':list(range(len(data['rows']))),'identity_only':False,'detail_columns_only':True}
     query['columns']=[columns[i] for i in keep];query['projection_complete']=True
-    # Render genuine raw invoice fields with their existing cents formatter;
-    # an arbitrary SQL alias or the omitted conversion supplies no unit proof.
-    if query['table']=='invoices' and 'amount_cents' in fields:
+    # Display coverage concerns requested fields, not the keys needed for a
+    # later action. Preserve only genuine returned identity columns, remapping
+    # their indices when scalar display expressions were removed. Continuation
+    # still resolves these through the original reference/fresh-read owner.
+    if 'invoice_display_identity' in data:
+        data['invoice_display_identity']={field:keep.index(index)
+            for field,index in data['invoice_display_identity'].items() if index in keep}
+    if query['table']=='invoices' and {'invoice_no','invoice_date','amount_cents'}<=fields:
         data['invoice_projection']={c['field']:i for i,c in enumerate(query['columns'])}
+    else:
+        data.pop('invoice_projection',None)
     accepted=annotate(original,request,ids)
     if (query.get('query_set_complete') and not query.get('limited') and data.get('truncated') is False):
         from .business_sql import TABLES

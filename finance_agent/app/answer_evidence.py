@@ -129,8 +129,10 @@ def catalog(results, receipt, turn_id):
             # SQL aliases are execution column names, not certified business
             # labels. UNKNOWN never acquires units, set coverage or intent proof.
             query = evidence.get('query_scope') or {}
-            facts[prefix + key + '.result']['text'] += (
-                '\nSQL 列名（含别名）是实际执行返回的列名，不自动成为已认证的业务指标标签。')
+            if not (query.get('status') == 'VERIFIED'
+                    and data.get('request_projection', {}).get('detail_columns_only')):
+                facts[prefix + key + '.result']['text'] += (
+                    '\nSQL 列名（含别名）是实际执行返回的列名，不自动成为已认证的业务指标标签。')
             if query.get('scope') is None:
                 facts[prefix + key + '.result']['text'] += (
                     '\n以上仅为授权快照中的实际 SQL 返回；查询语义归属为 UNKNOWN，'

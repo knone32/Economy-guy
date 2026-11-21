@@ -342,20 +342,22 @@ class ContextBuilder:
                 query = evidence.get('query_scope', {})
                 identity = data.get('invoice_display_identity', {})
                 coverage = data.get('invoice_coverage', {})
-                # Only an actually displayed, complete singleton of original
-                # invoice identities becomes a reference. SQL selections keep
-                # their existing stricter two-column contract.
+                # A displayed original number plus the proven single-company
+                # snapshot identifies one object. Company/date need not also be
+                # displayed; resolution still rechecks ACL, period and fresh
+                # values. Call-local SQL selections retain their own contract.
                 if (evidence.get('source') != 'current_sqlite' or query.get('status') != 'VERIFIED'
                         or query.get('table') != 'invoices' or not query.get('query_set_complete')
+                        or query.get('row_shape') != 'detail' or query.get('limited') is not False
                         or data.get('truncated') is not False or len(data.get('rows', ())) != 1
-                        or coverage.get('sql_paginated') is not False
-                        or coverage.get('display_truncated') is not False
-                        or not {'company_id', 'invoice_no'} <= identity.keys()
+                        or coverage.get('sql_paginated', False) is not False
+                        or coverage.get('display_truncated', False) is not False
+                        or 'invoice_no' not in identity
                         or not all(scope.get(key) for key in ('company_id', 'year', 'month'))):
                     unreferenceable_sql = True
                     continue
                 row = data['rows'][0]
-                if row[identity['company_id']] != scope['company_id']:
+                if 'company_id' in identity and row[identity['company_id']] != scope['company_id']:
                     unreferenceable_sql = True
                     continue
                 rows = [{'company_id': scope['company_id'], 'invoice_no': row[identity['invoice_no']]}]

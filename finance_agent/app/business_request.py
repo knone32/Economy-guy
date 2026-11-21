@@ -236,7 +236,7 @@ DEFINITION = {
    'metric_operations':['sum','count','details','min','max'],
    'metric_fields':{'invoices':['invoice_no','invoice_date','item_name','purpose','remark','amount_cents','*'],
       'bank_transactions':['transaction_no','transaction_date','direction','counterparty_name','remark','amount_cents','*']},
-   'metrics':'每项operation/field及可核来源；current原话由顶层quote或Source.quote承载；field限metric_fields中的本对象字段；张数用count(*)，明细用details(*)；金额sum(amount_cents)',
+   'metrics':'每项operation/field及可核来源；current原话由顶层quote或Source.quote承载；field限metric_fields中的本对象字段；张数用count(*)，合计金额用sum(amount_cents)。用户枚举明细字段时，每个字段分别用details(field)，逐条金额用details(amount_cents)；details(*)仅表示整条记录全部业务字段，不能代替指定列。续办所需身份由Runtime另行核验，不增加用户要求显示的字段',
    'group_by':'只用groups中本对象实际字段或period，不传SQL表达式',
    'comparisons':'每项operation=subtract或compare，metric_operation/metric_field须已在同target.metrics中；left_period/right_period均在该target.periods内，quote须当前原话',
    'revision_relation':{'allowed':['update','replace','clarify'],'default':'update',

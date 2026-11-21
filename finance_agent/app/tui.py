@@ -1336,6 +1336,9 @@ class AgentWorkspace(ConversationUI, App):
             outcome={'data':data,'evidence':evidence}
             scalars=sql_scalars(outcome,'display','')
             columns=(evidence.get('query_scope') or {}).get('columns',())
+            if ((evidence.get('query_scope') or {}).get('status') == 'VERIFIED'
+                    and data.get('request_projection', {}).get('detail_columns_only')):
+                return (f"业务查询 · 已显示 {len(data['rows'])} 行", render_sql_business_result(outcome))
             columns_rendered=all(
                 column.get('kind') in {'column','date_bucket'} and column.get('unit')=='text'
                 or all(f'cell.{row}.{index}' in scalars for row in range(len(data['rows'])))
