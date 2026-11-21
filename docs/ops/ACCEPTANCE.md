@@ -1,5 +1,9 @@
 # 验收（V3；不同SHA不拼接）
 
+bcd17ea核心回归已通过：真实fresh读取建立锚点；原缺值不提交消息经change_invoice保留对象/purpose并存ACTIVE；明确暂缓消息实际kind=clarification、turn_action=pause，同一原owner持久PAUSED后发可恢复回执。共7HTTP，均为回归，不改原首分。另一个新进程正常打开已ACTIVE新chat，native pending为空、旧PAUSED载荷不变。仅剩余M01执行3HTTP后失败：真实list_invoices返回两票及用途、末答引用真实结果，Runtime却因明细字段覆盖适配缺失而0/2、真实partial，首卡还漏用途。M02/取消依赖NOT_RUN，财务/审计/草稿批准0；原App正常退出。原账141/1222070/1872751，累计null，不重置。
+
+当前修订只登记整月发票明细已返回请求字段的覆盖，并复用业务字段渲染首卡；单票/缺列/范围不符不因此获得整月覆盖，未显示身份不生成引用。没有零API或全量重跑，修后Live待冻结。有限runner已去除“single_invoice pending必然是代选”和固定追问词的错误约束。business_message最终调用chat_message，原时序拦截可涵盖业务卡，先前静态审查的确定漏采判断订正，不新增调用。证据目录为本地evidence-root/independent-usability-20261121/regression-bcd-public/和remaining-bcd-public/。
+
 c24b5c0真实回归已执行2HTTP，独立continue/purpose与字段原话正确；工具省略票号，原owner因无可核对来源返回SCOPE_MISMATCH。新发现是原U01虽然查询交付PASS，ROUND附加列投影后却没有invoice_display_identity，原reference.displayed实际anchors=[]，所以本轮准备期望复用的可信锚点不存在。未生成待补或PAUSED，R02/双路径/多对象/取消依赖均NOT_RUN；不把该断言失败概括成组合语义失败。业务/审计/批准0，原App正常退出，原首分不改。同原账131/1139555tokens/1748824微元峰价上界，累计三限null。精简事实及原Trace索引：本地evidence-root/independent-usability-20261121/regression-c24-public/SOURCE-GAP.public.json。
 
 来源交接修订待Live：仅从已核验明细投影的原身份列建立引用元数据，原唯一性/完整性/范围/ACL继续核验；工具与最终澄清都在原change_invoice使用同一唯一可信展示，可省略Runtime持有的键，显式冲突仍拒绝。先通过真实fresh读取建立新来源再续办，不回填旧输出，不将程序源码检查记成Live，不重跑旧完整提交链，不运行零API。

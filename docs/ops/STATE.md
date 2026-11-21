@@ -2,6 +2,10 @@
 
 ## 当前任务：组合语义与原owner真实交接验收
 
+当前bcd17ea的必要fresh来源、缺值不提交仍ACTIVE、明确暂缓真实PAUSED和工具/结构化澄清双路径已实际Live通过，共7HTTP。原U01/21e首分及c24失败不改。剩余阶段另在新进程打开已有新chat，未自动带入旧pending，旧PAUSED载荷保持一致；M01新查询3HTTP后停止：独立要求正确，list_invoices实际返回两票及用途，但通用明细适配没有details字段证明，Runtime覆盖0/2，首卡未列用途，真实PARTIAL_RESULT。不是模型误解、不是仅runner断言；多对象指代与取消尚未运行。原App正常退出，财务/审计/草稿批准零变化。同原账141/1222070tokens/1872751微元峰价上界，累计三限null。证据为本地evidence-root/independent-usability-20261121/regression-bcd-public/及remaining-bcd-public/M01-FIRST-DIAGNOSIS.public.json。
+
+当前只修该通用结果交接：原已授权整月发票明细登记实际返回的请求字段覆盖，单票读取不冒充整月；首卡复用已有业务字段渲染；未显示票号的结果不建立办理引用。原范围/筛选/来源/权限与最终事实选择检查保留。不跑零API、不重跑完整旧链；冻结后只回归M01，再续此前未发的指代/取消。前一轮导航确认超时另记runner边界，不能算模型失败；剩余runner已取消owner类型和固定追问关键词断言。时序审查补正：business_message会调用chat_message，因此原chat拦截可覆盖业务卡，不能将其认定为确定漏采。后续只设计未来前端接口，尚无实际Dot/DSH/Chat前端，不另建状态机。
+
 当前在c24b5c0真实回归的新证据上只补可信来源交接。U01原SQL带ROUND附加列，已核验的原字段投影正确且查询交付PASS，却未生成invoice_display_identity，实际anchors=[]；因此旧会话没有可复用的可信单票锚点。本次两HTTP独立输出continue/purpose正确，执行工具省略invoice_no，原owner以SCOPE_MISMATCH拒绝无来源参数，零待补/写入/批准。R02及后续依赖停止，不把runner“目标字段丢失”的断言标签当产品根因。原21e首分及c24回归原件均保留，证据为本地evidence-root/independent-usability-20261121/regression-c24-public/SOURCE-GAP.public.json。
 
 修订仅复用投影后已归因的原始company_id/invoice_no列建立展示身份，不从模型正文补来源；原引用层仍要求完整且唯一的单票、可信范围和ACL。原change_invoice统一使用唯一可信展示来源，允许工具省略Runtime已经持有的身份键，所有显式参数仍须一致。多对象、不完整范围、无票号和不可信结果不因此成为办理来源。下一Live必须经原查询真实fresh读取建立锚点后再续办；这是来源修复后的必要回归，不从旧回包回填，不重跑已签收提交闭环，不计陌生首执。

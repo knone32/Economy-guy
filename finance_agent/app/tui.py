@@ -27,7 +27,7 @@ from .queries import QueryError, available_periods, get_invoice, invoice_directo
 from .responses import (DIRECTORY_SORT_LABELS, display_rule_amounts, explicit_scope, needs_progress_evidence,
                         render_invoice_field_count, render_recent_commit, render_rule_history, render_scope,
                         directory_display_pages, redundant_directory_count, render_query_conclusion,
-                        render_sql_evidence, render_sql_business_result, sql_display_rows)
+                        render_sql_evidence, render_sql_business_result, sql_display_rows, render_business_records)
 from .rules import RuleError, check_missing_purpose
 from .session_store import workbook_identity
 from .stage2_schema import open_existing
@@ -1298,6 +1298,11 @@ class AgentWorkspace(ConversationUI, App):
         if evidence.get("source") != "current_sqlite":
             return None
         if tool == "list_invoices" and isinstance(data, list):
+            fields = (evidence.get('business_request') or {}).get('detail_fields')
+            if fields:
+                keys = ['amount' if field == 'amount_cents' else field for field in fields]
+                shown = [{key:row[key] for key in keys if key in row} for row in data]
+                return (f"发票明细 · 已显示 {len(data)} 张", render_business_records(shown))
             return (f"发票目录 · 已显示 {len(data)} 张", AgentWorkspace.invoice_lines(data))
         if tool == "list_tasks" and isinstance(data, list):
             return ("待办", "\n".join(f"{row['year']} 年 {row['month']} 月用途补充待办，{TASK_STATUS.get(row['status'], '状态待核对')}"

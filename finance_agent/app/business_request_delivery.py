@@ -663,6 +663,29 @@ def check_dedicated(request, name, result, actor, book):
     if not rows:
         ids.update(t.target_id for t in targets)
     accepted = annotate(result, request, sorted(ids))
+    # Monthly detail executors return the entire authorized period, not a page
+    # or one selected invoice. Attribute only actual requested source fields;
+    # a single-invoice lookup cannot certify the whole period by this route.
+    if TOOL_SPECS[name].read_mode == 'monthly' and object_name == 'invoices':
+        from .business_sql import TABLES
+        declared = [part.strip().split()[0] for part in TABLES[object_name].split(',')]
+        returned = {field for field in declared
+                    if all(('amount' if field == 'amount_cents' else field) in row for row in rows)}
+        proofs, displayed = [], []
+        for target in targets:
+            if set(target.group_by) - {'company_id', 'period'}:
+                continue
+            for metric in target.metrics:
+                fields = declared if metric.field == '*' else [metric.field]
+                if metric.operation != 'details' or not set(fields) <= returned:
+                    continue
+                proofs.append({'target_id':target.target_id,'operation':'details','field':metric.field,
+                    'scope':deepcopy(scope),'dimensions':{},'conditions':_expected_filters(target),
+                    'all_groups':True,'source_columns':sorted(returned),'absence':not rows})
+                displayed.extend(field for field in fields if field not in displayed)
+        accepted['evidence']['business_request']['measures'] = proofs
+        if displayed:
+            accepted['evidence']['business_request']['detail_fields'] = displayed
     if 'finance_summary' in accepted['evidence']:
         fields, _ = _summary_fields(request, scope)
         accepted['evidence']['finance_summary'] = {

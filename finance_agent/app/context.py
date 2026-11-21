@@ -331,6 +331,10 @@ class ContextBuilder:
                     directories.setdefault(key, (scope, []))[1].append(data)
                 continue
             if name=="list_invoices":
+                displayed_fields = (outcome.get('evidence',{}).get('business_request') or {}).get('detail_fields')
+                if displayed_fields is not None and 'invoice_no' not in displayed_fields:
+                    unreferenceable_sql = True
+                    continue
                 rows = data
             elif name=="check_missing_purpose":
                 rows = data["missing_invoices"]
