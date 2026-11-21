@@ -203,7 +203,7 @@ class Agent:
         self._check_identity()
         if (self._active or self._retired or self.pending_intent is not None
                 or self.update_session.drafts or self.update_session.confirmations
-                or self.coordinator.unverified_draft is not None or not self.workbook_available()):
+                or self.coordinator.has_unverified_update or not self.workbook_available()):
             raise ValueError('当前会话不能恢复旧单票候选，请重新明确办理要求。')
         self.pending_intent = recover_candidate(candidate, actor=self.user_id, book=self.db_path)
         return invoice_business_state(self.pending_intent)
@@ -274,7 +274,7 @@ class Agent:
         self._active = True
         try:
             if not self.workbook_available():
-                return self.write_receipt if self.coordinator.unverified_draft else self._receipt("ERROR")
+                return self.write_receipt if self.coordinator.has_unverified_update else self._receipt("ERROR")
             return self.coordinator.reconcile_update()
         finally:
             self._active = False
@@ -755,7 +755,7 @@ class Agent:
                             f'{scope["invoice_no"]} 的{supplement["field"]}改成{field_edit["new_value"]}')
                 else:
                     text = pending_from + "\n" + literal
-        unresolved_receipt = self.write_receipt if self.coordinator.unverified_draft is not None else None
+        unresolved_receipt = self.write_receipt if self.coordinator.has_unverified_update else None
         blocked_edit = unresolved_receipt is not None and (
             allow_prepare or continue_edit or invoice_intent_source(text)
             or (choice_reply and not choice_reply.get("cancel")))

@@ -1,6 +1,7 @@
 """Presentation adapter for local TUI sessions and read-only restoration."""
 import json
 import sqlite3
+from uuid import uuid4
 
 from .cli_chat import safe_text
 from .cli_workspaces import company_access
@@ -8,7 +9,6 @@ from .provenance import ANNUAL
 from .responses import explicit_scope, render_reference_error, render_invoice_pending
 from .session_store import SessionBusyError, SessionStore
 from .tasks import task_details
-from .updates import inspect_request
 from .business_sources import recover_candidate
 from .invoice_action import public_state as invoice_business_state
 
@@ -91,6 +91,7 @@ class ConversationUI:
 
     def restore_conversation(self):
         history = self.conversation.history()
+        unresolved_requests = []
         reference_state = None
         permitted = {row["company_id"] for row in company_access(self.db,self.user) if row["read"]}
         focus = history["focus"]
@@ -148,9 +149,9 @@ class ConversationUI:
             elif turn["state"] == "UNKNOWN_OUTCOME":
                 message = "上次操作结果待核实。请检查执行记录及当前业务状态。"
                 if turn["lookup"]:
-                    audit = inspect_request(self.db, self.user, turn["lookup"])
-                    if audit["status"].startswith("COMMITTED"):
-                        message = "已在 SQLite 成功审计中核实上次提交。请查看当前发票。"
+                    if turn['lookup'] not in unresolved_requests:
+                        unresolved_requests.append(turn['lookup'])
+                    message += ' 原请求编号：' + turn['lookup'] + '。核查前不能重新提交。'
                 self.chat_message("会话状态", message)
             if turn["state"] != "COMPLETED" or turn["seq"] <= history["boundary"]:
                 continue
@@ -199,6 +200,17 @@ class ConversationUI:
             self.note("已继续上次对话。当前业务状态将在查询时重新读取。")
         if self.conversation.list_invoice_candidates():
             self.chat_message('待续发票修改', '有尚未保存的发票修改，可在“待办”中选择继续办理。恢复后仍须核对新的确认预览，历史内容不提供批准。')
+        if unresolved_requests:
+            from .write_coordination import WriteCoordinator
+            from .trace import write_trace
+            trace_id = uuid4().hex
+            def trace(event, data):
+                write_trace(self.trace_path,self.mode,trace_id,event,data)
+            self.conversation.validate()
+            owner = WriteCoordinator(self.user,self.db,trace)
+            owner.restore_verification_requests(unresolved_requests,
+                actor=self.conversation.actor,book=self.conversation.workbook)
+            self._model_update_verification = owner
         return self.has_saved_history
 
     def invoice_candidate_text(self, row):
@@ -227,6 +239,10 @@ class ConversationUI:
     def resume_invoice_selection(self, argument):
         if not self.conversation:
             raise ValueError('当前未启用本地会话存储。')
+        verification = self._switched_update()
+        if (self.agent and self.agent.coordinator.has_unverified_update
+                or verification is not None and verification.has_unverified_update):
+            raise ValueError('原提交结果待核实，请先核查执行记录；取消不能解除未知提交。')
         if self.agent and (self.agent.pending_intent or self.agent.pending_edit):
             raise ValueError('请先 /pause 暂缓或 /cancel 取消当前事项。')
         candidate_id, revision = argument.split()

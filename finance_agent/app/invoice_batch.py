@@ -329,7 +329,7 @@ def run_invoice_batch(agent, message, request, *, approve_batch, approve_item, c
     coordinator = agent.coordinator
     if (request["actor"], request["workbook"], request["turn"]) != (agent.user_id, str(agent.db_path), agent.trace_id):
         return "DENIED", "对话轮次、账簿或用户已变化，原清单失效。"
-    if coordinator.unverified_draft is not None:
+    if coordinator.has_unverified_update:
         return "UNKNOWN_OUTCOME", coordinator.receipt["message"]
 
     if not invoice_nos or len(invoice_nos) > MAX_BATCH_INVOICES:

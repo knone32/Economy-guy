@@ -18,7 +18,58 @@ class WriteCoordinator:
         self.receipt = self._receipt("NOT_SUBMITTED")
         self.pending = None
         self.unverified_draft = None
+        self.unverified_request_ids = ()
         self.events = []
+
+    @property
+    def has_unverified_update(self):
+        return self.unverified_draft is not None or bool(self.unverified_request_ids)
+
+    def restore_verification_requests(self, request_ids, *, actor, book):
+        """Trusted SessionStore adapter: restore lookup references, never drafts."""
+        if (actor != self.user_id or Path(book).resolve() != Path(self.db_path).resolve()
+                or not isinstance(request_ids, (list,tuple))
+                or any(type(ref) is not str or not ref or len(ref)>128 for ref in request_ids)):
+            raise ValueError('待核查请求不属于当前账号或账簿。')
+        refs = tuple(dict.fromkeys((*self.unverified_request_ids,*request_ids)))
+        if self.unverified_draft is not None:
+            refs = tuple(ref for ref in refs if ref != self.unverified_draft.request_id)
+        self.unverified_request_ids = refs
+        if refs:
+            self.pending = None
+            self.session.drafts.clear()
+            self.session.confirmations.clear()
+            self.session.allow_prepare = False
+            self.receipt = self._receipt('UNKNOWN_OUTCOME')
+            self.receipt['request_id'] = refs[0]
+            self.receipt['pending_request_ids'] = list(refs)
+
+    def _inspect_restored_request(self):
+        ref = self.unverified_request_ids[0]
+        try:
+            outcome = inspect_request(self.db_path,self.user_id,ref)
+        except (OSError,sqlite3.Error):
+            outcome = tool_result('UNKNOWN_OUTCOME',{'request_id':ref},error='审计或当前值暂时无法读取')
+        data = outcome.get('data') or {}
+        audit,current = data.get('historical_commit') or {},data.get('current_invoice') or {}
+        field = audit.get('field')
+        valid = (outcome['status'] in {'COMMITTED','NO_CHANGE'}
+            and audit.get('request_id') == ref and audit.get('actor') == self.user_id
+            and audit.get('status') == outcome['status'] and field in {'purpose','remark'}
+            and all(audit.get(key) and current.get(key) == audit[key] for key in ('company_id','invoice_no'))
+            and field in current and type(data.get('current_matches')) is bool
+            and data['current_matches'] is (current.get(field) == audit.get('new_value')))
+        status = 'UNKNOWN_OUTCOME'
+        if valid:
+            self.unverified_request_ids = self.unverified_request_ids[1:]
+            status = outcome['status'] if data['current_matches'] else 'CURRENT_VALUE_CHANGED'
+        if self.unverified_request_ids:
+            status = 'UNKNOWN_OUTCOME'
+        self.receipt = self._receipt(status,outcome,valid and data['current_matches'] and not self.unverified_request_ids)
+        self.receipt.update(request_id=ref,pending_request_ids=list(self.unverified_request_ids),
+                            reconciled=True,committed_this_turn=False)
+        self._record_update(ref)
+        return self.receipt
 
     def read_basis(self, name, arguments, *, actor, book):
         """A current explicit single-invoice edit may read only that invoice.
@@ -32,7 +83,7 @@ class WriteCoordinator:
                 or Path(book).resolve() != Path(self.db_path).resolve()
                 or not session.allow_prepare or not session.explicit_edit_only
                 or not session.turn_id or not session.source_request or scope.get('_conflict')
-                or self.unverified_draft is not None):
+                or self.has_unverified_update):
             return None
         for field in ('company_id', 'invoice_no'):
             values = scope.get(field)
@@ -66,7 +117,7 @@ class WriteCoordinator:
                 'authorization':False}
 
     def begin(self, text, allow_prepare=False, continue_edit=False, edit_scope=None, edit_correction=False):
-        if self.unverified_draft is not None:
+        if self.has_unverified_update:
             self.session.begin_turn(text)
             return False
         original = self.pending if continue_edit and self.pending and self.pending["user_id"] == self.user_id else None
@@ -183,9 +234,10 @@ class WriteCoordinator:
         self.session.confirmations.clear()
         self.session.drafts.clear()
         self.pending = None
-        if self.unverified_draft is not None:
+        if self.has_unverified_update:
             self._trace_update("update.cancelled_drafts",
-                               {**data, "unverified_request_id": self.unverified_draft.request_id})
+                               {**data, "unverified_request_id": self.unverified_draft.request_id
+                                if self.unverified_draft else self.unverified_request_ids[0]})
             return self.receipt
         if self.receipt["status"] in {"COMMITTED", "NO_CHANGE", "CURRENT_VALUE_CHANGED"}:
             return self.receipt
@@ -197,7 +249,7 @@ class WriteCoordinator:
 
     def commit_update(self, request_id, fingerprint, commit_function=commit_invoice_update):
         """仅可信CLI调用；根据实际Commit及绑定回读证据生成回执。"""
-        if self.unverified_draft is not None:
+        if self.has_unverified_update:
             return self.receipt
         draft = self.session.drafts.get(request_id)
         if not confirm_draft(self.session, request_id, fingerprint):
@@ -235,6 +287,8 @@ class WriteCoordinator:
         """按可信身份核查原请求。整个过程只读。"""
         draft = self.unverified_draft
         if draft is None:
+            if self.unverified_request_ids:
+                return self._inspect_restored_request()
             return self._receipt("NO_PENDING_VERIFICATION")
         try:
             outcome = inspect_request(self.db_path, self.user_id, draft.request_id)
@@ -246,6 +300,8 @@ class WriteCoordinator:
         if matches is not None:
             status = outcome["status"] if matches else "CURRENT_VALUE_CHANGED"
             self.unverified_draft = None
+        if self.unverified_request_ids:
+            status = 'UNKNOWN_OUTCOME'
         self.receipt = self._verification_receipt(status, draft, outcome, matches is True)
         self.receipt["reconciled"] = True
         self._record_update(draft.request_id)

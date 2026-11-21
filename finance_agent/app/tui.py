@@ -350,7 +350,7 @@ class AgentWorkspace(ConversationUI, App):
             if had_agent or self.has_saved_history:
                 message = "模型连接已更换。上方文字可供回看。新的 AI 上下文从此处开始，未提交操作已取消。"
                 verification = self._switched_update()
-                if verification is not None and verification.unverified_draft is not None:
+                if verification is not None and verification.has_unverified_update:
                     message += " " + verification.receipt["message"]
                 self.resumed, self.resume_displays, self.resume_focus = [], [], None
                 if self.conversation:
@@ -399,7 +399,7 @@ class AgentWorkspace(ConversationUI, App):
             self.retire_invoice_candidate()
         if clear_log:
             self._model_update_verification = None
-        elif self.agent and self.agent.coordinator.unverified_draft is not None:
+        elif self.agent and self.agent.coordinator.has_unverified_update:
             self._model_update_verification = self.agent.coordinator
         if self.agent and self.agent.workbook_available():
             self.agent.cancel_update()
@@ -650,6 +650,7 @@ class AgentWorkspace(ConversationUI, App):
         if verification is not None:
             # Only transfer the evidence and receipt into the fresh update session.
             self.agent.coordinator.unverified_draft = verification.unverified_draft
+            self.agent.coordinator.unverified_request_ids = verification.unverified_request_ids
             self.agent.write_receipt = verification.receipt.copy()
         self._model_update_verification = None
         self.agent.defer_display_anchors = True
@@ -667,7 +668,7 @@ class AgentWorkspace(ConversationUI, App):
             self.agent.context.restored_turns = list(self.resumed)
             self.agent.context.restore_query_hints(self.resumed)
             self.agent.context.personal_detail = self.conversation.personal_detail()
-            if self.resume_invoice_pending is not None:
+            if self.resume_invoice_pending is not None and not self.agent.coordinator.has_unverified_update:
                 try:
                     self.agent.restore_invoice_candidate(self.resume_invoice_pending)
                 except (OSError, ValueError, PermissionError, sqlite3.Error) as error:
@@ -773,7 +774,7 @@ class AgentWorkspace(ConversationUI, App):
             self.note("本轮仍在处理或等待确认，请先完成或取消本轮操作。")
             return False
         verification = self._switched_update()
-        if verification is not None and verification.unverified_draft is not None:
+        if verification is not None and verification.has_unverified_update:
             self.note(verification.receipt["message"])
             return False
         if self.agent:

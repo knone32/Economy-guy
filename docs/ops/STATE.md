@@ -2,6 +2,10 @@
 
 ## 当前任务：冻结有限业务交接，设计前端会话接口
 
+新增恢复首错（受测da70a53，业务源码同8521f88）：真实DeepSeek仅2HTTP到原预览，用户本人批准MK-58263备注“配件票”→“恢复核查验收”，用途“备件采购”未变；实际唯一审计与原预览指纹一致。验收器仅对该原请求受控阻断inspect_request回读，真实事务/审计未替换，原回执UNKNOWN_OUTCOME且原请求已持久checkpoint，草稿/批准清空。随后的真实新进程在同一故障下恢复，tui_sessions恢复历史时直接读审计抛异常，导致丢弃整个SessionStore、退为进程内聊天。首错后依赖停止，零重提；此重启观察为程序/实际GUI故障证据，不是新的自然语言Live。原账150/1283241tokens/1965004微元峰价上界，累计null。原始证据为本地evidence-root/recovery-boundary-20261121/preview/HUMAN-COMMIT-VERIFIED.public.json及restart-audit-down/OBSERVATION.public.json。
+
+当前仅修该恢复交接：SessionStore原历史的UNKNOWN lookup交回现有WriteCoordinator，只恢复请求引用而不构造草稿/批准；审计暂不可读不再丢失Store。新增原owner的只读restore_verification_requests入口和统一has_unverified_update门禁，原核查在结果未明时保持UNKNOWN，核清后区分历史提交/当前值变化；模型切换、原候选恢复、批量提交与取消复用同一门禁。修后尚待实际原工作台恢复/只读核查；不新增付费模型重述、不重复已经批准的写入。前端仍只有设计契约，无新状态owner或Loop。
+
 业务产品冻结为8521f886bd8288a4fbb30573300d030e4ae4605a。原缺值/不提交/明确暂缓/双表达路径复用bcd17ea对应Live证据；8521f88未改Agent、invoice_action、SessionStore、TicketCandidates或WriteCoordinator，不重跑已签收完整提交链。新增8521f88实际list_invoices回归已交付两票用途，首卡正确、执行/末答覆盖2/2；末答仍有额外字段，最简列UX不签收。多对象仅SAFE_CLARIFICATION_LIMITED：不代选/无预览写入，但通用来源追问且无native待补，不冒充完整可用消歧接续。
 
 最后实际原GUI待办Choices恢复MK-58219用途待补，修订4→5、PAUSED保持至新轮是合法契约；随后唯一Live取消使原候选进入CANCELLED修订6终态，不列恢复，native/resume/coordinator/preview/drafts/confirmations全部无可执行状态，财务/审计零变化。没有旧有效批准样本，专项仍NOT_EXERCISED；真人独立可用性未验。旧首分、空取消未实质覆盖、0HTTP runner误断及全部原件保留。原App正常退出，所有148HTTP均complete；同原账148/1270671tokens/1949933微元峰价上界，累计三限null、历史不清零。证据见本地evidence-root/independent-usability-20261121/restore-cancel-final-8521-public/SCOPE-AND-FINAL-RESULTS.public.md、SUBSTANTIVE-CANCEL.public.json及remaining-8521-public/BOUNDED-RESULTS-AND-EXIT.public.json。

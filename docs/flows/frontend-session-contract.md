@@ -90,4 +90,6 @@ failure: stage?, original_status?, recoverable?, message?
 - 新风险须实际验证：同一要求跨会话／重启的连续性；持久化失败时真实回执；未知提交的核查状态跨重启恢复和写入门禁。现有 TUI 的进程内未知提交门禁不能自动算跨进程验收通过。
 - 本草案不承诺已完成远程认证、远程可信真人确认、前端安装或人眼可用性验收。
 
+当前新增接线仅限真实故障暴露的原未知提交恢复：`WriteCoordinator.restore_verification_requests(request_ids, actor, book)` 是受信 SessionStore 适配入口，恢复原 checkpoint 的核查引用，不接受模型正文或前端自报授权，不重建 Draft。`has_unverified_update` 统一原提交/取消/恢复门禁；`reconcile_update` 仍只读核查原审计与当前值。TUI复用该owner，没有增加统一远程API实现。该修订尚待同一原请求的原工作台恢复验证，不能据方法存在就签收异常恢复。
+
 验收只补这些交接风险；每次先说明要区分的两种解释，首错定位，不扩大全量、不堆同题重试。旧首执失败、程序证据、真实模型回归和真人操作分开记录。

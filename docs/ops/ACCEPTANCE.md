@@ -1,5 +1,7 @@
 # 验收（V3；不同SHA不拼接）
 
+新增单一恢复风险：da70a53原工作台、真实模型2HTTP、真人批准新虚构备注修改。独立实际行/唯一审计/预览指纹核对一致；受控原请求回读失败后UNKNOWN正确且持久checkpoint。新进程保持该只读故障时恢复历史抛异常、丢失整个Store，首错记录RESTORE_AUDIT_ERROR_DISCARDS_SESSIONSTORE，依赖停止且无重提。该重启阶段是实际GUI故障注入程序证据，0新模型请求，不冒充自然语言首执；未运行零API单测/全量。原账150/1283241/1965004，累计null。证据在本地evidence-root/recovery-boundary-20261121/preview/HUMAN-COMMIT-VERIFIED.public.json与restart-audit-down/OBSERVATION.public.json。当前恢复修订待原工作台验证，只核查已批准原请求，不再写这张票。
+
 有限业务主干冻结8521f88，原bcd缺值/暂缓/工具与澄清路径证据按原SHA复用，不重复完整提交链。8521f88实际M01仍调用list_invoices，首卡票号/用途、执行覆盖和末答均通过；多对象仅SAFE_CLARIFICATION_LIMITED（未代选但通用来源追问、无native待补），不宣称选票后自然接续已通过。原空取消未实质覆盖保留。
 
 最后原GUI真实恢复→唯一Live取消通过：候选修订4→5→6，终态CANCELLED并保留tombstone，不在恢复列表，runtime/resume/preview/draft/confirmation均不可执行，财务/审计0。恢复领取后仍PAUSED是现有契约，先前runner要求立即ACTIVE的0HTTP误断不计产品/模型失败；取消实际有原待补，区别于此前空取消。没有先存有效批准，不声称旧有效批准失效已实测，真人独立可用性仍未运行。原进程正常退出；原账148/1270671/1949933，累计null。精简证据本地evidence-root/independent-usability-20261121/restore-cancel-final-8521-public/SCOPE-AND-FINAL-RESULTS.public.md与SUBSTANTIVE-CANCEL.public.json。
