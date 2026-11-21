@@ -1,6 +1,14 @@
 # V3当前状态（总控权威；上海2026-11-21）
 
-## 当前任务：组合语义与原owner真实交接验收
+## 当前任务：冻结有限业务交接，设计前端会话接口
+
+业务产品冻结为8521f886bd8288a4fbb30573300d030e4ae4605a。原缺值/不提交/明确暂缓/双表达路径复用bcd17ea对应Live证据；8521f88未改Agent、invoice_action、SessionStore、TicketCandidates或WriteCoordinator，不重跑已签收完整提交链。新增8521f88实际list_invoices回归已交付两票用途，首卡正确、执行/末答覆盖2/2；末答仍有额外字段，最简列UX不签收。多对象仅SAFE_CLARIFICATION_LIMITED：不代选/无预览写入，但通用来源追问且无native待补，不冒充完整可用消歧接续。
+
+最后实际原GUI待办Choices恢复MK-58219用途待补，修订4→5、PAUSED保持至新轮是合法契约；随后唯一Live取消使原候选进入CANCELLED修订6终态，不列恢复，native/resume/coordinator/preview/drafts/confirmations全部无可执行状态，财务/审计零变化。没有旧有效批准样本，专项仍NOT_EXERCISED；真人独立可用性未验。旧首分、空取消未实质覆盖、0HTTP runner误断及全部原件保留。原App正常退出，所有148HTTP均complete；同原账148/1270671tokens/1949933微元峰价上界，累计三限null、历史不清零。证据见本地evidence-root/independent-usability-20261121/restore-cancel-final-8521-public/SCOPE-AND-FINAL-RESULTS.public.md、SUBSTANTIVE-CANCEL.public.json及remaining-8521-public/BOUNDED-RESULTS-AND-EXIT.public.json。
+
+用户已说明不存在Dot/DSH、Chat前端，当前先设计接口。契约见[前端会话接口草案](../flows/frontend-session-contract.md)：直接映射原owner/SessionStore，区分有效要求、待补、持久化及真实提交回执；不从模型正文猜保存状态，不另造Loop或状态机。没有新增前端、HTTP服务或生产认证实现。跨进程新chat未串旧pending及旧PAUSED载荷不变已有有限实际证据，不等于长上下文/网络故障/未知提交跨重启全部通过。后续仅补新增恢复风险，写入批准仍须真人。
+
+## 以下为本轮各次失败与修复记录（不迁移成绩）
 
 当前bcd17ea的必要fresh来源、缺值不提交仍ACTIVE、明确暂缓真实PAUSED和工具/结构化澄清双路径已实际Live通过，共7HTTP。原U01/21e首分及c24失败不改。剩余阶段另在新进程打开已有新chat，未自动带入旧pending，旧PAUSED载荷保持一致；M01新查询3HTTP后停止：独立要求正确，list_invoices实际返回两票及用途，但通用明细适配没有details字段证明，Runtime覆盖0/2，首卡未列用途，真实PARTIAL_RESULT。不是模型误解、不是仅runner断言；多对象指代与取消尚未运行。原App正常退出，财务/审计/草稿批准零变化。同原账141/1222070tokens/1872751微元峰价上界，累计三限null。证据为本地evidence-root/independent-usability-20261121/regression-bcd-public/及remaining-bcd-public/M01-FIRST-DIAGNOSIS.public.json。
 

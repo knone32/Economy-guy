@@ -1,5 +1,11 @@
 # 验收（V3；不同SHA不拼接）
 
+有限业务主干冻结8521f88，原bcd缺值/暂缓/工具与澄清路径证据按原SHA复用，不重复完整提交链。8521f88实际M01仍调用list_invoices，首卡票号/用途、执行覆盖和末答均通过；多对象仅SAFE_CLARIFICATION_LIMITED（未代选但通用来源追问、无native待补），不宣称选票后自然接续已通过。原空取消未实质覆盖保留。
+
+最后原GUI真实恢复→唯一Live取消通过：候选修订4→5→6，终态CANCELLED并保留tombstone，不在恢复列表，runtime/resume/preview/draft/confirmation均不可执行，财务/审计0。恢复领取后仍PAUSED是现有契约，先前runner要求立即ACTIVE的0HTTP误断不计产品/模型失败；取消实际有原待补，区别于此前空取消。没有先存有效批准，不声称旧有效批准失效已实测，真人独立可用性仍未运行。原进程正常退出；原账148/1270671/1949933，累计null。精简证据本地evidence-root/independent-usability-20261121/restore-cancel-final-8521-public/SCOPE-AND-FINAL-RESULTS.public.md与SUBSTANTIVE-CANCEL.public.json。
+
+未来前端仅设计接口，尚未实现；契约见[前端会话接口草案](../flows/frontend-session-contract.md)。状态、恢复、取消与核查均复用原owner，摘要不能恢复身份授权/批准。网络/持久化/未知提交的新增跨进程风险未凭上述通过而签收。
+
 bcd17ea核心回归已通过：真实fresh读取建立锚点；原缺值不提交消息经change_invoice保留对象/purpose并存ACTIVE；明确暂缓消息实际kind=clarification、turn_action=pause，同一原owner持久PAUSED后发可恢复回执。共7HTTP，均为回归，不改原首分。另一个新进程正常打开已ACTIVE新chat，native pending为空、旧PAUSED载荷不变。仅剩余M01执行3HTTP后失败：真实list_invoices返回两票及用途、末答引用真实结果，Runtime却因明细字段覆盖适配缺失而0/2、真实partial，首卡还漏用途。M02/取消依赖NOT_RUN，财务/审计/草稿批准0；原App正常退出。原账141/1222070/1872751，累计null，不重置。
 
 当前修订只登记整月发票明细已返回请求字段的覆盖，并复用业务字段渲染首卡；单票/缺列/范围不符不因此获得整月覆盖，未显示身份不生成引用。没有零API或全量重跑，修后Live待冻结。有限runner已去除“single_invoice pending必然是代选”和固定追问词的错误约束。business_message最终调用chat_message，原时序拦截可涵盖业务卡，先前静态审查的确定漏采判断订正，不新增调用。证据目录为本地evidence-root/independent-usability-20261121/regression-bcd-public/和remaining-bcd-public/。
