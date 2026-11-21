@@ -1,5 +1,7 @@
 # 预算状态（非交易账本）
 
+2026-11-21独立可用性首执：21e47a2，两条未透露原话，新增5真实HTTP／41922tokens／63948微元峰价上界；同原账现129／1126502／1720057，unknown_usage=false，原124条历史保留，累计三限仍null。U01 PASS/U02 FAIL，首分不改；真人依赖与权限真人反例停止，未追加调用或同题重放。零API测试、业务写入、审计及自动批准均0。历史未知消耗不记零；未新增累计限额。证据：本地evidence-root/independent-usability-20261121/public/MODEL-FIRST.public.json。
+
 2026-11-21本次同账业务闭环完成：原账累计124请求／1084580tokens／1656109微元峰价保守上界（非供应商账单），unknown_usage=false，既有历史及同一budget_id保留。累计requests/tokens/cost有效limits仍全部null，不清零、不另建账、不恢复旧64／700000／2.20元上限。8e44772真实续办6HTTP、真人批准后新进程真实模型回读3HTTP，后者无新增业务写入或审计；达到本次完成标准后停止调用。历史未知消耗仍UNKNOWN_NOT_ZERO。证据：本地evidence-root/accountant-task-chain-20261121/BUSINESS-CLOSURE-COMPLETE.public.json。
 
 以下为历史阶段快照，不代表当前余额或累计约束。
