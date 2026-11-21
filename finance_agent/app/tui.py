@@ -27,7 +27,7 @@ from .queries import QueryError, available_periods, get_invoice, invoice_directo
 from .responses import (DIRECTORY_SORT_LABELS, display_rule_amounts, explicit_scope, needs_progress_evidence,
                         render_invoice_field_count, render_recent_commit, render_rule_history, render_scope,
                         directory_display_pages, redundant_directory_count, render_query_conclusion,
-                        render_sql_evidence, sql_display_rows)
+                        render_sql_evidence, render_sql_business_result, sql_display_rows)
 from .rules import RuleError, check_missing_purpose
 from .session_store import workbook_identity
 from .stage2_schema import open_existing
@@ -1330,6 +1330,13 @@ class AgentWorkspace(ConversationUI, App):
         if tool in {"get_invoice", "resolve_invoice_reference"} and data:
             return ("发票详情", AgentWorkspace.invoice_text(data))
         if tool == "query_business_sql":
+            from .fact_arithmetic import sql_scalars
+            outcome={'data':data,'evidence':evidence}
+            if sql_scalars(outcome,'display',''):
+                # Reuse attributed facts/units, independent of SQL aliases or
+                # the narrower legacy display regex. This grants no coverage.
+                return (f"业务查询 · 已显示 {len(data['rows'])} 行",
+                        render_sql_business_result(outcome))
             lines = sql_display_rows(data)
             shown = len(lines)
             if data.get('request_identity_evidence_only'):

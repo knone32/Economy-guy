@@ -1,8 +1,8 @@
 # V3当前状态（总控权威；上海2026-11-21）
 
-## 当前先修契约一致性，原13b首分保持
+## 契约修复已交付，读取／改口／Skill Live已结束
 
-已完成第一刀：query_business_sql工具说明明确顶层仅sql/read_scope、销售方仅read_scope.seller；已绑定BusinessRequest后不重复搬运一份销售方候选，由SQL落实所需筛选/指标/分组，Runtime继续核同一要求及可信快照。原A03工具描述的“可选seller”未标嵌套位置是新增确认的系统指引问题；参数本身不合法，校验拒绝正确，两者分别记账。未接收顶层seller、未删除范围参数、未放宽Schema或核验。3项零API契约检查通过（含红例先复现），暂无修后Live。
+已完成第一刀：query_business_sql工具说明明确顶层仅sql/read_scope、销售方仅read_scope.seller；已绑定BusinessRequest后不重复搬运一份销售方候选，由SQL落实所需筛选/指标/分组，Runtime继续核同一要求及可信快照。原A03工具描述的“可选seller”未标嵌套位置是新增确认的系统指引问题；参数本身不合法，校验拒绝正确，两者分别记账。未接收顶层seller、未删除范围参数、未放宽Schema或核验。3项零API契约检查通过（含红例先复现），随后同版必要Live已执行，见下文。
 
 后续程序进展：Skill沿原配置owner/revision增加可选结构化business_terms，首个独立语义输入仅投影启用版本的术语及既有对象/指标，不搬运steps、SQL、答案或权限；旧三字段Skill兼容，旧steps不自动推断定义，需显式配置。实际Agent入口的采集检查已确认接通，非Live词义成绩。
 
@@ -10,7 +10,9 @@
 
 现有规则缺项、目录页及展示/近期引用已按ToolSpec登记真正的结果能力，仍经独立要求、原权限、RuleDecision或原引用owner核对；不走support旁路。目录页只完成指定页，all仅单页实际全覆盖可完成，跨页无同快照证明仍partial；规则缺项不等于空用途，附加筛选/分组/比较超出这三个有限入口时拒绝；引用只交付可信对象的当前详情。Agent保留原解析锚点供首语义选择来源，模型不传票号或内部展示ID；同一typed来源传bind和原handler。引用不能覆盖既有非空可信范围。实际Agent三个原失败入口现均已交付并完成相应覆盖；补正了原API的display_ids=None表示与reference漏入只读派生集合两个交接点，来源负例仍拒绝。
 
-下一步冻结并执行旧前置回归及此前未执行的改口/Skill。新独立副本通过官方管理入口补金额规则及Skill结构化定义，原库/历史不变。仅原计划内7条必要消息：A02/A03/B01/C02为回归，B02/B03/C01为此前未执行槽，不是新陌生题；首错停止依赖，独立继续。不补旧封存库改分，不以程序通过冒充Live，不新增同类矩阵。全账簿无期间目录、跨页完整性及待补修改中的引用组合未因此签收。
+实际冻结受测源码1b069415ba138d995dfd8f1aab13af8fff83b7c6，独立副本通过官方管理入口补金额规则及Skill结构化定义，原库/历史不变。仅原计划内7条必要消息：A02/A03/B01/C02为回归，B02/B03/C01为此前未执行槽，不是新陌生盲题。A02、B01/B02/B03及C01/C02共6节点PASS，已实际验证选择后统计、保留及撤销筛选、Skill简称与普通表达同值同范围；A03要求/执行/真值/末答均正确，但首卡cnt:2未显示张数单位，保持原自动FAIL，canonical限定为LIMITED，不强改通过。共13真实HTTP/103960tokens/277079微元峰价上界，原账91/822919/1244530，三限null、unknown_usage=false；运行副本及原封存库字节均未变，invoice_audit/草稿/确认0，无重试及业务写入。
+
+收尾仅改SQL统计卡展示：复用现有sql_scalars及render_sql_business_result，按已核验列事实显示中文指标和单位，不再依赖SQL别名或窄展示正则。正例红后修复及UNKNOWN反例2项通过，A03实际回包原样零API重渲染现为明确的发票数量及金额合计，SQL/行/范围/单位证据/末答未变。Live之后app仅tui.py变化；新展示版本没有重跑Live，不把旧成绩迁移成新SHA通过。原自动FAIL、旧13b失败及所有原回包保留。此轮收口，不继续付费或追加矩阵；GUI真人可读性未另验，全账簿无期间目录、跨页完整性及待补修改中的引用组合未因此签收。唯一Live六列表在本地v3-c2-acceptance/read-context-skill-compat-next-v1/FINAL-SIX-COLUMN-1B.public.json；展示修复记录为evidence-root/READ-CONTRACT-COMPAT-A03-CARD-RENDER.public.json。
 
 ---
 
