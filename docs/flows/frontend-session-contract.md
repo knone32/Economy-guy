@@ -122,3 +122,15 @@ view = host.send_message(user_text, expected=view['context'])
 统一快照分开给出 `requirement`、`pending`、`candidates`、`proposal`、`preview`、`receipt`、`persistence` 和 `result`（正文、覆盖与原事实渲染卡片）。草稿指纹、批准 token 不作为客户端命令参数。`preview()` 只读；实际确认由原 `run_invoice_batch` 或原单票 coordinator 执行。未安装可信确认通道时只返回核验提案，不代批、代拒或提交。持久化失败单列 `persistence.status=FAILED`，不能覆盖实际提交回执；未知提交先用原 owner 核查，不重提。
 
 适配器不恢复聊天正文中的对象、事实或批准；只读取原 Store 当前 BusinessRequest、reference_state 与原待补记录。历史未知请求交原 WriteCoordinator，只读核实。新前端应采用快照及实际回执展示状态，不能从模型末答猜是否保存。本节的具体 Live／程序验证范围以同 SHA 验收记录为准，接口存在本身不等于人工可用性通过。
+
+
+### 有限调用证据与当前结果投影
+
+受测 `91ed81a`：SessionHost 的真实消息、裁剪后的改口统计与单票待补、候选 pause/resume/cancel 已调用；过期 expected token 由程序拒绝。取消后的旧指代由原 Runtime 直接追问（reference_error），不算模型新首执。新增 13 HTTP，发票／审计零写入。原自动 FAIL 是验收器只接受另一标签，原记录保留，诊断另记；没有为它重跑整链。
+
+最新快照增加 `business_status`，它只是原 receipt／pending／candidate／coverage 的投影，不维护新状态。取消或暂停后 `result=null`，先前正文进入 `historical_result`；前端应先展示当前业务状态与持久化回执。此最后展示修订仅源码核对。DSH 实际前端、回调的真人确认、新适配器的合法切换／故障注入没有冒充为本次 Live；原 TUI／owner 既有相应证据按其原 SHA 复用。有限长上下文只接受当前结构化要求与可信来源，未提供长期记忆或摘要授权。
+
+
+宿主忙碌时，其他线程读取／命令返回 `SessionConflict`，避免切换中把旧 Agent 与新 chat 拼成快照；真人确认 UI 使用回调中已经绑定的快照。当前草稿或实际提交回执优先于旧提案，执行后的原 batch status／逐项结果在 `execution` 中返回，确认完成不会继续呈现为待批准提案。宿主异常另给持久化失败信息，不把错误伪报为未提交。以上最后的适配边界收紧为源码核对，未扩付费回归。
+
+Windows 已存凭据的宿主应复用 TUI 路径：`resolve_connection(..., require_key=False)` 取得已授权配置，再由 `WindowsVault.read(profile_target(profile, actor))` 读取该 Profile 的现有密钥，构造 `ModelConnection` 交给 Agent；不能只依赖环境变量而宣称系统没有凭据。密钥只留宿主，不能输出到快照、前端或日志。

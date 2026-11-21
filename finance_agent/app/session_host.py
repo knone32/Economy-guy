@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 import sqlite3
-from threading import Lock
+from threading import Lock, get_ident
 from uuid import uuid4
 
 from .invoice_action import public_state as invoice_business_state
@@ -31,6 +31,7 @@ class SessionHost:
     def __init__(self, store, agent_factory, *, confirm=None):
         self.store, self._factory, self._confirm = store, agent_factory, confirm
         self._lock = Lock()
+        self._command_thread = None
         self._generation, self._revision = uuid4().hex, 0
         self._persistence = {'status': 'UNCHANGED', 'error': None}
         self._agent = None
@@ -42,10 +43,13 @@ class SessionHost:
         return self._agent
 
     def _binding(self):
+        if self._lock.locked() and self._command_thread != get_ident():
+            raise SessionConflict('Host is busy; use the confirmation callback snapshot or refresh later')
         self.store.validate()
         if (self._agent.user_id != self.store.actor
-                or Path(self._agent.db_path).resolve() != self.store.workbook.resolve()):
-            raise SessionConflict('Host actor/workbook changed')
+                or Path(self._agent.db_path).resolve() != self.store.workbook.resolve()
+                or self._agent_chat != self.store.chat):
+            raise SessionConflict('Host actor/workbook/conversation changed')
         self.store.validate_invoice_revision()
 
     def _token(self):
@@ -57,13 +61,19 @@ class SessionHost:
     def _command(self, expected):
         if not self._lock.acquire(blocking=False):
             raise SessionConflict('Another host command is running')
+        self._command_thread = get_ident()
         try:
             self._binding()
             if expected != self._token():
                 raise SessionConflict('Conversation or revision changed; refresh before acting')
             self._revision += 1
             yield
+        except (OSError, sqlite3.Error) as error:
+            self._persistence = {'status': 'FAILED', 'error': type(error).__name__,
+                'message': '宿主读写失败，请刷新并核查原状态，不能据此重复提交。'}
+            raise
         finally:
+            self._command_thread = None
             self._lock.release()
 
     def _restore(self):
@@ -91,6 +101,7 @@ class SessionHost:
         if pending is not None and not agent.coordinator.has_unverified_update:
             agent.restore_invoice_candidate(pending)
         self._agent = agent
+        self._agent_chat = self.store.chat
 
     def snapshot(self):
         """Projection of owners, not a second authoritative state snapshot."""
@@ -101,20 +112,45 @@ class SessionHost:
         drafts = [asdict(d) for d in agent.update_session.drafts.values()]
         preview = [{k: d[k] for k in ('company_id', 'invoice_no', 'field', 'old_value', 'new_value')}
                    for d in drafts]
-        proposal = response.get('invoice_change')
+        receipt = agent.write_receipt
+        saved = (receipt.get('status') in {'COMMITTED', 'NO_CHANGE', 'CURRENT_VALUE_MATCHES'}
+                 and receipt.get('readback_verified') is True)
+        proposal = response.get('invoice_change') if not saved else None
+        cancelled = agent.write_receipt.get('status') == 'CANCELLED'
+        paused = bool(getattr(agent, 'paused_invoice_candidate', None))
+        # A command receipt is newer than the preceding model answer. Keep the
+        # latter as explicitly historical, never as the current action prompt.
+        historical = cancelled or paused
+        results = response.get('tool_results') or []
+        current_result = {'text': response.get('text'), 'category': response.get('category'),
+                          'coverage': response.get('business_request_final_coverage'),
+                          'cards': render_information(results) if results else ''}
+        candidates = self.store.list_invoice_candidates()
+        status = ('UNKNOWN_OUTCOME' if agent.coordinator.has_unverified_update else
+                  'CANCELLED' if cancelled else
+                  receipt['status'] if saved else
+                  response['host_execution']['status'] if response.get('host_execution') else
+                  'PAUSED' if paused and self._persistence['status'] != 'FAILED'
+                      and any(c['state'] == 'PAUSED' for c in candidates) else
+                  'WAITING_CONFIRMATION' if preview else
+                  'WAITING_USER' if pending else
+                  'PROPOSAL_READY' if proposal else
+                  'COMPLETE' if (current_result['coverage'] or {}).get('complete') else
+                  'WAITING_USER' if response.get('category') in {'clarification', 'reference_error'} else 'IDLE')
         return redact({'version': 1, 'context': self._token(), 'busy': self._lock.locked(),
             'actor': self.store.actor, 'workbook': self.store.identity,
+            'business_status': status,
             'requirement': agent.business_request_snapshot(),
             'pending': invoice_business_state(pending) if pending else None,
-            'candidates': self.store.list_invoice_candidates(),
+            'candidates': candidates,
             'preview': preview, 'approval_restored': False,
             'proposal': ({k: proposal[k] for k in ('company_id', 'year', 'month', 'invoice_nos', 'field', 'new_value')}
                          if proposal else None),
             'confirmation_channel_available': self._confirm is not None,
             'receipt': agent.write_receipt, 'persistence': dict(self._persistence),
-            'result': {'text': response.get('text'), 'category': response.get('category'),
-                       'coverage': response.get('business_request_final_coverage'),
-                       'cards': render_information(response.get('tool_results', []))}})
+            'execution': response.get('host_execution'),
+            'result': current_result if not historical else None,
+            'historical_result': current_result if historical else None})
 
     def list_conversations(self):
         self._binding()
@@ -170,6 +206,7 @@ class SessionHost:
                 agent.ask(text)
                 proposal = (agent.last_response or {}).get('invoice_change')
                 if proposal is not None and self._confirm is not None:
+                    agent.last_response.pop('invoice_change')
                     if getattr(agent, 'ticket_preview_candidate', None):
                         self.store.checkpoint_invoice_candidate(seq, agent.ticket_preview_candidate)
                     items = []
@@ -178,6 +215,7 @@ class SessionHost:
                         approve_item=lambda body: self._item_decision(body),
                         checkpoint=lambda request: self.store.checkpoint(seq, request), display_items=items)
                     operation = {'status': status, 'changes': items}
+                    agent.last_response['host_execution'] = operation
                     if status == 'UNKNOWN_OUTCOME':
                         state = 'UNKNOWN_OUTCOME'
                     agent.last_response['text'] = summary
@@ -194,6 +232,7 @@ class SessionHost:
                             state = 'UNKNOWN_OUTCOME'
                     else:
                         agent.cancel_update()
+                    agent.last_response['text'] = agent.write_receipt['message']
                 if agent.coordinator.has_unverified_update:
                     state = 'UNKNOWN_OUTCOME'
                 output = (agent.last_response or {}).get('text', '')
