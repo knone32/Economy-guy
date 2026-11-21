@@ -117,6 +117,21 @@ def describe(sql, columns, snapshot, tables, reads, *, allow_partial_projection=
             candidate = node.this if negated else node
             if isinstance(candidate, exp.Anonymous) and candidate.name.lower() == 'is_blank' and len(candidate.expressions) == 1:
                 return [{'field': field(candidate.expressions[0]), 'operator': 'is_blank', 'value': not negated}]
+            if isinstance(node, (exp.EQ, exp.NEQ)):
+                left, right = node.this, node.expression
+                if isinstance(left, exp.Literal):
+                    left, right = right, left
+                if (isinstance(left, exp.Anonymous) and left.name.lower() == 'is_blank'
+                        and len(left.expressions) == 1):
+                    # The registered deterministic helper returns exactly 0/1.
+                    # Strings and other numbers are not Boolean declarations.
+                    if (not isinstance(right, exp.Literal) or right.is_string
+                            or right.this not in {'0', '1'}):
+                        raise Unsupported('unsupported_blank_boolean')
+                    value = right.this == '1'
+                    if isinstance(node, exp.NEQ):
+                        value = not value
+                    return [{'field': field(left.expressions[0]), 'operator': 'is_blank', 'value': value}]
             operator = operations.get(type(node))
             if operator is None:
                 raise Unsupported('unsupported_predicate')
@@ -305,7 +320,27 @@ def describe(sql, columns, snapshot, tables, reads, *, allow_partial_projection=
         if distinct and not projection_complete:
             # Dropping an output expression must not conceal DISTINCT's row key.
             raise Unsupported('partial_distinct_projection')
-        if (aggregate or groups) and any(dimension(p) not in groups
+        def constant_dimension(meta):
+            # A bare source column in an aggregate is deterministic only when
+            # an attributed raw equality fixes its value. Do not infer this
+            # from returned rows, labels, or an arbitrary representative row.
+            if meta['kind'] != 'column':
+                return False
+            for condition in conditions:
+                if (condition.get('field') != meta['field'] or condition.get('transform')
+                        or condition.get('prefix_length')):
+                    continue
+                values = ([condition['value']] if condition['operator'] == '=' else
+                          condition['value'] if condition['operator'] == 'IN' else [])
+                if not values or len(set(values)) != 1:
+                    continue
+                value = values[0]
+                if type(value) is (int if meta['field'] == 'amount_cents' else str):
+                    meta['constant_evidence'] = dict(condition)
+                    return True
+            return False
+
+        if (aggregate or groups) and any(dimension(p) not in groups and not constant_dimension(p)
                                          for p in projected if p['kind'] in dimension_kinds):
             raise Unsupported('ungrouped_column')
         filters = (tree.args['where'].this.sql(dialect='sqlite'),) if tree.args.get('where') else ()

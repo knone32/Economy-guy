@@ -2218,7 +2218,8 @@ class Agent:
                         trusted_scope=business_trusted,previous_request=previous_business_request,
                         context_transition=business_context_transition,
                         native_pending=(active_pending if active_pending and
-                            active_pending.get('business_action')=='single_invoice' else None),actor=actor,book=self.db_path)
+                            active_pending.get('business_action')=='single_invoice' else None),actor=actor,book=self.db_path,
+                        active_skills=self.active_skills)
                     if business_format_error:
                         from .business_request import schema_restatement_messages
                         context = schema_restatement_messages(context, error_code=business_format_error)

@@ -58,7 +58,9 @@ def render_query_conditions(query):
             value = '、'.join(_money(v) + ' 元' if field == 'amount_cents' and type(v) is int
                              else str(v) for v in value)
         if operation == 'is_blank':
-            parts.append(label + '未填写')
+            parts.append(label + ('已填写' if value is False else '未填写')
+                         if value is False or value is True or value == ''
+                         else '空值条件尚不能说明，详见技术记录')
         elif operation == 'LIKE' and isinstance(value, str) and value.startswith('%') and value.endswith('%') and not any(c in value[1:-1] for c in '%_\\'):
             parts.append(label + '包含“' + value[1:-1] + '”')
         else:

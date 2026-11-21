@@ -25,13 +25,18 @@ def configure(path, actor, kind, identifier, body, *, enabled=True, expected_rev
             raise ValueError('只能启停开发者已注册的处理器')
     else:
         required = {'name', 'tools', 'skills'} if kind == 'assistant' else {'name', 'tools', 'steps'}
-        if set(body) != required or not isinstance(body['name'], str):
+        optional = {'business_terms'} if kind == 'skill' else set()
+        if not required <= set(body) or set(body)-required-optional or not isinstance(body['name'], str):
             raise ValueError('配置字段无效')
         if not isinstance(body['tools'], list) or any(t not in REGISTRY for t in body['tools']):
             raise ValueError('工具依赖必须已经注册')
         extra = body['skills'] if kind == 'assistant' else body['steps']
         if not isinstance(extra, list) or any(type(x) is not str or not x.strip() for x in extra):
             raise ValueError('步骤或依赖无效')
+        if kind == 'skill' and 'business_terms' in body:
+            from .business_request import BUSINESS_FIELDS
+            from .skill_business_terms import validate_business_terms
+            validate_business_terms(body['business_terms'], BUSINESS_FIELDS)
     with closing(connect(path)) as db, db:
         if not db.execute('SELECT 1 FROM users WHERE user_id=?', (actor,)).fetchone():
             raise PermissionError('未知用户')
@@ -70,13 +75,13 @@ def refresh_assistant(agent):
         config = read(db, agent.user_id, 'assistant', identifier)
         if not config or not config['enabled']:
             raise PermissionError('助手已停用或不属于当前账号')
-        tools = set(config['body']['tools'])
+        tools = {t for t in config['body']['tools'] if tool_enabled(agent.db_path, agent.user_id, t)}
         skills = []
         for sid in config['body']['skills']:
             skill = read(db, agent.user_id, 'skill', sid)
             if skill and skill['enabled'] and set(skill['body']['tools']) <= tools:
                 skills.append({'id':sid, 'revision':skill['revision'], **skill['body']})
-        agent.allowed_tools = frozenset(t for t in tools if tool_enabled(agent.db_path, agent.user_id, t))
+        agent.allowed_tools = frozenset(tools)
         agent.active_skills = skills
         instruction = '\n助手当前配置：' + json.dumps({'id':identifier,'revision':config['revision'],'skills':skills}, ensure_ascii=False)
         base = agent.messages[0]['content'].split('\n助手当前配置：',1)[0]

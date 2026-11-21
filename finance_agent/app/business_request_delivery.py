@@ -124,6 +124,23 @@ def _expected_filters(target):
     return [_proof_filter(f) for f in target.filters]
 
 
+def _without_implied_blank(conditions):
+    """Remove only a helper predicate entailed by a raw literal equality.
+
+    Both sides of the comparison use this finite normalization. The executed
+    SQL and its original evidence remain unchanged; contradictory/independent
+    filters are retained and must still match the bound user requirement.
+    """
+    def entailed(condition):
+        if condition.get('operator') != 'is_blank' or type(condition.get('value')) is not bool:
+            return False
+        return any(other.get('field') == condition.get('field') and other.get('operator') == '='
+            and not other.get('transform') and not other.get('prefix_length')
+            and type(other.get('value')) in (str, int)
+            and (not str(other['value']).strip()) == condition['value'] for other in conditions)
+    return [condition for condition in conditions if not entailed(condition)]
+
+
 def canonical_sql_result(result):
     # Canonicalize consumer metadata from same-transaction constraints only.
     # Original attribution, SQL/hash and rows are retained; no new reads occur.
@@ -169,7 +186,8 @@ def _check_conditions(target, conditions, actor, book, *, seller_partition=False
            for c in partitions):
         raise RequestDeliveryError('分组分片不能改变本轮请求的业务范围。')
     others = [c for c in others if c not in partitions]
-    if {_condition_key(c) for c in others} != {_condition_key(c) for c in expected_filters}:
+    if ({_condition_key(c) for c in _without_implied_blank(others)}
+            != {_condition_key(c) for c in _without_implied_blank(expected_filters)}):
         raise RequestDeliveryError('实际筛选与本轮业务要求不一致，未交付统计。')
     expected = target.seller
     if expected is None or expected.mode == 'none':
