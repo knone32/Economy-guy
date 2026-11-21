@@ -1,5 +1,9 @@
 # 验收（V3；不同SHA不拼接）
 
+c24b5c0真实回归已执行2HTTP，独立continue/purpose与字段原话正确；工具省略票号，原owner因无可核对来源返回SCOPE_MISMATCH。新发现是原U01虽然查询交付PASS，ROUND附加列投影后却没有invoice_display_identity，原reference.displayed实际anchors=[]，所以本轮准备期望复用的可信锚点不存在。未生成待补或PAUSED，R02/双路径/多对象/取消依赖均NOT_RUN；不把该断言失败概括成组合语义失败。业务/审计/批准0，原App正常退出，原首分不改。同原账131/1139555tokens/1748824微元峰价上界，累计三限null。精简事实及原Trace索引：本地evidence-root/independent-usability-20261121/regression-c24-public/SOURCE-GAP.public.json。
+
+来源交接修订待Live：仅从已核验明细投影的原身份列建立引用元数据，原唯一性/完整性/范围/ACL继续核验；工具与最终澄清都在原change_invoice使用同一唯一可信展示，可省略Runtime持有的键，显式冲突仍拒绝。先通过真实fresh读取建立新来源再续办，不回填旧输出，不将程序源码检查记成Live，不重跑旧完整提交链，不运行零API。
+
 组合语义修订待Live：独立入口固定本轮动作和当前明确字段，原owner先核身份/ACL、fresh读取并保留待补，明确暂停才转为待续；没有候选不声称暂停。最终information/clarification采用统一动作约定，执行提案不覆盖先行要求；不新增中文路由或另一状态owner。工作台确认原SessionStore中确有匹配的可恢复PAUSED行后才显示恢复回执。最小实际验收只针对缺内容/禁止提交→对象字段保留零写入、随后明确暂缓→可恢复待办及多对象不猜选；已披露原题计回归不改首分，先不宣称修后通过。不运行零API，不重跑完整旧链。
 
 新增风险验收已执行：受测21e47a2，只改正常WAITING_USER展示及Runtime待补摘要，未改业务状态/权限/确认。一次独立聚焦源码复核无新增阻断；独立验收者封存的新账簿和两条陌生原话首次执行5HTTP，U01查询PASS，U02续办FAIL。首个确定程序拒绝是clarification+missing_fields=[purpose]+turn_action=pause被responses.py:301拒绝；模型可见说明未写information-only限制。独立语义legacy正确、正文有对象理解证据，仍不能判完整自然语言通过或把模型关系解释作事实。

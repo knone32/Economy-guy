@@ -417,12 +417,17 @@ def _project_detail_result(request, original, actor, book):
         'source_row_indices':list(range(len(data['rows']))),'identity_only':False,'detail_columns_only':True}
     query['columns']=[columns[i] for i in keep];query['projection_complete']=True
     # Display coverage concerns requested fields, not the keys needed for a
-    # later action. Preserve only genuine returned identity columns, remapping
-    # their indices when scalar display expressions were removed. Continuation
-    # still resolves these through the original reference/fresh-read owner.
-    if 'invoice_display_identity' in data:
-        data['invoice_display_identity']={field:keep.index(index)
-            for field,index in data['invoice_display_identity'].items() if index in keep}
+    # later action. Derive identity only from the attributed original columns
+    # actually retained, even when an extra expression defeated the SQL text
+    # projection mapper. The reference owner still checks shape, scope and ACL.
+    identity={field:[i for i,column in enumerate(query['columns'])
+                     if column.get('kind')=='column' and column.get('field')==field]
+              for field in ('company_id','invoice_no')}
+    if (query['table']=='invoices' and len(identity['invoice_no'])==1
+            and len(identity['company_id'])<=1):
+        data['invoice_display_identity']={field:indexes[0] for field,indexes in identity.items() if indexes}
+    else:
+        data.pop('invoice_display_identity',None)
     if query['table']=='invoices' and {'invoice_no','invoice_date','amount_cents'}<=fields:
         data['invoice_projection']={c['field']:i for i,c in enumerate(query['columns'])}
     else:

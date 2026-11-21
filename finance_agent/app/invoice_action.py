@@ -56,9 +56,10 @@ def change_invoice(agent, args, previous, request, *, defer_preview=False):
     try:
         target_origin = None
         displays = agent.context.display_ids
-        if (previous is None and all(key in args for key in ('company_id', 'invoice_no'))
-                and not agent.context.references_blocked
+        if (previous is None and not agent.context.references_blocked
                 and isinstance(displays, list) and displays):
+            # Both tool proposals and final clarifications may omit keys held
+            # by the same unique trusted display. Supplied keys must still agree.
             resolved = resolve_reference(agent.db_path, agent.user_id, None, display_ids=displays,
                                          coalesce_identical_singletons=True)
             if resolved['status'] == 'SUCCESS':
