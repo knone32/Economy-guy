@@ -42,10 +42,66 @@
     .brand small { display: block; font-weight: 400; color: var(--muted); letter-spacing: 0; }
     .identity { margin-left: auto; color: var(--muted); font-size: 12px; text-align: right; }
     .identity strong { color: var(--ink); font-weight: 600; }
+    .nav { display: flex; gap: 4px; margin-left: 8px; }
+    .nav-btn {
+      border: 1px solid transparent; background: transparent; color: var(--muted);
+      border-radius: 8px; padding: 7px 12px; font-weight: 600;
+    }
+    .nav-btn:hover { background: #f6f2e9; color: var(--ink); }
+    .nav-btn.active { background: var(--accent-soft); color: var(--accent); border-color: #c8ddd2; }
+    .workspace-view {
+      display: none; grid-column: 1 / -1; grid-row: 2; min-height: 0;
+      overflow: auto; padding: 16px;
+    }
+    .app[data-view="todos"] > .sidebar,
+    .app[data-view="todos"] > .chat-panel,
+    .app[data-view="todos"] > .context,
+    .app[data-view="settings"] > .sidebar,
+    .app[data-view="settings"] > .chat-panel,
+    .app[data-view="settings"] > .context { display: none; }
+    .app[data-view="todos"] > #todos-view,
+    .app[data-view="settings"] > #settings-view { display: block; }
+    .view-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 14px; }
+    .view-head h1 { margin: 0; font-size: 20px; }
+    .view-head p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+    .view-head .spacer { flex: 1; }
+    .todo-grid, .settings-grid {
+      display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 12px; align-items: start;
+    }
+    .todo-card, .settings-card {
+      border: 1px solid var(--line); border-radius: 12px; background: #fff;
+      padding: 14px; min-height: 120px;
+    }
+    .todo-card h2, .settings-card h2 {
+      margin: 0 0 4px; font-size: 15px; color: var(--ink);
+    }
+    .todo-card .sub, .settings-card .sub { color: var(--muted); font-size: 12px; margin-bottom: 10px; }
+    .todo-item {
+      border: 1px solid #e7dfcf; background: #fbf8f1; border-radius: 10px;
+      padding: 10px; margin-top: 8px; white-space: pre-wrap; word-break: break-word;
+    }
+    .todo-item .todo-actions { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+    .settings-card dl { margin: 0; display: grid; grid-template-columns: 110px 1fr; gap: 7px 10px; }
+    .settings-card dt { color: var(--muted); font-size: 12px; }
+    .settings-card dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+    .settings-card select {
+      width: 100%; padding: 8px 10px; border: 1px solid var(--line);
+      border-radius: 9px; background: #fff; color: var(--ink); font: inherit;
+    }
+    .settings-card pre {
+      white-space: pre-wrap; word-break: break-all; background: #f7f3ea;
+      border: 1px solid #e7dfcf; border-radius: 9px; padding: 9px;
+      font: 12px/1.5 Consolas, "Cascadia Mono", monospace; margin: 8px 0;
+    }
+    .settings-note { color: var(--muted); font-size: 12px; margin-top: 8px; }
+    .settings-warning { color: var(--warn); background: var(--warn-soft);
+      border: 1px solid #ecd7bb; border-radius: 9px; padding: 9px; font-size: 12px; margin-top: 8px; }
     .panel {
       min-height: 0; background: var(--panel); border: 1px solid var(--line);
       border-radius: 12px; box-shadow: var(--shadow); display: flex; flex-direction: column;
     }
+    .panel.workspace-view { display: none; }
     .panel-head {
       display: flex; align-items: center; gap: 8px; padding: 12px 14px;
       border-bottom: 1px solid var(--line);
@@ -146,9 +202,14 @@
   </style>
 </head>
 <body>
-<div class="app">
+<div class="app" data-view="chat">
   <header class="topbar">
-    <div class="brand">Economy-guy<small>财税 Agent · 本机最小工作台</small></div>
+    <div class="brand">Economy-guy<small>财税 Agent · 本机工作台</small></div>
+    <nav class="nav" aria-label="工作台导航">
+      <button class="nav-btn active" data-view="chat">对话</button>
+      <button class="nav-btn" data-view="todos">待办</button>
+      <button class="nav-btn" data-view="settings">设置</button>
+    </nav>
     <div class="identity">
       <strong id="who">__GUI_USER__</strong> · <span id="workbook">__GUI_WORKBOOK__</span><br>
       <span id="mode">读取中…</span>
@@ -193,6 +254,61 @@
       <div id="tasks"><div class="hint">当前没有持久待办。</div></div>
     </div>
   </aside>
+
+  <section class="panel workspace-view" id="todos-view">
+    <div class="view-head">
+      <div>
+        <h1>待办</h1>
+        <p>核对业务缺项和暂缓修改；按钮只调用原 SessionHost 支持的入口。</p>
+      </div>
+      <span class="spacer"></span>
+      <button class="btn small" id="refresh-todos">刷新状态</button>
+    </div>
+    <div class="todo-grid">
+      <section class="todo-card">
+        <h2>业务缺项 / 待补充</h2>
+        <div class="sub">当前要求还缺字段，尚未保存。</div>
+        <div id="todo-pending"></div>
+      </section>
+      <section class="todo-card">
+        <h2>暂缓修改</h2>
+        <div class="sub">已由原 Store 保存为 PAUSED，可恢复或取消；未提交。</div>
+        <div id="todo-paused"></div>
+      </section>
+      <section class="todo-card">
+        <h2>其他持久待办</h2>
+        <div class="sub">只读展示，本页不提供假办结按钮。</div>
+        <div id="todo-tasks"></div>
+      </section>
+    </div>
+  </section>
+
+  <section class="panel workspace-view" id="settings-view">
+    <div class="view-head">
+      <div>
+        <h1>设置</h1>
+        <p>显示宿主实际绑定的账号、账簿、模型连接和已有 Profile；当前页不做热切换。</p>
+      </div>
+      <span class="spacer"></span>
+      <button class="btn small" id="refresh-settings">刷新状态</button>
+    </div>
+    <div class="settings-grid">
+      <section class="settings-card">
+        <h2>当前连接</h2>
+        <div class="sub" id="settings-status"></div>
+        <dl id="settings-current"></dl>
+      </section>
+      <section class="settings-card">
+        <h2>已有 Profile</h2>
+        <div class="sub">来自原配置目录的可见 Profile；只用于下次启动命令，不热切换。</div>
+        <select id="profile-select" aria-label="选择已有 Profile"></select>
+        <div class="settings-note" id="profile-note">读取中…</div>
+        <pre id="profile-command"></pre>
+        <button class="btn small" id="copy-profile-command">复制启动命令</button>
+        <div class="settings-warning" id="switch-gaps"></div>
+      </section>
+    </div>
+  </section>
 </div>
 
 <div id="modal-root"></div>
@@ -202,6 +318,8 @@
 const TOKEN = "__GUI_TOKEN__";
 let S = null;
 let busy = false;
+let currentView = "chat";
+let selectedProfile = null;
 
 function $(id) { return document.getElementById(id); }
 function text(value) { return value == null ? "" : String(value); }
@@ -243,7 +361,7 @@ function setBusy(value) {
   busy = value;
   $("send").disabled = value;
   $("new-chat").disabled = value;
-  document.querySelectorAll("button[data-action]").forEach(b => b.disabled = value);
+  document.querySelectorAll("button[data-action], .session").forEach(b => b.disabled = value);
 }
 let acknowledging = false;
 async function acknowledgeDisplay() {
@@ -318,9 +436,183 @@ function render() {
   renderTasks();
   renderReceipt();
   renderPreview();
+  renderTodos();
+  renderSettings();
   updatePreviewWatch();
   if (S.error) toast(S.error, true);
   else if (S.notice) toast(S.notice);
+}
+
+function setView(name) {
+  currentView = name;
+  const app = document.querySelector(".app");
+  app.dataset.view = name;
+  document.querySelectorAll(".nav-btn").forEach((button) => {
+    button.classList.toggle("active", button.dataset.view === name);
+  });
+  if (name === "chat") setTimeout(() => $("message").focus(), 0);
+}
+
+function todoActionButton(label, handler, kind) {
+  const button = el("button", "btn small" + (kind ? " " + kind : ""), label);
+  button.dataset.action = "todo";
+  button.disabled = busy;
+  button.addEventListener("click", handler);
+  return button;
+}
+
+function renderTodos() {
+  const pendingBox = $("todo-pending");
+  const pausedBox = $("todo-paused");
+  const taskBox = $("todo-tasks");
+  if (!pendingBox || !pausedBox || !taskBox) return;
+  pendingBox.replaceChildren();
+  pausedBox.replaceChildren();
+  taskBox.replaceChildren();
+
+  const pending = (S.pending && S.pending.state !== "PAUSED") ? S.pending : null;
+  if (!pending) {
+    pendingBox.append(el("div", "hint",
+      "当前没有活动业务缺项；已暂缓的修改在右侧“暂缓修改”中，未提交。"));
+  } else {
+    const item = el("div", "todo-item");
+    item.textContent = pending.text;
+    const actions = el("div", "todo-actions");
+    actions.append(todoActionButton("去对话补充", () => {
+      setView("chat");
+      toast("请在对话框中补充缺失字段；本页不会替你补值。");
+    }));
+    if (pending.can_pause) {
+      actions.append(todoActionButton("暂缓", () => act("/api/pause", {}, "已暂缓；可从暂缓修改中恢复。"), "warn"));
+    }
+    if (pending.can_cancel) {
+      actions.append(todoActionButton("取消", () => {
+        if (confirm("取消当前未提交事项？不会撤销历史提交。")) {
+          act("/api/cancel", {}, "已取消未提交事项。");
+        }
+      }, "danger"));
+    }
+    item.append(actions);
+    pendingBox.append(item);
+  }
+
+  const candidates = S.candidates || [];
+  if (!candidates.length) {
+    pausedBox.append(el("div", "hint", "当前没有已保存的暂缓修改。"));
+  }
+  for (const candidate of candidates) {
+    const item = el("div", "todo-item");
+    item.textContent = candidate.text;
+    const actions = el("div", "todo-actions");
+    if (candidate.can_resume) {
+      actions.append(todoActionButton("恢复", () => act("/api/resume",
+        { id: candidate.id, revision: candidate.revision },
+        "已恢复候选；请补充或更正后再确认。"), "primary"));
+    }
+    if (candidate.can_cancel) {
+      actions.append(todoActionButton("取消暂缓", () => {
+        if (confirm("取消这条暂缓修改？不会撤销历史提交。")) {
+          act("/api/cancel", {}, "已取消暂缓修改。");
+        }
+      }, "danger"));
+    }
+    item.append(actions);
+    pausedBox.append(item);
+  }
+
+  const tasks = S.tasks || [];
+  if (!tasks.length) {
+    taskBox.append(el("div", "hint", "当前没有其他持久待办。"));
+  }
+  for (const task of tasks) {
+    const item = el("div", "todo-item");
+    item.textContent = (task.company_name || task.company_id || "") + " · "
+      + text(task.year) + " 年 " + text(task.month) + " 月 · " + text(task.status)
+      + (task.note ? "\\n备注：" + task.note : "");
+    taskBox.append(item);
+  }
+}
+
+function renderSettings() {
+  const settings = S.settings || {};
+  const account = settings.account || {};
+  const model = settings.model || {};
+  const status = $("settings-status");
+  const current = $("settings-current");
+  const select = $("profile-select");
+  const note = $("profile-note");
+  const command = $("profile-command");
+  const gaps = $("switch-gaps");
+  if (!status || !current || !select || !note || !command || !gaps) return;
+
+  status.textContent = (model.label || "状态未知")
+    + (model.connected ? " · 宿主连接正常" : " · 未连接");
+  current.replaceChildren();
+  const row = (key, value) => {
+    current.append(el("dt", "", key));
+    current.append(el("dd", "", value == null || value === "" ? "—" : String(value)));
+  };
+  row("账号", account.user_id);
+  row("账簿", account.workbook);
+  row("模型连接", model.label || model.status);
+  row("Profile", model.profile || "—");
+  row("模型", model.model || "—");
+  row("端点", model.base_url || "—");
+
+  const profiles = settings.profiles || [];
+  if (!selectedProfile) {
+    selectedProfile = model.profile || (profiles[0] && profiles[0].profile_name) || "";
+  }
+  select.replaceChildren();
+  if (!profiles.length) {
+    const option = el("option", "", "没有可用的本地 Profile");
+    option.value = "";
+    select.append(option);
+    select.disabled = true;
+    selectedProfile = "";
+  } else {
+    select.disabled = false;
+    const choose = el("option", "", "选择下次启动使用的 Profile");
+    choose.value = "";
+    select.append(choose);
+    for (const profile of profiles) {
+      const option = el("option", "", (profile.profile_name || "") + " · "
+        + (profile.model || "") + (profile.is_current ? "（当前）" : ""));
+      option.value = profile.profile_name || "";
+      select.append(option);
+    }
+    if (!profiles.some(p => p.profile_name === selectedProfile)) {
+      selectedProfile = model.profile || profiles[0].profile_name || "";
+    }
+    select.value = selectedProfile;
+  }
+  select.onchange = () => {
+    selectedProfile = select.value;
+    renderProfileCommand();
+  };
+  note.textContent = profiles.length
+    ? "选择仅生成下一次宿主启动命令；当前进程不会热切换账号、账簿或模型。"
+    : "没有发现已有 Profile；请使用原配置入口新增，或通过 run_gui.py 的 --profile 指定。";
+  const switching = settings.switching || {};
+  gaps.textContent = [switching.account, switching.workbook, switching.model]
+    .filter(Boolean).join(" ");
+  renderProfileCommand();
+}
+
+function renderProfileCommand() {
+  const command = $("profile-command");
+  if (!command) return;
+  const settings = S.settings || {};
+  const account = settings.account || {};
+  if (!selectedProfile) {
+    command.textContent = "";
+    return;
+  }
+  const db = String(account.workbook || "").replaceAll('"', '\\"');
+  const user = String(account.user_id || "").replaceAll('"', '\\"');
+  const profile = String(selectedProfile).replaceAll('"', '\\"');
+  command.textContent = 'cd finance_agent\n'
+    + 'python run_gui.py --db "' + db + '" --user "' + user + '" --profile "' + profile + '" --open';
 }
 
 function renderSessions() {
@@ -551,6 +843,26 @@ $("message").addEventListener("keydown", (event) => {
   if ((event.ctrlKey || event.metaKey) && event.key === "Enter") $("send").click();
 });
 $("new-chat").addEventListener("click", () => act("/api/new", {}, "已新建对话。"));
+document.querySelectorAll(".nav-btn").forEach((button) => {
+  button.addEventListener("click", () => setView(button.dataset.view));
+});
+$("refresh-todos").addEventListener("click", () => refresh().catch((error) => toast(error.message, true)));
+$("refresh-settings").addEventListener("click", () => refresh().catch((error) => toast(error.message, true)));
+$("copy-profile-command").addEventListener("click", async () => {
+  const value = $("profile-command").textContent || "";
+  if (!value) { toast("尚未生成启动命令。", true); return; }
+  try {
+    await navigator.clipboard.writeText(value);
+    toast("启动命令已复制；请在新宿主启动时使用。");
+  } catch (_) {
+    const range = document.createRange();
+    range.selectNodeContents($("profile-command"));
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    toast("已选中启动命令，请手动复制。");
+  }
+});
 
 refresh().catch((error) => toast(error.message, true));
 </script>

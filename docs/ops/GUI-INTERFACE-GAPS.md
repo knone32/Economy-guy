@@ -14,10 +14,23 @@
 | 暂缓/取消/恢复 | `SessionHost.pause_current/cancel_current/resume_candidate` | 同上 |
 | 查询显示确认/指代续办 | `SessionHost.acknowledge_display` + `display`/`conversation` 投影 | 同上 |
 | 未知提交核查 | `SessionHost.inspect_submission` | 同上 |
+| 待办详情/恢复/取消 | `SessionHost.resume_candidate/cancel_current/pause_current`；仅当前候选提供取消 | 同上 |
+| 设置连接/Profile 清单 | 只读 `GuiHost._connection_info` + `visible_profiles`，不切换 | 同上 |
 | 本机 HTTP/页面 | `http.server` + `finance_agent/gui/index.html` | `finance_agent/app/gui_server.py` |
 
 浏览器只拿到投影后的快照和一次性 `preview_id`；`user_id`、身份、`approved`、
 `confirmed`、指纹、request_id 均不由客户端传入。
+
+## 宿主切换缺口（一次交 Sol）
+
+- **账号切换**：当前进程由 `--user` 绑定；`SessionHost` 没有运行中切换账号的
+  接口，涉及身份/权限/Store 重绑定，GUI 不自行实现；设置页只显示当前账号。
+- **账簿切换**：当前进程由 `--db` 绑定；切换需重新打开 Store/Agent 并校验
+  权限、候选与未知提交，GUI 不自行切库；设置页只显示当前账簿。
+- **模型/Profile 热切换**：设置页接已有 `visible_profiles` 清单和当前连接，
+  选择只生成下一次 `run_gui.py --profile ...` 启动命令；运行中切换需要 Sol
+  提供宿主接口（重建 Agent/连接，保留 Store 与未知回执门禁），GUI 不做假按钮。
+  需要 Sol 明确账号/账簿/模型三者的重绑定事务边界和失败回执。
 
 ## 仍需 Sol/后端确认的缺口
 

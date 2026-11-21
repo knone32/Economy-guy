@@ -49,6 +49,9 @@ class GuiHostTests(unittest.TestCase):
         self.assertEqual(snap['session']['user'], 'U001')
         self.assertEqual(snap['session']['workbook'], str(self.book.resolve()))
         self.assertEqual(snap['persistence']['send'], 'not_attempted')
+        self.assertEqual(snap['settings']['account']['user_id'], 'U001')
+        self.assertEqual(snap['settings']['account']['workbook'], str(self.book.resolve()))
+        self.assertEqual(snap['settings']['model']['status'], 'MOCK')
         with closing(sqlite3.connect(self.book)) as db:
             self.assertEqual(db.execute('SELECT count(*) FROM invoice_audit').fetchone()[0], 0)
 
@@ -126,6 +129,28 @@ class GuiHostTests(unittest.TestCase):
         self.assertIn('未批准', out['confirmation']['message'])
         with self.assertRaises(GuiError):
             host.confirm_preview(old_id, context=context)
+        with closing(sqlite3.connect(self.book)) as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM invoice_audit').fetchone()[0], 0)
+
+    def test_paused_candidate_exposes_backend_cancel_only_when_current(self):
+        def model(messages, tools):
+            if semantic_input(messages):
+                return {'role': 'assistant', 'content': '{"kind":"legacy"}'}
+            if any(message.get('role') == 'tool' for message in messages):
+                return {'role': 'assistant', 'content': json.dumps(
+                    {'kind': 'information', 'text': '请补充新值。'}, ensure_ascii=False)}
+            return tool('change_invoice', company_id='C001', invoice_no='F001', field='remark')
+        host = self.host(model)
+        host.send('把C001 F001的备注改一下，具体内容稍后给。')
+        paused = host.pause()
+        self.assertEqual(len(paused['candidates']), 1)
+        candidate = paused['candidates'][0]
+        self.assertEqual(candidate['state'], 'PAUSED')
+        self.assertTrue(candidate['can_resume'])
+        self.assertTrue(candidate['can_cancel'])
+        out = host.cancel(context=paused['context'])
+        self.assertIsNone(out['pending'])
+        self.assertEqual(out['candidates'], [])
         with closing(sqlite3.connect(self.book)) as db:
             self.assertEqual(db.execute('SELECT count(*) FROM invoice_audit').fetchone()[0], 0)
 

@@ -20,7 +20,8 @@ from .agent import Agent, live_model
 from .cli_chat import safe_text
 from .cli_workspaces import company_access
 from .invoice_action import public_state as invoice_business_state
-from .model_config import ModelConnection, ProfileError, resolve_connection
+from .model_config import (DEFAULT_LOCAL, DEFAULT_TEMPLATE, ModelConnection, ProfileError,
+                           resolve_connection, safe_url, visible_profiles)
 from .responses import render_information, render_invoice_pending
 from .session_host import SessionConflict, SessionHost
 from .session_store import SessionStore
@@ -74,6 +75,14 @@ class GuiHost:
         self._last_context = None
         self._confirmation = None
         self._confirmation_expired = False
+        self._connection_info = {
+            "mode": self.mode,
+            "connected": False,
+            "profile": None,
+            "model": None,
+            "base_url": None,
+            "provider": None,
+        }
 
         self.store = SessionStore(self.session_path, self.db_path, self.user_id)
         self.host = SessionHost(self.store, self._factory, confirm=self._confirm,
@@ -104,13 +113,76 @@ class GuiHost:
             if not key:
                 raise ProfileError("当前配置缺少 API 密钥；请先用原配置入口保存到 Windows 凭据或环境变量。")
             connection = ModelConnection(bound.profile, key)
+            self._connection_info = {
+                "mode": "live",
+                "connected": True,
+                "profile": bound.profile.profile_name,
+                "model": bound.profile.model,
+                "base_url": safe_url(bound.profile.base_url),
+                "provider": bound.profile.provider,
+            }
             return Agent(actor, workbook, model=live_model, mode="live",
                          trace_path=self.trace_path, connection=connection,
                          max_context_chars=self._max_context_chars)
         if self._model is None:
             raise GuiError("mock 模式需要显式注入本地模型。")
+        self._connection_info = {
+            "mode": "mock",
+            "connected": True,
+            "profile": None,
+            "model": "scripted-local-model",
+            "base_url": None,
+            "provider": "local-script",
+        }
         return Agent(actor, workbook, model=self._model, mode="mock",
                      trace_path=self.trace_path, max_context_chars=self._max_context_chars)
+
+    def _settings(self):
+        """Presentation of host-owned connection config; no secrets, no switch."""
+        info = dict(self._connection_info)
+        live = info.get("mode") == "live"
+        if live and info.get("connected"):
+            status, label = "CONNECTED", "真实模型已连接"
+        elif live:
+            status, label = "UNAVAILABLE", "真实模型未连接"
+        else:
+            status, label = "MOCK", "脚本模型（非 Live）"
+        template = self.profiles_file or DEFAULT_TEMPLATE
+        local = self.profiles_local or DEFAULT_LOCAL
+        profiles = []
+        try:
+            for profile in visible_profiles(self.user_id, template, local):
+                profiles.append({
+                    "profile_name": profile.get("profile_name"),
+                    "scope": profile.get("scope"),
+                    "owner_user_id": profile.get("owner_user_id"),
+                    "provider": profile.get("provider"),
+                    "model": profile.get("model"),
+                    "base_url": safe_url(profile.get("base_url")),
+                    "protocol": profile.get("protocol"),
+                    "is_current": profile.get("profile_name") == info.get("profile"),
+                })
+        except (OSError, ValueError, ProfileError):
+            profiles = []
+        return {
+            "account": {"user_id": self.user_id, "workbook": str(self.db_path)},
+            "model": {
+                "mode": info.get("mode") or self.mode,
+                "status": status,
+                "label": label,
+                "connected": bool(info.get("connected")),
+                "profile": info.get("profile"),
+                "model": info.get("model"),
+                "provider": info.get("provider"),
+                "base_url": info.get("base_url"),
+            },
+            "profiles": profiles,
+            "switching": {
+                "account": "当前进程绑定账号；运行中切换需 Sol 宿主接口，未提供。",
+                "workbook": "当前进程绑定账簿；运行中切换需 Sol 宿主接口，未提供。",
+                "model": "可用 Profile 仅用于下次宿主启动；运行中热切换需 Sol 宿主接口，未提供。",
+            },
+        }
 
     # ------------------------------------------------------------------ confirmation bridge
     def _confirm(self, payload):
@@ -346,6 +418,8 @@ class GuiHost:
 
     def _candidates(self, raw):
         rows = raw.get("candidates") if isinstance(raw, dict) else None
+        context = raw.get("context") if isinstance(raw, dict) else {}
+        current_token = tuple(context.get("candidate") or ()) if isinstance(context, dict) else ()
         found = []
         # A restored/active pending is the current action, not a resume choice.
         # Only after a real PAUSED persistence receipt is a resume control shown.
@@ -376,6 +450,8 @@ class GuiHost:
                     actions=True,
                 ),
                 "can_resume": row.get("state") in {"ACTIVE", "PAUSED"} and not self._busy,
+                "can_cancel": bool(current_token) and current_token == (
+                    row.get("id"), row.get("revision")) and not self._busy,
             })
         return found
 
@@ -499,6 +575,7 @@ class GuiHost:
             "pending": self._pending(raw),
             "candidates": self._candidates(raw),
             "tasks": self._tasks(),
+            "settings": self._settings(),
             "preview": self._confirmation_view(),
             "receipt": receipt,
             "persistence": self._persistence(raw),
