@@ -92,4 +92,6 @@ failure: stage?, original_status?, recoverable?, message?
 
 当前新增接线仅限真实故障暴露的原未知提交恢复：`WriteCoordinator.restore_verification_requests(request_ids, actor, book)` 是受信 SessionStore 适配入口，恢复原 checkpoint 的核查引用，不接受模型正文或前端自报授权，不重建 Draft。`has_unverified_update` 统一原提交/取消/恢复门禁；`reconcile_update` 仍只读核查原审计与当前值。TUI复用该owner，没有增加统一远程API实现。该修订尚待同一原请求的原工作台恢复验证，不能据方法存在就签收异常恢复。
 
+验证追加：上述恢复入口在af64a09已由原工作台实际通过故障保持／只读核查恢复，未重写财务。启动时再由同一owner检查历史UNKNOWN引用，成功与暂不可读分开显示。其余snapshot/前端命令仍为设计；有效BusinessRequest目前主要在同一Agent内传递，新Agent的结构化要求恢复尚未接线，不能据原raw历史恢复声称跨对话筛选继承已通过。现有有限原话、候选修订、取消终态和来源引用不包含批准，长期记忆不在本轮范围。
+
 验收只补这些交接风险；每次先说明要区分的两种解释，首错定位，不扩大全量、不堆同题重试。旧首执失败、程序证据、真实模型回归和真人操作分开记录。

@@ -2,6 +2,10 @@
 
 ## 当前任务：冻结有限业务交接，设计前端会话接口
 
+恢复修订af64a09已在原工作台通过：新进程保留Store和原未知请求；受控审计故障时只读核查仍UNKNOWN，恢复读取后确认原成功审计与当前值一致，reconciled=true、committed_this_turn=false。该阶段无模型调用/财务重写，属于实际GUI故障恢复程序证据。随后独立真实模型IO边界共4HTTP：完成的provider回复被受控客户端交付异常丢弃后未执行工具；SessionStore.finish受控失败时，实际查询交付保持complete且UI明确警告历史保存失败，未伪报持久成功，财务/审计不变。此为故障注入证据，不是真实服务自然断网首执，也未覆盖待补候选持久化故障。正常新进程已将未保存轮次14标INTERRUPTED，未恢复其trace/hint、草稿或批准。所有原失败保留；原账154/1312219tokens/1999720微元峰价上界，累计三限null。
+
+最后仅恢复入口收尾：历史UNKNOWN引用由同一owner先只读核查，成功即给出“历史提交已核实、本次没有再次提交”，暂不可读仍保留UNKNOWN并停止该引用的继续核查。没有第二推理Loop、状态owner或自动重提；无模型新请求。本次正常重启还会核对成功历史不再持续挂起，受控故障下的同一owner保护已在af64a09留证。证据目录本地evidence-root/recovery-boundary-20261121/inspect-fixed-af64/、io-af64/、post-io-restart-af64/；最终收尾记录另列，不迁移受测SHA。
+
 新增恢复首错（受测da70a53，业务源码同8521f88）：真实DeepSeek仅2HTTP到原预览，用户本人批准MK-58263备注“配件票”→“恢复核查验收”，用途“备件采购”未变；实际唯一审计与原预览指纹一致。验收器仅对该原请求受控阻断inspect_request回读，真实事务/审计未替换，原回执UNKNOWN_OUTCOME且原请求已持久checkpoint，草稿/批准清空。随后的真实新进程在同一故障下恢复，tui_sessions恢复历史时直接读审计抛异常，导致丢弃整个SessionStore、退为进程内聊天。首错后依赖停止，零重提；此重启观察为程序/实际GUI故障证据，不是新的自然语言Live。原账150/1283241tokens/1965004微元峰价上界，累计null。原始证据为本地evidence-root/recovery-boundary-20261121/preview/HUMAN-COMMIT-VERIFIED.public.json及restart-audit-down/OBSERVATION.public.json。
 
 当前仅修该恢复交接：SessionStore原历史的UNKNOWN lookup交回现有WriteCoordinator，只恢复请求引用而不构造草稿/批准；审计暂不可读不再丢失Store。新增原owner的只读restore_verification_requests入口和统一has_unverified_update门禁，原核查在结果未明时保持UNKNOWN，核清后区分历史提交/当前值变化；模型切换、原候选恢复、批量提交与取消复用同一门禁。修后尚待实际原工作台恢复/只读核查；不新增付费模型重述、不重复已经批准的写入。前端仍只有设计契约，无新状态owner或Loop。

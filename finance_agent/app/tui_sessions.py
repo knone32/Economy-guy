@@ -211,6 +211,13 @@ class ConversationUI:
             owner.restore_verification_requests(unresolved_requests,
                 actor=self.conversation.actor,book=self.conversation.workbook)
             self._model_update_verification = owner
+            for _ in unresolved_requests:
+                remaining = len(owner.unverified_request_ids)
+                receipt = owner.reconcile_update()
+                if len(owner.unverified_request_ids) == remaining:
+                    break
+            if not owner.has_unverified_update:
+                self.chat_message('原提交核查',owner.receipt['message'])
         return self.has_saved_history
 
     def invoice_candidate_text(self, row):

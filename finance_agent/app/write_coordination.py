@@ -68,6 +68,10 @@ class WriteCoordinator:
         self.receipt = self._receipt(status,outcome,valid and data['current_matches'] and not self.unverified_request_ids)
         self.receipt.update(request_id=ref,pending_request_ids=list(self.unverified_request_ids),
                             reconciled=True,committed_this_turn=False)
+        if status in {'COMMITTED','NO_CHANGE'}:
+            self.receipt['message']='已核实原请求的历史提交，当前值与审计一致；本次仅核查，没有再次提交。'
+        elif status == 'CURRENT_VALUE_CHANGED':
+            self.receipt['message']='已核实原请求的历史提交，但当前值已变化；本次仅核查，没有再次提交。'
         self._record_update(ref)
         return self.receipt
 
