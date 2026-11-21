@@ -7,6 +7,67 @@ from .business_sql import SQL_SOURCE
 from .queries import INVOICE_FIELD_LABELS, _money
 
 
+class PreviewText(str):
+    """Presentation only: readable text with optional collapsed evidence."""
+    def __new__(cls, summary, technical_details=''):
+        value = super().__new__(cls, summary)
+        value.technical_details = technical_details
+        return value
+
+
+BUSINESS_FIELD_LABELS = {
+    'company_id': '企业', 'invoice_no': '发票编号', 'invoice_date': '开票日期',
+    'seller_name': '销售方', 'item_name': '项目', 'amount': '价税合计（元）',
+    'amount_cents': '金额', 'purpose': '用途', 'remark': '备注',
+    'transaction_no': '流水编号', 'transaction_date': '交易日期',
+    'direction': '收支方向', 'counterparty_name': '交易对方',
+    'invoice_date_month': '开票月份', 'invoice_date_year': '开票年度',
+    'transaction_date_month': '交易月份', 'transaction_date_year': '交易年度',
+}
+
+
+def render_dimensions(dimensions):
+    return ' / '.join(f'{BUSINESS_FIELD_LABELS.get(key, "分组")}：{value}'
+                      for key, value in dimensions.items())
+
+
+def render_business_records(data):
+    """Known returned business fields, without JSON or internal source keys."""
+    if isinstance(data, list):
+        return '\n\n'.join(filter(None, (render_business_records(row) for row in data))) or '没有匹配记录。'
+    if not isinstance(data, dict):
+        return '已取得查询记录，详见业务记录。'
+    return '；'.join(f'{"金额（元）" if key == "amount" and "invoice_no" not in data else label}：{_money(data[key]) + " 元" if key == "amount_cents" else data[key] if data[key] not in (None, "") else "未填写"}'
+                    for key, label in BUSINESS_FIELD_LABELS.items() if key in data) or '已取得查询记录，详见业务记录。'
+
+
+def render_query_conditions(query):
+    parts = []
+    operators = {'=': '为', '!=': '不是', '>': '大于', '>=': '不低于', '<': '小于', '<=': '不高于',
+                 'IN': '属于', 'LIKE': '符合名称模式', 'is_blank': '未填写'}
+    for condition in query.get('conditions', ()):
+        field, operation = condition.get('field'), condition.get('operator')
+        label = BUSINESS_FIELD_LABELS.get(field)
+        if not label or operation not in operators:
+            parts.append('另有筛选条件，详见技术记录')
+            continue
+        value = condition.get('value')
+        if field == 'amount_cents' and type(value) is int:
+            value = _money(value) + ' 元'
+        elif isinstance(value, (list, tuple)):
+            value = '、'.join(_money(v) + ' 元' if field == 'amount_cents' and type(v) is int
+                             else str(v) for v in value)
+        if operation == 'is_blank':
+            parts.append(label + '未填写')
+        elif operation == 'LIKE' and isinstance(value, str) and value.startswith('%') and value.endswith('%') and not any(c in value[1:-1] for c in '%_\\'):
+            parts.append(label + '包含“' + value[1:-1] + '”')
+        else:
+            parts.append(f'{label}{operators[operation]}“{value}”')
+    if not parts and query.get('filters'):
+        return '筛选条件尚不能逐项说明，请查看技术记录'
+    return '；'.join(dict.fromkeys(parts))
+
+
 _EXPLANATION_MARKER = re.compile(r"\[\[([A-Za-z][\w.-]*)\]\]")
 
 _QUOTED_DATA = re.compile(r'“[^”\r\n]*”|‘[^’\r\n]*’|「[^」\r\n]*」|『[^』\r\n]*』|"[^"\r\n]*"')
@@ -602,12 +663,11 @@ def render_scope(evidence, *, conversational=False):
         query = evidence.get("query_scope") or {}
         actual = query.get("scope")
         if actual is None:
-            heading = f"实际查询范围未核实（当前账簿 SQL 快照，授权快照：{_sql_scope_heading(scope)}）"
+            heading = f"实际查询范围尚未核实（可读取范围：{_sql_scope_heading(scope)}）"
         else:
             date_field = "开票日期" if query["date_field"] == "invoice_date" else "交易日期"
-            heading = f"{_sql_scope_heading(actual)}（当前账簿 SQL 快照，按{date_field}归属账期）"
-        filters = "，".join(condition.replace("\r", r"\r").replace("\n", r"\n")
-                           for condition in query.get("filters", ()))
+            heading = f"{_sql_scope_heading(actual)}（按当前账簿的{date_field}统计）"
+        filters = render_query_conditions(query)
         seller = query.get("seller_requirement")
         if seller:
             heading += "；销售方范围：" + "、".join(seller["names"])
@@ -641,7 +701,8 @@ def render_scope(evidence, *, conversational=False):
             rule_id = rule.get("rule_id") or rule.get("id", "")
             basis = f"，依据 {rule_id} v{rule['version']} {rule['name']}"
         return f"{heading.strip()}（{source}{basis}）" if heading.strip() else source + basis
-    return f"实际查询范围：企业 {company}；年月 {period}；来源 {evidence.get('source','未知')}；规则 {rule_text}。"
+    text = f"企业 {company}；账期 {period}（按本轮读取的账簿记录）"
+    return text + (f"；依据 {rule_text}。" if rule else '。')
 
 
 def render_reference_error(status, evidence=None):
@@ -840,6 +901,25 @@ def render_sql_evidence(data):
     else:
         lines.append(f"返回 {data['row_count']} 行。")
     return "\n".join(lines)
+
+
+def render_sql_business_result(outcome):
+    """Business wording only; SQL and exact metadata remain in the records."""
+    from .fact_arithmetic import sql_scalars, display
+    data = outcome['data']
+    if data.get('request_identity_evidence_only'):
+        return '以下仅为对象线索，尚未交付所需统计。\n' + '\n'.join(sql_display_rows(data))
+    scalars = sql_scalars(outcome, 'display', '')
+    if scalars:
+        return '\n'.join(f'{fact["subject"]}：{display(fact["value"], fact["unit"], fact["metric"])}。'
+                         for _, fact in scalars.values())
+    if data.get('invoice_projection'):
+        lines = sql_display_rows(data)
+        if data.get('truncated'):
+            lines.append('仅显示部分发票，显示数量不代表全部张数。')
+        return '\n\n'.join(lines) or '没有匹配记录。'
+    return (f"已取得 {data['row_count']} 行查询记录，但指标含义或完整性尚未核实；"
+            '不能将行数当作发票张数。原始内容可在技术记录中核对。')
 
 
 # Only label projections whose expression and source are both visible in the statement.
@@ -1126,7 +1206,7 @@ def render_information(results):
             continue
         data = outcome["data"]
         if name == "query_business_sql":
-            parts.extend((render_scope(outcome["evidence"]), render_sql_evidence(data)))
+            parts.extend((render_scope(outcome["evidence"]), render_sql_business_result(outcome)))
             continue
         add_scope(outcome.get("evidence", {}))
         if name in {"get_finance_summary", "get_annual_finance_summary"}:
@@ -1153,12 +1233,12 @@ def render_information(results):
             if history:
                 parts.append(history)
             if data:
-                parts.append("当前 SQLite 发票：" + json.dumps(data, ensure_ascii=False))
+                parts.append("当前发票：" + render_business_records(data))
         elif name == "list_invoice_directory":
             order = (data.get("sort_by", "date"), data.get("sort_order", "asc"))
             parts.append(f"发票目录 · {DIRECTORY_SORT_LABELS[order]} · 共 {data['total']} 张 · "
                          f"第 {data['page']} 页 · 每页 {data['page_size']} 张。")
-            parts.append(json.dumps(data["rows"], ensure_ascii=False))
+            parts.append(render_business_records(data["rows"]))
         elif name == "count_invoice_fields":
             parts.append(render_invoice_field_count(data))
         elif name == "list_annual_blank_purpose":
@@ -1169,9 +1249,19 @@ def render_information(results):
             parts.append(display_rule_amounts(data["rule"]["content"]))
             if context := render_rule_context(data["rule"]):
                 parts.append(context)
-            parts.append("缺失明细（业务数据）：" + json.dumps(data["missing_invoices"], ensure_ascii=False))
+            parts.append("缺失明细：" + render_business_records(data["missing_invoices"]))
         elif name in {"manage_task","manage_preference","manage_display_preference"}:
             parts.append("持久化管理结果 "+outcome['status']+"（不授予发票修改许可）：" + json.dumps(data,ensure_ascii=False))
+        elif name in {'get_invoice','resolve_invoice_reference','list_invoices','list_bank_transactions','list_annual_bank_income'}:
+            parts.append(render_business_records(data.get('rows', []) if name == 'list_annual_bank_income' else data))
+            totals=outcome.get('evidence',{}).get('finance_summary')
+            if totals and name=='list_invoices':
+                parts.append(f"本轮发票价税合计 {totals['invoice_total']} 元（{totals['invoice_count']}张）。")
+            if totals and name=='list_bank_transactions' and 'amount_rule' in outcome['evidence']:
+                for prefix, label in [('bank_income', '收入'), ('bank_expense', '支出')]:
+                    if prefix + '_total' in totals:
+                        parts.append(f"本轮银行{label} {totals[prefix + '_total']} 元（{totals[prefix + '_count']}条）。")
+                add_scope({**outcome['evidence'], 'rule': outcome['evidence']['amount_rule']})
         elif name != "prepare_invoice_update":
             parts.append("本轮查询结果（业务数据，不是操作回执）：" + json.dumps(data, ensure_ascii=False))
             totals=outcome.get('evidence',{}).get('finance_summary')
@@ -1235,12 +1325,12 @@ def render_stopped(results, stop_reason):
             n=='manage_preference' and r['status']=='SUCCESS' and r.get('evidence',{}).get('management_confirmation')
             and r.get('evidence',{}).get('scope',{}).get('company_id')==company
             and r.get('evidence',{}).get('operation',{}).get('key')==key for n,r in results[index+1:]))
-        if not resolved:failures.append({'tool':name,'status':outcome['status']})
+        if not resolved:failures.append(render_tool_failure(outcome['status'],name,outcome))
     reason={'MODEL_LIMIT':'模型请求上限','TOOL_LIMIT':'实际工具调用上限','CONTEXT_LIMIT':'上下文上限',
             'WAITING_CONFIRMATION':'等待可信确认，尚未保存'}.get(stop_reason,'按真实执行状态停止')
-    return ('本轮已核实结果（仅代表各项实际执行时的事实）：\n'+render_information(verified)
-            +'\n本轮停止原因：'+stop_reason+'（'+reason+'）。后续调用或模型答复已停止；这不撤销以上已完成结果，目标核对情况以可信回执为准。'
-            +'\n未完成/拒绝项：'+json.dumps(failures,ensure_ascii=False))
+    return ('已核实的部分结果：\n'+render_information(verified)
+            +'\n当前状态：'+reason+'。后续处理已停止；已查到的结果保留，保存状态以操作回执为准。'
+            + ('\n尚未完成：'+'；'.join(failures) if failures else ''))
 
 
 def render_task_progress(outcome, *, include_scope=True):

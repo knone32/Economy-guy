@@ -6,10 +6,10 @@ import re
 import sqlite3
 
 from .permissions import check_permission
-from .queries import get_invoice, list_invoices
+from .queries import get_invoice, list_invoices, _money
 from .rules import missing_required_purpose, resolve_rule
 from .tui_intent import excluded_invoice_ids, invoice_change_boundary, invoice_change_evidence, literal_named_invoice_edit
-from .responses import request_scope as explicit_scope
+from .responses import request_scope as explicit_scope, PreviewText
 from .stage2_schema import open_existing
 from .trace import redact
 from .updates import prepare_invoice_update
@@ -357,23 +357,39 @@ def run_invoice_batch(agent, message, request, *, approve_batch, approve_item, c
                     return "CONFLICT", "规则缺项全集已变化，请重新查询，未执行修改。"
             rows.sort(key=lambda row: (row["invoice_date"], row["invoice_no"]))
             targets = tuple((row["invoice_no"], row[field]) for row in rows)
+            company_name = db.execute('SELECT name FROM companies WHERE company_id=?', (company,)).fetchone()[0]
+            rule_name = None
+            if rule_reference:
+                named_rule = db.execute('SELECT name FROM rules WHERE rule_id=? AND version=?',
+                    (rule_reference['rule_id'], rule_reference['version'])).fetchone()
+                rule_name = named_rule[0] if named_rule else rule_reference['rule_id']
     except (OSError, ValueError, sqlite3.Error):
         return "ERROR", "无法重新核验发票清单，请检查账簿。"
 
     field_label = "用途" if field == "purpose" else "备注"
     overwrites = sum(bool((old or "").strip()) and old != value for _, old in targets)
-    scope = (f"企业　{company} · {period}\n字段　{field_label}\n"
-             f"覆盖提示　将替换 {overwrites} 张发票已填写的{field_label}。")
+    other_field = '备注' if field == 'purpose' else '用途'
+    scope = (f"修改对象　{company_name}，{year} 年 {month} 月发票。\n"
+             f"本次修改　将清单中发票的{field_label}改为“{_preview(value)}”，原值见下方清单。\n"
+             f"修改依据　根据您指定的发票范围和提供的{field_label}内容办理；系统已重新读取并核对当前记录。\n"
+             f"影响范围　仅修改本次确认发票的{field_label}；{other_field}、票面金额、销售方及其他字段不作修改。\n"
+             f"当前状态　尚未保存，确认后执行。\n"
+             f"清单范围　共 {len(targets)} 张；其中 {overwrites} 张将替换已填写的{field_label}。")
+    technical = f'企业编号　{company}\n目标账期　{period}\n原始要求　{message}'
     if rule_reference:
         label = "参考规则" if rule_reference["screening"] else "适用规则"
-        scope += (f"\n{label}　{rule_reference['business_date']} · "
-                  f"{rule_reference['rule_id']} v{rule_reference['version']}"
-                  f"\n发票目标账期　{period}")
+        params = rule_reference['params']
+        condition = ('所有发票用途必填' if params['mode'] == 'all' else
+                     f"价税合计不低于 {_money(params['threshold_cents'])} 元时用途必填")
+        scope += (f"\n筛选依据　{label}“{rule_name}” v{rule_reference['version']}：{condition}；用途未填写。"
+                  f"\n实际命中　这 {len(rows)} 张发票的用途均未填写" +
+                  ('。' if params['mode'] == 'all' else '，且票面金额均达到上述门槛。') +
+                  f"\n内容来源　本次{field_label}由您明确提供，规则不推断修改内容。")
+        technical += f"\n规则编号　{rule_reference['rule_id']}\n规则参考日期　{rule_reference['business_date']}"
         if rule_reference["screening"]:
             scope += "\n按指定参考月份规则筛选目标月份发票，不代表目标月份正式合规认定。"
         if not rule_reference["cohort"]:
-            scope += "\n仅确认以下 SQL 清单；程序未核验附加筛选条件的全集。"
-    scope += "\n原始要求　" + message
+            scope += "\n范围限制　仅确认已列出的发票，尚未核实附加筛选条件下是否还有其他发票。"
     if request["excluded"]:
         scope += "\n明确排除　" + "、".join(request["excluded"])
     item_lines = [f"{invoice}\n原值　{_preview(old)}\n新值　{_preview(value)}" for invoice, old in targets]
@@ -395,9 +411,9 @@ def run_invoice_batch(agent, message, request, *, approve_batch, approve_item, c
         if preview_pending:
             body += "\n\n" + full_preview
             preview_pending = False
-        return approve_item(body)
+        return approve_item(PreviewText(body, technical))
 
-    if mode != "item" and not approve_batch(f"{scope}\n确认后将连续处理。\n\n{full_preview}", mode):
+    if mode != "item" and not approve_batch(PreviewText(f"{scope}\n确认后将连续处理清单中的 {len(targets)} 张发票。\n\n{full_preview}", technical), mode):
         status = "CANCELLED"
         if display_items is not None:
             for item in display_items:
@@ -406,7 +422,10 @@ def run_invoice_batch(agent, message, request, *, approve_batch, approve_item, c
         try:
             for index, (invoice, old) in enumerate(targets):
                 values = {"company_id": company, "invoice_no": invoice, "field": field, "new_value": value}
-                body = f"{scope}\n第 {index + 1} / {len(targets)} 张\n{item_lines[index]}"
+                body = (f"修改对象　{company_name}，{year} 年 {month} 月发票 {invoice}\n"
+                        f"本次修改　{field_label}由“{_preview(old)}”改为“{_preview(value)}”。\n"
+                        + '\n'.join(scope.splitlines()[2:]) +
+                        f"\n本次确认　仅这一张；当前为清单第 {index + 1} / {len(targets)} 张。")
                 status, request_id = _apply_target(
                     agent, message, values, period, old,
                     lambda: confirm_item(body) if mode == "item" else "confirm", checkpoint,

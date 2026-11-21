@@ -69,7 +69,8 @@ def sql_scalars(result, parent_ref, scope_text):
             if company not in row_scope['company_ids']:
                 continue
             row_scope['company_ids'] = (company,)
-        identity = ' / '.join(f'{k}={v}' for k,v in dimensions.items())
+        from .responses import render_dimensions
+        identity = render_dimensions(dimensions)
         row_scope_text = scope_text + ('；分组：' + identity if identity else '')
         for column_index, (meta, value) in enumerate(zip(columns, row)):
             kind = meta.get('kind')

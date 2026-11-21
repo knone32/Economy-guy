@@ -17,6 +17,7 @@ from .cli_workspaces import company_access, import_workspace, missing_migrations
 from .model_config import Profile, ProfileError, add_profile, update_user_profile, validate_profile, visible_profiles
 from .model_transport import ModelTransport
 from .trace import redact, write_trace
+from .responses import PreviewText
 from .tui_local import recent_workbooks
 from .win_vault import CredentialError
 
@@ -103,7 +104,8 @@ class Approval(Dialog):
 
     def __init__(self, title, body, action, *, cancel="取消", danger=False, skip=False):
         super().__init__()
-        self.title_text, self.body, self.action_text = title, body, action
+        self.title_text, self.body, self.action_text = title, str(body), action
+        self.technical_details = body.technical_details if isinstance(body, PreviewText) else ''
         self.cancel_text, self.danger, self.skip = cancel, danger, skip
         self.resolved = False
 
@@ -115,13 +117,16 @@ class Approval(Dialog):
             label, separator, value = line.partition("　")
             if separator:
                 body.append(label + separator, style="dim")
-                body.append(value, style="bold" if label in {"原值", "新值", "拟保存值"} else "")
+                body.append(value, style="bold" if label in {"原值", "新值", "拟保存值", "修改对象", "本次修改", "影响范围", "当前状态"} else "")
             else:
                 body.append(line)
         with Vertical():
             yield Label(self.title_text, classes="dialog-title")
             with VerticalScroll(id="approval-content"):
                 yield Static(body, markup=False)
+                if self.technical_details:
+                    with Collapsible(title='技术详情／原始要求', collapsed=True, id='approval-technical'):
+                        yield Static(redact(self.technical_details), markup=False)
             with Horizontal(classes="dialog-actions"):
                 yield TextAction(self.cancel_text, id="cancel")
                 if self.skip:
