@@ -28,8 +28,9 @@ class SessionHost:
     host-owned model configuration. The caller owns/ closes the SessionStore.
     """
 
-    def __init__(self, store, agent_factory, *, confirm=None):
+    def __init__(self, store, agent_factory, *, confirm=None, require_display_ack=False):
         self.store, self._factory, self._confirm = store, agent_factory, confirm
+        self.require_display_ack = require_display_ack
         self._lock = Lock()
         self._command_thread = None
         self._generation, self._revision = uuid4().hex, 0
@@ -84,11 +85,14 @@ class SessionHost:
                 or agent._active or agent._retired or len(agent.messages) != 1):
             raise SessionConflict('Factory must supply a fresh, correctly bound Agent')
         agent.workbook_guard = self.store.validate_invoice_revision
+        agent.defer_display_anchors = self.require_display_ack
         agent.restore_business_request(history['business_request'])
         # Structured current state wins over all historical text and old hints.
         agent.context.restore_query_hints(
             [{'reference_state': history['reference_state']}] if history['reference_state'] is not None else [])
-        agent.context.display_ids = []
+        agent.context.display_ids = [turn['trace'] for turn in history['turns']
+            if turn['seq'] > history['boundary'] and turn['state'] == 'COMPLETED' and turn.get('trace')
+            and (turn.get('hint') or {}).get('display_acknowledged') is True][-64:]
         pending = history['invoice_pending']
         unknown = [t['lookup'] for t in history['turns']
                    if t['state'] == 'UNKNOWN_OUTCOME' and t.get('lookup')]
@@ -126,12 +130,15 @@ class SessionHost:
                           'coverage': response.get('business_request_final_coverage'),
                           'cards': render_information(results) if results else ''}
         candidates = self.store.list_invoice_candidates()
+        token = self.store.invoice_token
+        saved_pause = paused and any((row['id'],row['revision']) == token and row['state'] == 'PAUSED'
+                                     and row['pending'] == pending for row in candidates)
         status = ('UNKNOWN_OUTCOME' if agent.coordinator.has_unverified_update else
                   'CANCELLED' if cancelled else
                   receipt['status'] if saved else
                   response['host_execution']['status'] if response.get('host_execution') else
-                  'PAUSED' if paused and self._persistence['status'] != 'FAILED'
-                      and any(c['state'] == 'PAUSED' for c in candidates) else
+                  'PAUSE_FAILED' if paused and self._persistence['status'] == 'FAILED' else
+                  'PAUSED' if saved_pause and self._persistence['status'] != 'FAILED' else
                   'WAITING_CONFIRMATION' if preview else
                   'WAITING_USER' if pending else
                   'PROPOSAL_READY' if proposal else
@@ -149,8 +156,53 @@ class SessionHost:
             'confirmation_channel_available': self._confirm is not None,
             'receipt': agent.write_receipt, 'persistence': dict(self._persistence),
             'execution': response.get('host_execution'),
+            'display': ({'trace': agent.trace_id, 'acknowledged': response.get('display_acknowledged') is True}
+                        if self.require_display_ack and results and not self._lock.locked()
+                        and self._display_ready() else None),
+            'conversation': self.conversation_view(),
             'result': current_result if not historical else None,
             'historical_result': current_result if historical else None})
+
+    def conversation_view(self):
+        """Same-frame presentation data, so a busy frontend never joins live Store data to an old Agent."""
+        self._binding()
+        from .cli_workspaces import company_access
+        permitted = {row['company_id'] for row in company_access(self.store.workbook,self.store.actor) if row['read']}
+        history = self.store.history()
+        turns = []
+        for turn in history['turns'][-60:]:
+            companies = set((turn.get('operation') or {}).get('companies',()))
+            for call in turn.get('calls') or []:
+                scope = call.get('scope') or {}
+                companies.update(scope.get('company_ids') or ([scope['company_id']] if scope.get('company_id') else []))
+            if companies - permitted:
+                continue
+            turns.append({key:turn.get(key) for key in ('seq','state','request','display','lookup','operation')})
+        return {'chat':self.store.chat,'chats':self.store.list_chats(),'turns':turns}
+
+    def acknowledge_display(self, trace, *, expected):
+        """Called after the browser renders this actual response; never accepts rows or identities."""
+        with self._command(expected):
+            agent = self._agent
+            response = agent.last_response or {}
+            if trace != agent.trace_id or not self._display_ready():
+                raise SessionConflict('Display is not the current actual response')
+            if response.get('display_acknowledged') is not True:
+                anchors = response.get('display_anchors')
+                if anchors is None:
+                    anchors = agent.record_query_display(response['tool_results'])
+                if anchors is None:
+                    raise OSError('展示引用未能登记，请使用明确企业和票号。')
+                response['display_anchors'] = anchors
+                self.store.acknowledge_display(trace, agent.context.reference_state_snapshot())
+                response['display_acknowledged'] = True
+        return self.snapshot()
+
+    def _display_ready(self):
+        response = self._agent.last_response or {}
+        return bool(response.get('tool_results') and response.get('category') in {'database_query','clarification'}
+                    and not response.get('host_execution') and not response.get('display_retired')
+                    and not self._agent.coordinator.has_unverified_update)
 
     def list_conversations(self):
         self._binding()
@@ -161,7 +213,12 @@ class SessionHost:
         pending = agent.pending_intent or getattr(agent, 'paused_invoice_candidate', None)
         if pending and pending.get('business_action') != 'single_invoice':
             pending = None
-        hint = {'reference_state': agent.context.reference_state_snapshot(),
+        references = agent.context.reference_state_snapshot()
+        if self.require_display_ack and self._display_ready() and not (agent.last_response or {}).get('display_acknowledged'):
+            # A restart before the browser's render acknowledgement must not
+            # promote a fetched-but-unseen row to a displayed reference.
+            references = {'version':1,'retired':True,'invoice_query':None}
+        hint = {'reference_state': references,
                 'business_request': agent.business_request_snapshot()}
         try:
             self.store.finish(seq, [['Agent', self._storage_text(text)]], turn_tools(agent.messages[offset:]),
@@ -199,6 +256,10 @@ class SessionHost:
             raise ValueError('A non-empty original user message is required')
         with self._command(expected):
             agent = self._agent
+            previous = agent.last_response or {}
+            if (self.require_display_ack and self._display_ready()
+                    and previous.get('display_acknowledged') is not True):
+                raise SessionConflict('Render and acknowledge the current actual result before continuing')
             seq = self.store.begin(self._storage_text(text), agent.mode)
             offset = len(agent.messages)
             state, operation = 'COMPLETED', None
@@ -275,6 +336,7 @@ class SessionHost:
             pending = self.store.resume_invoice_candidate(candidate_id, revision)
             self._agent.restore_invoice_candidate(pending)
             self._agent.paused_invoice_candidate = None
+            self._persistence = {'status':'SAVED','error':None}
         return self.snapshot()
 
     def pause_current(self, *, expected):
@@ -282,17 +344,23 @@ class SessionHost:
             pending = self._agent.pause_invoice_update()
             if pending is None:
                 raise SessionConflict('No original invoice candidate exists to pause')
+            if self._agent.last_response:
+                self._agent.last_response['display_retired'] = True
             try:
-                self.store.set_invoice_pending(pending, state='PAUSED')
-            except (OSError, ValueError, sqlite3.Error):
-                self._persistence = {'status': 'FAILED', 'message': '暂缓未能保存，不能宣布可恢复。'}
-                raise
+                self.store.set_invoice_pending(pending, state='PAUSED',
+                    reference_state=self._agent.context.reference_state_snapshot())
+            except (OSError, ValueError, sqlite3.Error) as error:
+                self._persistence = {'status': 'FAILED', 'error':type(error).__name__,
+                    'message': '暂缓未能保存，不能宣布可恢复。'}
+                raise SessionConflict('暂缓未能保存，不能宣布可恢复；当前业务尚未提交。') from error
             self._persistence = {'status': 'SAVED', 'error': None}
         return self.snapshot()
 
     def cancel_current(self, *, expected):
         with self._command(expected):
             self._agent.cancel_update(retire_request=True)
+            if self._agent.last_response:
+                self._agent.last_response['display_retired'] = True
             self._agent.paused_invoice_candidate = None
             try:
                 self.store.set_invoice_pending(None, state='CANCELLED')

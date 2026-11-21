@@ -1,0 +1,522 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Economy-guy · 财税工作台</title>
+  <style>
+    :root {
+      --bg: #f4f2ec;
+      --panel: #fffdf8;
+      --ink: #24221e;
+      --muted: #726d63;
+      --line: #ded8cb;
+      --accent: #1d5c4d;
+      --accent-soft: #e6efe9;
+      --warn: #8a4b12;
+      --warn-soft: #fbf0df;
+      --danger: #8f2f2b;
+      --danger-soft: #f8e7e4;
+      --shadow: 0 1px 2px rgba(36, 34, 30, .06);
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      background: var(--bg); color: var(--ink);
+      font: 14px/1.55 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    }
+    button, textarea { font: inherit; }
+    button { cursor: pointer; }
+    .app {
+      display: grid;
+      grid-template-columns: 270px minmax(420px, 1fr) 330px;
+      grid-template-rows: 58px 1fr;
+      gap: 12px; padding: 12px; height: 100%;
+    }
+    .topbar {
+      grid-column: 1 / -1; display: flex; align-items: center; gap: 16px;
+      padding: 0 16px; background: var(--panel); border: 1px solid var(--line);
+      border-radius: 12px; box-shadow: var(--shadow);
+    }
+    .brand { font-weight: 700; letter-spacing: .03em; }
+    .brand small { display: block; font-weight: 400; color: var(--muted); letter-spacing: 0; }
+    .identity { margin-left: auto; color: var(--muted); font-size: 12px; text-align: right; }
+    .identity strong { color: var(--ink); font-weight: 600; }
+    .panel {
+      min-height: 0; background: var(--panel); border: 1px solid var(--line);
+      border-radius: 12px; box-shadow: var(--shadow); display: flex; flex-direction: column;
+    }
+    .panel-head {
+      display: flex; align-items: center; gap: 8px; padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+    }
+    .panel-head h2 { margin: 0; font-size: 13px; letter-spacing: .04em; color: var(--muted); font-weight: 600; }
+    .panel-head .spacer { flex: 1; }
+    .sidebar { overflow: hidden; }
+    .sessions { overflow: auto; padding: 8px; }
+    .session {
+      width: 100%; text-align: left; background: transparent; border: 1px solid transparent;
+      border-radius: 9px; padding: 9px 10px; margin-bottom: 4px; color: var(--ink);
+    }
+    .session:hover { background: #f6f2e9; }
+    .session.active { background: var(--accent-soft); border-color: #c8ddd2; }
+    .session .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .session .meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+    .chat-panel { overflow: hidden; }
+    .chat-log { overflow: auto; padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; }
+    .empty { color: var(--muted); padding: 24px 10px; text-align: center; }
+    .msg { max-width: 88%; border-radius: 12px; padding: 10px 12px; white-space: pre-wrap; word-break: break-word; }
+    .msg.user { align-self: flex-end; background: #e9e3d5; }
+    .msg.agent { align-self: flex-start; background: #f7f3ea; border: 1px solid #ebe4d5; }
+    .msg.system { align-self: center; color: var(--muted); background: transparent; font-size: 12px; }
+    .msg.warning { align-self: stretch; max-width: none; background: var(--warn-soft); color: var(--warn);
+      border: 1px solid #ecd7bb; }
+    .msg .who { display: block; font-size: 11px; color: var(--muted); margin-bottom: 3px; }
+    .card {
+      align-self: stretch; max-width: none; background: #fbf8f1; border: 1px solid #e7dfcf;
+      border-radius: 12px; padding: 12px 14px;
+    }
+    .card h3 { margin: 0 0 6px; font-size: 13px; color: var(--accent); }
+    .card .body { white-space: pre-wrap; word-break: break-word; font-size: 13px; }
+    .composer { border-top: 1px solid var(--line); padding: 10px; display: flex; gap: 8px; align-items: flex-end; }
+    .composer textarea {
+      flex: 1; resize: none; min-height: 54px; max-height: 150px; padding: 10px 12px;
+      border: 1px solid var(--line); border-radius: 10px; background: #fff; color: var(--ink);
+    }
+    .composer textarea:focus { outline: 2px solid #b9d4c8; border-color: var(--accent); }
+    .btn {
+      border: 1px solid var(--line); background: #fff; color: var(--ink);
+      border-radius: 9px; padding: 7px 11px; line-height: 1.2;
+    }
+    .btn:hover { background: #f7f3ea; }
+    .btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .btn.primary:hover { background: #164a3f; }
+    .btn.warn { color: var(--warn); border-color: #e3c9a7; background: var(--warn-soft); }
+    .btn.danger { color: var(--danger); border-color: #e7c1bc; background: var(--danger-soft); }
+    .btn.small { padding: 4px 8px; font-size: 12px; }
+    .btn:disabled { opacity: .5; cursor: wait; }
+    .context { overflow: auto; }
+    .section { padding: 12px 14px; border-bottom: 1px solid var(--line); }
+    .section:last-child { border-bottom: 0; }
+    .section h3 { margin: 0 0 8px; font-size: 12px; color: var(--muted); letter-spacing: .04em; }
+    .pending {
+      white-space: pre-wrap; background: #fbf8f1; border: 1px solid #e7dfcf;
+      border-radius: 10px; padding: 10px; font-size: 13px;
+    }
+    .buttons { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .candidate, .task {
+      border: 1px solid #e7dfcf; background: #fff; border-radius: 9px;
+      padding: 8px 9px; margin-bottom: 6px; font-size: 12px;
+    }
+    .candidate .state, .task .state { color: var(--muted); }
+    .candidate .buttons { margin-top: 6px; }
+    .receipt {
+      border: 1px solid #c8ddd2; background: var(--accent-soft); border-radius: 10px;
+      padding: 9px 10px; margin-top: 8px; white-space: pre-wrap; font-size: 12px;
+    }
+    .receipt.unknown { border-color: #e3c9a7; background: var(--warn-soft); color: var(--warn); }
+    .persistence { font-size: 12px; color: var(--muted); margin-top: 8px; white-space: pre-wrap; }
+    .persistence.failed { color: var(--danger); }
+    .hint { color: var(--muted); font-size: 12px; }
+    .modal-backdrop {
+      position: fixed; inset: 0; background: rgba(20, 19, 17, .42);
+      display: flex; align-items: center; justify-content: center; padding: 24px; z-index: 20;
+    }
+    .modal {
+      width: min(680px, 100%); background: var(--panel); border: 1px solid var(--line);
+      border-radius: 14px; box-shadow: 0 16px 50px rgba(20, 19, 17, .24); padding: 18px;
+    }
+    .modal h2 { margin: 0 0 4px; font-size: 18px; }
+    .modal .sub { color: var(--warn); font-weight: 600; margin-bottom: 12px; }
+    .preview-item { border: 1px solid #e7dfcf; border-radius: 10px; padding: 10px; margin: 8px 0; }
+    .preview-item .row { display: flex; gap: 8px; }
+    .preview-item .k { color: var(--muted); min-width: 72px; }
+    .modal .foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+    .toast {
+      position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+      background: #24221e; color: #fff; border-radius: 9px; padding: 9px 14px;
+      max-width: min(820px, 92vw); white-space: pre-wrap; z-index: 30; display: none;
+    }
+    .toast.show { display: block; }
+    .toast.error { background: var(--danger); }
+    @media (max-width: 1100px) {
+      .app { grid-template-columns: 230px 1fr; }
+      .context { grid-column: 1 / -1; max-height: 300px; }
+    }
+  </style>
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">Economy-guy<small>财税 Agent · 本机最小工作台</small></div>
+    <div class="identity">
+      <strong id="who">__GUI_USER__</strong> · <span id="workbook">__GUI_WORKBOOK__</span><br>
+      <span id="mode">读取中…</span>
+    </div>
+  </header>
+
+  <aside class="panel sidebar">
+    <div class="panel-head">
+      <h2>会话</h2><span class="spacer"></span>
+      <button class="btn small" id="new-chat">新建</button>
+    </div>
+    <div class="sessions" id="sessions"></div>
+  </aside>
+
+  <main class="panel chat-panel">
+    <div class="panel-head">
+      <h2>对话与真实业务卡</h2><span class="spacer"></span>
+      <span class="hint" id="turn-state"></span>
+    </div>
+    <div class="chat-log" id="chat-log"></div>
+    <div class="composer">
+      <textarea id="message" rows="2" placeholder="输入业务问题，例如：汇总甲企业 2026 年 9 月发票与银行收支"></textarea>
+      <button class="btn primary" id="send">发送</button>
+    </div>
+  </main>
+
+  <aside class="panel context">
+    <div class="panel-head"><h2>当前状态</h2></div>
+    <div class="section">
+      <h3>当前待补 / 暂缓</h3>
+      <div id="pending"><div class="hint">没有未完成事项。</div></div>
+      <div class="buttons" id="pending-actions"></div>
+      <div id="receipt"></div>
+      <div id="persistence" class="persistence"></div>
+    </div>
+    <div class="section">
+      <h3>可恢复候选</h3>
+      <div id="candidates"><div class="hint">没有可恢复的候选。</div></div>
+    </div>
+    <div class="section">
+      <h3>当前待办</h3>
+      <div id="tasks"><div class="hint">当前没有持久待办。</div></div>
+    </div>
+  </aside>
+</div>
+
+<div id="modal-root"></div>
+<div class="toast" id="toast"></div>
+
+<script>
+const TOKEN = "__GUI_TOKEN__";
+let S = null;
+let busy = false;
+
+function $(id) { return document.getElementById(id); }
+function text(value) { return value == null ? "" : String(value); }
+function el(tag, className, value) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (value !== undefined && value !== null) node.textContent = value;
+  return node;
+}
+function toast(message, isError) {
+  const node = $("toast");
+  node.textContent = message || "";
+  node.className = "toast show" + (isError ? " error" : "");
+  clearTimeout(node._timer);
+  node._timer = setTimeout(() => { node.className = "toast"; }, 6500);
+}
+async function api(path, body) {
+  const options = { method: body === undefined ? "GET" : "POST",
+                    headers: { "X-GUI-Token": TOKEN } };
+  if (body !== undefined) {
+    const payload = { ...(body || {}) };
+    if (S && S.context) payload.context = S.context;
+    options.headers["Content-Type"] = "application/json";
+    options.body = JSON.stringify(payload);
+  }
+  const response = await fetch(path, options);
+  let data;
+  try { data = await response.json(); }
+  catch (_) { throw new Error("本机宿主返回了无法解析的响应。"); }
+  if (!response.ok || !data.ok) throw new Error(data.error || "请求失败。");
+  return data;
+}
+function setBusy(value) {
+  busy = value;
+  $("send").disabled = value;
+  $("new-chat").disabled = value;
+  document.querySelectorAll("button[data-action]").forEach(b => b.disabled = value);
+}
+let acknowledging = false;
+async function acknowledgeDisplay() {
+  if (!S || !S.display || S.display.acknowledged || acknowledging) return;
+  acknowledging = true;
+  try {
+    const data = await api("/api/acknowledge", { trace: S.display.trace });
+    if (!data.snapshot) throw new Error("宿主未返回确认后的快照。");
+    S = data.snapshot;
+    render();
+    if (S.error) toast(S.error, true);
+  } catch (error) {
+    toast("结果已显示，但引用登记失败：" + error.message, true);
+  } finally {
+    acknowledging = false;
+  }
+}
+async function refresh(snapshot) {
+  if (snapshot) { S = snapshot; render(); await acknowledgeDisplay(); return; }
+  const data = await api("/api/snapshot");
+  S = data.snapshot;
+  render();
+  await acknowledgeDisplay();
+}
+async function act(path, body, okMessage) {
+  setBusy(true);
+  try {
+    const data = await api(path, body);
+    S = data.snapshot;
+    render();
+    await acknowledgeDisplay();
+    const receipt = S.receipt || {};
+    const unverified = receipt.status === "UNKNOWN_OUTCOME" || receipt.readback_verified === false;
+    if (okMessage && !S.error && !unverified) toast(okMessage);
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    setBusy(false);
+  }
+}
+
+function render() {
+  if (!S) return;
+  $("who").textContent = S.session.user;
+  $("workbook").textContent = S.session.workbook;
+  $("mode").textContent = (S.session.mode === "live" ? "真实模型 / " : "本地模型 / ")
+    + (S.session.active_chat ? "会话 " + S.session.active_chat.slice(0, 10) : "无活动会话");
+  renderSessions();
+  renderChat();
+  renderPending();
+  renderCandidates();
+  renderTasks();
+  renderReceipt();
+  renderPreview();
+  if (S.error) toast(S.error, true);
+  else if (S.notice) toast(S.notice);
+}
+
+function renderSessions() {
+  const box = $("sessions");
+  box.replaceChildren();
+  const chats = S.session.chats || [];
+  if (!chats.length) {
+    box.append(el("div", "hint", "还没有会话。点击“新建”开始。"));
+    return;
+  }
+  for (const chat of chats) {
+    const button = el("button", "session" + (chat.id === S.session.active_chat ? " active" : ""));
+    button.type = "button";
+    button.append(el("div", "title", chat.title || chat.id));
+    button.append(el("div", "meta", (chat.state || "") + " · " + (chat.updated || "")));
+    button.disabled = busy;
+    button.addEventListener("click", () => {
+      if (chat.id === S.session.active_chat) return;
+      act("/api/switch", { chat_id: chat.id });
+    });
+    box.append(button);
+  }
+}
+
+function renderChat() {
+  const box = $("chat-log");
+  box.replaceChildren();
+  const turns = S.turns || [];
+  if (!turns.length && !S.current_result) {
+    box.append(el("div", "empty", "从一句真实业务问题开始。结果卡来自本轮实际工具证据，不以模型文字为准。"));
+    return;
+  }
+  for (const turn of turns) {
+    for (const message of turn.messages || []) {
+      if (message.card) {
+        const card = el("div", "card");
+        card.append(el("h3", "", message.role));
+        card.append(el("div", "body", message.text));
+        box.append(card);
+        continue;
+      }
+      const role = message.role === "user" ? "user" : message.role === "Agent" ? "agent" : "system";
+      const node = el("div", "msg " + role + (message.warning ? " warning" : ""));
+      if (message.role && message.role !== "user") node.append(el("span", "who", message.role));
+      node.append(document.createTextNode(message.text));
+      box.append(node);
+    }
+  }
+  const current = S.current_result;
+  if (current && (current.cards || current.text)) {
+    const card = el("div", "card");
+    card.append(el("h3", "", current.historical ? "历史结果（非当前指令）" : "本轮结果（真实工具证据）"));
+    card.append(el("div", "body", current.cards || current.text));
+    box.append(card);
+  }
+  box.scrollTop = box.scrollHeight;
+}
+
+function renderPending() {
+  const box = $("pending");
+  const actions = $("pending-actions");
+  box.replaceChildren();
+  actions.replaceChildren();
+  const pending = S.pending;
+  if (!pending) {
+    box.append(el("div", "hint", "没有未完成事项。"));
+    return;
+  }
+  box.append(el("div", "pending", pending.text));
+  if (pending.can_pause) {
+    const pause = el("button", "btn warn small", "暂缓");
+    pause.dataset.action = "pause";
+    pause.addEventListener("click", () => act("/api/pause", {}, "已暂缓；可在待办中恢复。"));
+    actions.append(pause);
+  }
+  const cancel = el("button", "btn danger small", "取消");
+  cancel.dataset.action = "cancel";
+  cancel.addEventListener("click", () => {
+    if (confirm("取消当前未提交事项？不会撤销历史提交。")) act("/api/cancel", {}, "已取消未提交事项。");
+  });
+  actions.append(cancel);
+}
+
+function renderCandidates() {
+  const box = $("candidates");
+  box.replaceChildren();
+  const candidates = S.candidates || [];
+  if (!candidates.length) {
+    box.append(el("div", "hint", "没有可恢复的候选。"));
+    return;
+  }
+  for (const candidate of candidates) {
+    const node = el("div", "candidate");
+    node.append(el("div", "state", (candidate.state || "") + " · 修订 " + candidate.revision));
+    node.append(el("div", "", candidate.text));
+    if (candidate.can_resume) {
+      const button = el("button", "btn small", "恢复");
+      button.dataset.action = "resume";
+      button.addEventListener("click", () => act("/api/resume", { id: candidate.id, revision: candidate.revision },
+        "已恢复候选；请补充或更正，系统会重新核权。"));
+      node.append(button);
+    }
+    box.append(node);
+  }
+}
+
+function renderTasks() {
+  const box = $("tasks");
+  box.replaceChildren();
+  const tasks = S.tasks || [];
+  if (!tasks.length) {
+    box.append(el("div", "hint", "当前没有持久待办。"));
+    return;
+  }
+  for (const task of tasks) {
+    const node = el("div", "task");
+    node.append(el("div", "state", (task.company_name || task.company_id || "") + " · "
+      + (task.year || "") + " 年 " + (task.month || "") + " 月 · " + (task.status || "")));
+    if (task.note) node.append(el("div", "", "备注：" + task.note));
+    box.append(node);
+  }
+}
+
+function renderReceipt() {
+  const box = $("receipt");
+  box.replaceChildren();
+  const receipt = S.receipt;
+  if (receipt) {
+    const unknown = receipt.status === "UNKNOWN_OUTCOME";
+    const node = el("div", "receipt" + (unknown ? " unknown" : ""));
+    node.append(el("div", "", "提交回执 · " + text(receipt.status)));
+    if (receipt.message) node.append(el("div", "", receipt.message));
+    if (receipt.readback_verified === true) node.append(el("div", "", "新连接回读已核实。"));
+    else if (receipt.readback_verified === false) node.append(el("div", "", "回读未核实；不要当作已保存。"));
+    if (unknown) {
+      const inspect = el("button", "btn warn small", "只读核查");
+      inspect.dataset.action = "inspect";
+      inspect.addEventListener("click", () => act("/api/inspect", {}, "已核查；没有再次提交。"));
+      node.append(inspect);
+    }
+    box.append(node);
+  }
+  const persistence = $("persistence");
+  persistence.replaceChildren();
+  const p = S.persistence || {};
+  const failed = p.send === "failed" || p.commit === "failed";
+  if (p.message) {
+    const node = el("div", "persistence" + (failed ? " failed" : ""), p.message);
+    persistence.append(node);
+  } else if (p.send === "saved" || p.commit === "saved") {
+    persistence.append(el("div", "persistence",
+      "历史保存：" + (p.send === "saved" ? "本轮已保存" : "") +
+      (p.commit === "saved" ? "；提交回执已单独保存" : "")));
+  }
+}
+
+function renderPreview() {
+  const root = $("modal-root");
+  root.replaceChildren();
+  const preview = S.preview;
+  if (!preview) return;
+  const backdrop = el("div", "modal-backdrop");
+  const modal = el("div", "modal");
+  modal.append(el("h2", "", preview.title || "原业务预览 · 真人确认"));
+  modal.append(el("div", "sub", "尚未保存。确认后由原事务入口提交并新连接回读。"));
+  if (!(preview.items || []).length) {
+    modal.append(el("div", "pending", preview.text || "没有可展示的预览字段。"));
+  }
+  for (const item of preview.items || []) {
+    const box = el("div", "preview-item");
+    const row = (key, value) => {
+      const line = el("div", "row");
+      line.append(el("span", "k", key));
+      line.append(el("span", "", text(value)));
+      box.append(line);
+    };
+    row("企业", (item.company_name || "") + "（" + item.company_id + "）");
+    row("账期", text(item.invoice_date).slice(0, 7));
+    row("发票", item.invoice_no);
+    row("字段", item.field_label);
+    row("原值", item.old_value === "" || item.old_value == null ? "（空）" : item.old_value);
+    row("新值", item.new_value === "" || item.new_value == null ? "（清空）" : item.new_value);
+    box.append(el("div", "hint", "影响 1 张；未改字段保持原样。"));
+    modal.append(box);
+  }
+  modal.append(el("div", "hint", "浏览器只提交确认动作；不传 approved/confirmed，也不保存批准凭证。"));
+  const foot = el("div", "foot");
+  const cancel = el("button", "btn danger", "取消预览");
+  cancel.dataset.action = "preview-cancel";
+  cancel.addEventListener("click", () => act("/api/preview_cancel", { preview_id: preview.id }, "已取消预览；未提交。"));
+  const confirm = el("button", "btn primary", "确认保存");
+  confirm.dataset.action = "preview-confirm";
+  confirm.addEventListener("click", () => act("/api/preview_confirm", { preview_id: preview.id }, "已提交；请看提交回执。"));
+  foot.append(cancel, confirm);
+  modal.append(foot);
+  backdrop.append(modal);
+  root.append(backdrop);
+}
+
+$("send").addEventListener("click", async () => {
+  const value = $("message").value.trim();
+  if (!value || busy) return;
+  setBusy(true);
+  try {
+    await acknowledgeDisplay();
+    const data = await api("/api/message", { text: value });
+    S = data.snapshot;
+    $("message").value = "";
+    render();
+    await acknowledgeDisplay();
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    setBusy(false);
+  }
+});
+$("message").addEventListener("keydown", (event) => {
+  if ((event.ctrlKey || event.metaKey) && event.key === "Enter") $("send").click();
+});
+$("new-chat").addEventListener("click", () => act("/api/new", {}, "已新建对话。"));
+
+refresh().catch((error) => toast(error.message, true));
+</script>
+</body>
+</html>

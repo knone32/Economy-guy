@@ -269,16 +269,38 @@ class SessionStore(TicketCandidates):
         return json.dumps({'version':1,'actor':self.actor,'workbook':self.identity,
                            'chat':self.chat,'pending':pending}, ensure_ascii=False)
 
-    def set_invoice_pending(self, pending, *, state=None):
+    def set_invoice_pending(self, pending, *, state=None, reference_state=None):
         """Trusted runtime/idle-cancel setter; never exposed as a model tool."""
         self.validate()
+        references = _reference_state_json(reference_state) if reference_state is not None else None
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             if not db.execute("SELECT 1 FROM chats WHERE id=? AND workbook=? AND actor=? AND state='ACTIVE'",
                               (self.chat,self.identity,self.actor)).fetchone():
                 raise ValueError('Invoice candidate is outside the active chat')
             token = self._persist_candidate(db,pending,state or ('ACTIVE' if pending is not None else 'CANCELLED'),self.invoice_token)
+            if references is not None:
+                db.execute('UPDATE chats SET reference_state=? WHERE id=?', (references,self.chat))
         self.invoice_token = token
+
+    def acknowledge_display(self, trace, reference_state):
+        """Record actual frontend display, not a model's claim of having shown it."""
+        self.validate()
+        encoded = _reference_state_json(reference_state)
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if not db.execute("SELECT 1 FROM chats WHERE id=? AND workbook=? AND actor=? AND state='ACTIVE'",
+                              (self.chat,self.identity,self.actor)).fetchone():
+                raise ValueError('Display is outside the current conversation')
+            rows = db.execute("SELECT seq,hint FROM turns WHERE chat=? AND trace=? AND state='COMPLETED'",
+                              (self.chat,trace)).fetchall()
+            if len(rows) != 1:
+                raise ValueError('Display does not identify one completed current-chat turn')
+            hint = json.loads(rows[0]['hint']) if rows[0]['hint'] else {}
+            hint.update(display_acknowledged=True,reference_state=reference_state)
+            db.execute('UPDATE turns SET hint=? WHERE seq=? AND chat=?',
+                       (json.dumps(hint,ensure_ascii=False),rows[0]['seq'],self.chat))
+            db.execute('UPDATE chats SET reference_state=? WHERE id=?', (encoded,self.chat))
 
     def set_reference_state(self, state):
         """Trusted UI/backend setter, including idle cancellation with no turn.
