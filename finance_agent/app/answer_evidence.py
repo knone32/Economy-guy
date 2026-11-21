@@ -82,6 +82,18 @@ def catalog(results, receipt, turn_id):
         data = result.get('data')
         parent = prefix + key + '.result'
         add(key + '.result', name, render_information([(name, result)]), type='result', scope=evidence.get('scope', {}))
+        if name=='check_missing_purpose' and (evidence.get('business_request') or {}).get('view_adapter')=='rule_missing':
+            for number, item in enumerate(evidence['business_request'].get('scalar_facts',())):
+                if item.get('operation') not in {'count','sum'}:continue
+                amount=item.get('value');unit=item.get('unit')
+                operation='count_rows' if item['operation']=='count' else 'sum'
+                info=scalar(amount,unit=unit,metric=('invoices',operation,item['field']),
+                    cohort=item['basis'],subject='实际用途规则下的完整缺项集合',scope=evidence.get('scope',{}),
+                    scope_text=scope,parent_ref=parent)
+                if info:
+                    text=(f'{scope}：按实际用途规则缺项 {amount} 张。' if unit=='count' else
+                          f'{scope}：实际用途规则缺项金额 {display(amount,"cents")}。')
+                    add(key+'.required_missing.'+str(number),'规则缺项指标',text,**info)
         if name in {'get_finance_summary', 'get_annual_finance_summary'} and isinstance(data, dict):
             basis_text = render_summary_basis(evidence.get('rule'))
             basis_ref = prefix + key + '.basis' if basis_text else None

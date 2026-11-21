@@ -18,7 +18,7 @@ class ToolSpec:
 
     def __post_init__(self):
         if (self.read_mode not in {'none','monthly','annual','invoice','sql','directory','reference','rule_history'}
-                or self.result_adapter not in {None,'sql','summary','details'}
+                or self.result_adapter not in {None,'sql','summary','details','rule_missing','directory','reference_details'}
                 or self.condition_mode not in {'none','sql','row','direction','direction_arg'}
                 or any(type(v) is not bool for v in (self.normal,self.reads_financial_data,self.answer_fact,self.support))
                 or self.executor is not None and type(self.executor) is not str
@@ -31,7 +31,10 @@ class ToolSpec:
                 or self.result_adapter=='sql' and (self.read_mode!='sql' or self.condition_mode!='sql')
                 or self.result_adapter=='summary' and self.condition_mode!='direction'
                 or self.result_adapter=='details' and self.condition_mode not in {'none','row','direction_arg'}
-                or self.condition_mode=='row' and self.read_mode!='invoice'
+                or self.condition_mode=='row' and self.read_mode not in {'invoice','reference'}
+                or self.result_adapter=='rule_missing' and (self.read_mode!='monthly' or self.objects!=('invoices',))
+                or self.result_adapter=='directory' and (self.read_mode!='directory' or self.objects!=('invoices',))
+                or self.result_adapter=='reference_details' and (self.read_mode!='reference' or self.objects!=('invoices',) or self.condition_mode!='row')
                 or self.condition_mode=='direction_arg' and self.objects!=('bank_transactions',)
                 or self.support and self.reads_financial_data):
             raise ValueError('Incomplete or unsupported static tool registration')
@@ -46,7 +49,7 @@ TOOL_SPECS = MappingProxyType({
     'change_invoice': ToolSpec(None, (('company_id', 'string'), ('invoice_no', 'string'), ('year', 'integer'), ('month', 'integer'), ('field', 'string'), ('new_value', 'string'), ('relation', 'string'), ('value_ref', 'string')), 'none', normal=True, reads_financial_data=False, answer_fact=False, support=False),
     'query_business_sql': ToolSpec(None, (('sql', 'string'), ('read_scope', 'object')), 'sql', normal=True, reads_financial_data=True, answer_fact=True, support=False, objects=('invoices', 'bank_transactions'), result_adapter='sql', condition_mode='sql'),
     'list_invoices': ToolSpec('queries.list_invoices', (('company_id', 'string'), ('year', 'integer'), ('month', 'integer')), 'monthly', normal=True, reads_financial_data=True, answer_fact=True, support=False, objects=('invoices',), result_adapter='details', condition_mode='none'),
-    'list_invoice_directory': ToolSpec('queries.invoice_directory', (('company_id', 'string'), ('year', 'integer'), ('month', 'integer'), ('page', 'integer'), ('sort_by', 'string'), ('sort_order', 'string')), 'directory', normal=True, reads_financial_data=True, answer_fact=True, support=False),
+    'list_invoice_directory': ToolSpec('queries.invoice_directory', (('company_id', 'string'), ('year', 'integer'), ('month', 'integer'), ('page', 'integer'), ('sort_by', 'string'), ('sort_order', 'string')), 'directory', normal=True, reads_financial_data=True, answer_fact=True, support=False, objects=('invoices',), result_adapter='directory'),
     'get_invoice': ToolSpec('queries.get_invoice', (('company_id', 'string'), ('invoice_no', 'string')), 'invoice', normal=True, reads_financial_data=True, answer_fact=True, support=False, objects=('invoices',), result_adapter='details', condition_mode='row'),
     'list_bank_transactions': ToolSpec('queries.list_bank_transactions', (('company_id', 'string'), ('year', 'integer'), ('month', 'integer'), ('direction', 'string')), 'monthly', normal=True, reads_financial_data=True, answer_fact=True, support=False, objects=('bank_transactions',), result_adapter='details', condition_mode='direction_arg'),
     'invoice_total': ToolSpec('finance.invoice_total', (('company_id', 'string'), ('year', 'integer'), ('month', 'integer')), 'monthly', normal=False, reads_financial_data=True, answer_fact=False, support=False),
@@ -54,7 +57,7 @@ TOOL_SPECS = MappingProxyType({
     'bank_expense_total': ToolSpec('finance.bank_expense_total', (('company_id', 'string'), ('year', 'integer'), ('month', 'integer')), 'monthly', normal=False, reads_financial_data=True, answer_fact=False, support=False),
     'summary': ToolSpec(None, (('company_id', 'string'), ('year', 'integer'), ('month', 'integer')), 'monthly', normal=False, reads_financial_data=True, answer_fact=False, support=False),
     'get_finance_summary': ToolSpec('finance.get_finance_summary', (('company_id', 'string'), ('year', 'integer'), ('month', 'integer')), 'monthly', normal=True, reads_financial_data=True, answer_fact=True, support=False, objects=('invoices', 'bank_transactions'), result_adapter='summary', condition_mode='direction'),
-    'check_missing_purpose': ToolSpec('rules.check_missing_purpose', (('company_id', 'string'), ('year', 'integer'), ('month', 'integer'), ('rule_business_date', 'string')), 'monthly', normal=True, reads_financial_data=True, answer_fact=True, support=False),
+    'check_missing_purpose': ToolSpec('rules.check_missing_purpose', (('company_id', 'string'), ('year', 'integer'), ('month', 'integer'), ('rule_business_date', 'string')), 'monthly', normal=True, reads_financial_data=True, answer_fact=True, support=False, objects=('invoices',), result_adapter='rule_missing'),
     'count_invoice_fields': ToolSpec(None, (('company_id', 'string'), ('year', 'integer'), ('month', 'integer'), ('selector', 'string')), 'monthly', normal=True, reads_financial_data=True, answer_fact=True, support=False),
     'get_annual_finance_summary': ToolSpec('finance.get_annual_finance_summary', (('company_id', 'string'), ('year', 'integer')), 'annual', normal=True, reads_financial_data=True, answer_fact=True, support=False, objects=('invoices', 'bank_transactions'), result_adapter='summary', condition_mode='direction'),
     'list_annual_blank_purpose': ToolSpec('queries.list_annual_blank_purpose', (('company_id', 'string'), ('year', 'integer'), ('page', 'integer')), 'annual', normal=True, reads_financial_data=True, answer_fact=True, support=False),
@@ -68,8 +71,8 @@ TOOL_SPECS = MappingProxyType({
     'manage_task': ToolSpec(None, (('company_id', 'string'), ('action', 'string'), ('task_id', 'string'), ('year', 'integer'), ('month', 'integer'), ('note', 'string')), 'none', normal=True, reads_financial_data=False, answer_fact=False, support=False),
     'manage_display_preference': ToolSpec(None, (('action', 'string'), ('value', 'string')), 'none', normal=True, reads_financial_data=False, answer_fact=False, support=False),
     'manage_preference': ToolSpec(None, (('company_id', 'string'), ('action', 'string'), ('key', 'string'), ('value', 'string')), 'none', normal=True, reads_financial_data=False, answer_fact=False, support=False),
-    'resolve_invoice_reference': ToolSpec(None, (('company_id', 'string'), ('ordinal', 'integer'), ('anchor_id', 'string')), 'reference', normal=True, reads_financial_data=True, answer_fact=True, support=False),
-    'resolve_recent_invoice': ToolSpec(None, (('source', 'string'),), 'reference', normal=True, reads_financial_data=True, answer_fact=True, support=False),
+    'resolve_invoice_reference': ToolSpec(None, (('company_id', 'string'), ('ordinal', 'integer'), ('anchor_id', 'string')), 'reference', normal=True, reads_financial_data=True, answer_fact=True, support=False, objects=('invoices',), result_adapter='reference_details', condition_mode='row'),
+    'resolve_recent_invoice': ToolSpec(None, (('source', 'string'),), 'reference', normal=True, reads_financial_data=True, answer_fact=True, support=False, objects=('invoices',), result_adapter='reference_details', condition_mode='row'),
     'set_schedule': ToolSpec(None, (('goal', 'string'), ('steps', 'array'), ('stop_condition', 'string')), 'none', normal=True, reads_financial_data=False, answer_fact=False, support=True),
 })
 FINANCIAL_TOOLS = frozenset(n for n,s in TOOL_SPECS.items() if s.reads_financial_data)
@@ -80,4 +83,4 @@ ANSWER_TOOLS = frozenset(n for n,s in TOOL_SPECS.items() if s.answer_fact)
 MONTHLY = frozenset(n for n,s in TOOL_SPECS.items() if s.read_mode=='monthly')
 ANNUAL = frozenset(n for n,s in TOOL_SPECS.items() if s.read_mode=='annual')
 READ_ONLY_TOOLS = frozenset(n for n,s in TOOL_SPECS.items()
-                          if s.read_mode in {'monthly','annual','invoice','sql','directory','rule_history'})
+                          if s.read_mode in {'monthly','annual','invoice','sql','directory','reference','rule_history'})

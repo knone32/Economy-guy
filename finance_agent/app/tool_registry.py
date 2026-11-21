@@ -850,6 +850,18 @@ def handle_tool(name, raw_arguments, user_id, db_path, update_session=None, allo
             return tool_result('ERROR', evidence={'source': 'business_request'},
                                error='读取要求的当前账簿状态不可用，未执行查询。')
     temporary_workspace = None
+    if (business_request is not None and name=='check_missing_purpose'
+            and parsed.get('rule_business_date') is not None):
+        from .provenance import ScopeProof
+        # Preflight has bound both distinct roles. This call-local read proof
+        # permits the target month and the reference rule date without replacing
+        # the request's immutable target or altering the Agent workspace.
+        reference_day=date.fromisoformat(parsed['rule_business_date'])
+        periods={(parsed['year'],parsed['month']),(reference_day.year,reference_day.month)}
+        values={'company_id':[parsed['company_id']],'periods':sorted(periods),
+                'year':sorted({y for y,m in periods}),'month':sorted({m for y,m in periods})}
+        arguments['provenance']=ScopeProof(user_id,values,dict.fromkeys(values,'controlled_read_scope'))
+        arguments['expected_scope']=None
     if business_request is not None and name == 'query_business_sql':
         from .business_sql import BusinessSQL
         if 'read_scope' in parsed:

@@ -72,7 +72,14 @@ def preflight(request, name, args, actor, book):
             return
         raise RequestDeliveryError('该工具尚未登记本轮业务要求的结果契约，未执行。',
                                    'TOOL_CAPABILITY_MISMATCH')
+    from .business_request_invoice_delivery import ADAPTERS,preflight as invoice_preflight
+    if TOOL_SPECS[name].result_adapter in ADAPTERS:
+        invoice_preflight(request,name,args,actor,book)
+        return
     if TOOL_SPECS[name].result_adapter == 'sql':
+        if any(t.purpose_check or t.directory or t.reference for t in request.targets):
+            raise RequestDeliveryError('该SQL入口尚无规则、目录页或可信引用的专用结果证据。',
+                                       'TOOL_CAPABILITY_MISMATCH')
         scope = args.get('read_scope')
         if scope:
             actual = {'company_id': scope['company_id'],
@@ -83,6 +90,7 @@ def preflight(request, name, args, actor, book):
         return
     companies, periods = _companies(args), _periods(args)
     applicable = [t for t in request.targets if t.object in CAPABILITIES[name]
+                  and not (t.purpose_check or t.directory or t.reference)
                   and companies and companies <= set(t.company_ids)
                   and (TOOL_SPECS[name].read_mode == 'invoice' or periods and periods <= set(t.periods))]
     if not applicable:
@@ -553,6 +561,8 @@ def _summary_fields(request, scope, *, targets=None):
     fields, ids = set(), set()
     for field, (object_name, operation, metric_field, direction) in SUMMARY_FIELDS.items():
         for target in request.targets if targets is None else targets:
+            if target.purpose_check or target.directory or target.reference:
+                continue
             if (target.object != object_name or not _companies(scope) <= set(target.company_ids)
                     or not _periods(scope) <= set(target.periods)):
                 continue
@@ -605,7 +615,10 @@ def check_dedicated(request, name, result, actor, book):
             if field in _summary_fields(request, scope, targets=(target,))[0]]
         return accepted
     object_name = CAPABILITIES[name][0]
-    targets = _targets(request, object_name, scope)
+    targets = [t for t in _targets(request, object_name, scope)
+               if not (t.purpose_check or t.directory or t.reference)]
+    if not targets:
+        raise RequestDeliveryError('普通明细不能替代独立的规则、目录或引用目标。','TOOL_CAPABILITY_MISMATCH')
     rows = [data] if isinstance(data, dict) else data or []
     from .seller_read_scope import _matching
     from .fact_arithmetic import cents
@@ -636,7 +649,12 @@ def check_dedicated(request, name, result, actor, book):
 def accept_result(request, name, result, actor, book):
     if result.get('status') not in {'SUCCESS', 'NO_DATA'} or name not in CAPABILITIES:
         return result
+    from .business_request_invoice_delivery import ADAPTERS,accept as accept_invoice
+    if TOOL_SPECS[name].result_adapter in ADAPTERS:
+        _frame(request,actor,book)
+        return accept_invoice(request,name,result,actor,book)
     if TOOL_SPECS[name].result_adapter == 'sql':
+        preflight(request,name,{},actor,book)
         _frame(request, actor, book)
         projected = project_sql_result(request, canonical_sql_result(result), actor, book)
         if projected.get('data', {}).get('request_projection'):

@@ -998,6 +998,14 @@ class Agent:
                 self.trace('reference.deferred_to_business_turn', {'status':reference['status']})
                 reference = None
         if business_preflight and reference and reference['ok']:
+            # Keep the original resolver's witness for independent binding;
+            # its financial data is not delivered before the request exists.
+            resolved_scope=reference['evidence']['scope']
+            reference_context = {**hint,'scope':{key:[value] for key,value in resolved_scope.items()},
+                'ordinal':reference['evidence']['reference']['ordinal'],
+                'anchor_id':reference['evidence']['reference']['anchor_id'],
+                'display_ids':(self.context.display_ids if self.context.display_ids is not None
+                               else [reference['evidence']['reference']['display_id']])}
             reference = None
         if reference and reference["ok"] and not business_preflight:
             self.context.accept_reference(reference['evidence'])
@@ -1013,7 +1021,7 @@ class Agent:
             self.trace("reference.resolved",reference)
             if allow_prepare and not mixed:
                 bound_reference_edit = self.bind_invoice_edit_reference(reference["evidence"])
-        elif not self.teaching:
+        elif not self.teaching and reference_context is None:
             turn_tools = [tool for tool in turn_tools if tool["function"]["name"] != "resolve_invoice_reference"]
         workspace_month = bool(re.search(r"这个月|本月|当月", query_text))
         has_dates = workspace_month or bool({"year", "month", "periods"} & explicit.keys()) or bool(
@@ -2015,6 +2023,7 @@ class Agent:
             confirmed_fields.update(("year", "month"))
         scope_reminder_sent = False
         business_phase = business_preflight
+        business_references = None
         business_trusted = {key:list(values) for key,values in self.context.proof().values.items()
                             if self.context.proof().sources.get(key) in READ_SOURCES}
         if read_workspace:
@@ -2214,12 +2223,16 @@ class Agent:
                 try:
                     if previous_business_request is not None:
                         previous_business_request.require_context(actor,self.db_path)
+                    if business_references is None:
+                        from .business_request_entries import trusted_reference_catalog
+                        business_references=trusted_reference_catalog(actor=actor,book=self.db_path,
+                            reference_context=reference_context,recent_context=recent_context)
                     context = request_messages(current_request,request_catalog(self.db_path,actor),
                         trusted_scope=business_trusted,previous_request=previous_business_request,
                         context_transition=business_context_transition,
                         native_pending=(active_pending if active_pending and
                             active_pending.get('business_action')=='single_invoice' else None),actor=actor,book=self.db_path,
-                        active_skills=self.active_skills)
+                        active_skills=self.active_skills,trusted_references=business_references)
                     if business_format_error:
                         from .business_request import schema_restatement_messages
                         context = schema_restatement_messages(context, error_code=business_format_error)
@@ -2343,7 +2356,8 @@ class Agent:
                             active_pending.get('business_action')=='single_invoice' else business_context_transition)
                         req=bind_business_request(reply.get('content'),actor=actor,book=self.db_path,turn_id=self.trace_id,
                             request=current_request,revision=revision,trusted_scope=business_trusted,
-                            previous_request=previous_business_request,context_transition=transition)
+                            previous_request=previous_business_request,context_transition=transition,
+                            trusted_references=business_references)
                         # Only a successfully bound read (including genuine
                         # unresolved read identity) pauses the existing owner.
                         # Legacy continuation retains that owner unchanged.
@@ -2497,6 +2511,7 @@ class Agent:
                             if active_pending.get('business_action')!='single_invoice':
                                 raise IntentContractError('当前待补尚不能安全暂挂，请先明确保留或取消该办理。')
                             business_phase=business_preflight=True
+                            business_references=None
                             business_read_reentry=True
                             self._business_contract_required=True
                             self.trace('business_request.legacy_read_reentry',{'candidate_scope_authorization':False})

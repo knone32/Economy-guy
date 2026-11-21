@@ -19,6 +19,7 @@ from .intent_contract import validate as validate_read_intent, IntentContractErr
 from .responses import request_scope
 from .stage2_schema import open_existing
 from .permissions import check_permission
+from .business_request_entries import PurposeCheck, DirectoryRequirement, ReferenceRequirement, bind_views, bind_reference
 
 
 class BusinessRequestError(ValueError):
@@ -103,6 +104,9 @@ class ReadRequirement:
     relation: str = 'update'
     relation_source: Source | None = None
     previous_target_id: str | None = None
+    purpose_check: PurposeCheck | None = None
+    directory: DirectoryRequirement | None = None
+    reference: ReferenceRequirement | None = None
 
     def __post_init__(self):
         _freeze_fields(self,'company_ids','periods','filters','metrics','group_by','comparisons')
@@ -257,6 +261,21 @@ DEFINITION = {
  'unresolved':[]}}
 
 
+DEFINITION['protocol']['invoice_views']={
+    'rule':'以下可选字段必须首semantic独立解释并有当前quote；不能根据生成器选择的工具反推用户目标；每target最多一种，仅invoices。',
+    'purpose_check':{'criterion':'required_missing','rule_type':'purpose',
+        'reference_business_date':'可选YYYY-MM-DD；quote中须有此日期原文或完整年月日；不等于目标账期',
+        'quote':'当前规则必填缺项要求，不等同于普通purpose空值筛选'},
+    'directory':{'coverage':'page|all','page':'page时正整数；all省略',
+        'sort_by':'date|amount|invoice_no，默认date','sort_order':'asc|desc，默认asc',
+        'quote':'当前目录及页范围要求','projection':'原目录仅票号/日期/金额/是否填写用途，非完整发票行',
+        'completeness':'page只完成指定页；all仅单页实际全覆盖可完成；跨页缺同快照证据保持partial'},
+    'reference':{'kind':'display_ordinal|recent_queried|recent_modified','ordinal':'仅display_ordinal须正整数',
+        'quote':'当前指代片段；不得传invoice_no/目标票号/批准令牌',
+        'authority':'只能使用本轮运行时可信引用catalog，原ReferenceResolver/近期owner重新鉴权读当前值；缺来源先追问'},
+    'metric_limits':'directory/reference仅details；purpose_check仅完整集合details、count(*)、sum(amount_cents)；暂无分组/比较/附加筛选能力。'}
+
+
 def _validate_context_transition(value):
     if type(value) is not str or value not in {'continue','pending_to_read'}:
         raise BusinessRequestError('读取上下文过渡参数无效。','INVALID_ARGUMENTS')
@@ -283,7 +302,7 @@ def native_pending_context(pending, *, actor=None, book=None):
         return None
 
 def messages(request,current_catalog,*,trusted_scope=None,previous_request=None,context_transition='continue',
-             native_pending=None,actor=None,book=None,active_skills=()):
+             native_pending=None,actor=None,book=None,active_skills=(),trusted_references=None):
     _validate_context_transition(context_transition)
     scope=trusted_scope or {}
     native=None
@@ -295,6 +314,14 @@ def messages(request,current_catalog,*,trusted_scope=None,previous_request=None,
     from .skill_business_terms import semantic_skill_terms
     terms=semantic_skill_terms(active_skills,BUSINESS_FIELDS)
     definition=DEFINITION if not terms else {**DEFINITION,'skill_terms':terms}
+    if trusted_references is not None:
+        from .business_request_entries import TrustedReferences
+        if (not isinstance(trusted_references,TrustedReferences) or trusted_references.actor!=actor
+                or trusted_references.workbook!=str(Path(book).resolve())):
+            raise ValueError('引用目录不属于当前可信会话')
+        references=trusted_references.public()
+        if references:
+            definition={**definition,'trusted_invoice_references':references}
     output = [{'role':'system','content':
         '先独立解释当前要求，不生成SQL、不调用工具，不看拟执行方案。仅JSON。'
         'read顶层仅kind、targets、unresolved，禁止额外type等标签；unresolved仅字符串列表，无未决项用[]，不能用对象列表。'
@@ -434,7 +461,7 @@ def _scalar(value):
 
 
 def bind(content,*,actor,book,turn_id,request,revision=1,trusted_scope=None,previous_request=None,
-         context_transition='continue'):
+         context_transition='continue',trusted_references=None):
     _validate_context_transition(context_transition)
     try:raw=load_review(content) if isinstance(content,str) else content
     except (ValueError,TypeError,RecursionError):
@@ -496,12 +523,36 @@ def bind(content,*,actor,book,turn_id,request,revision=1,trusted_scope=None,prev
     trusted=trusted_scope or {};targets=[]
     for item in entries:
         allowed={'target_id','object','company_ids','company_quote','company_source','periods','period_quote','period_source',
-                 'seller','filters','metrics','group_by','comparisons','previous_target_id','relation','relation_quote','relation_source'}
+                 'seller','filters','metrics','group_by','comparisons','previous_target_id','relation','relation_quote','relation_source',
+                 'purpose_check','directory','reference'}
         if type(item) is not dict or set(item)-allowed:
             raise BusinessRequestError('读取目标含未知字段。','INVALID_ARGUMENTS')
         target_id,obj=item.get('target_id'),item.get('object')
         if type(target_id) is not str or not target_id or len(target_id)>100 or obj not in {'invoices','bank_transactions'}:
             raise BusinessRequestError('读取目标标识或业务对象无效。','INVALID_ARGUMENTS')
+        source=lambda quote,slot:_source(quote,request,slot)
+        purpose_check,directory=bind_views(item,source=source)
+        reference=bind_reference(item.get('reference'),actor=actor,book=book,catalog=trusted_references,source=source)
+        if sum(v is not None for v in (purpose_check,directory,reference))>1 or (
+                obj!='invoices' and any(v is not None for v in (purpose_check,directory,reference))):
+            raise BusinessRequestError('有限发票视图不能混为同一目标或用于银行流水。','INVALID_ARGUMENTS')
+        trusted=trusted_scope or {}
+        if reference is not None:
+            reference_scope={'company_id':reference.company_id,'year':reference.year,'month':reference.month}
+            if (any(trusted.get(key) and value not in trusted[key] for key,value in reference_scope.items())
+                    or trusted.get('periods') and (reference.year,reference.month) not in set(map(tuple,trusted['periods']))):
+                raise BusinessRequestError('可信引用与本轮已有企业或账期范围冲突，不能覆盖当前范围。','SCOPE_MISMATCH')
+            if (item.get('company_ids') and item['company_ids']!=[reference.company_id]
+                    or item.get('periods') and item['periods']!=[[reference.year,reference.month]]):
+                raise BusinessRequestError('引用与明确企业或账期冲突。','SCOPE_MISMATCH')
+            if item.get('company_quote'):
+                mentions=registered_company_mentions(item['company_quote'],frame['companies'])
+                if any(m['company_id']!=reference.company_id for m in mentions):
+                    raise BusinessRequestError('引用企业与当前来源不一致。','SCOPE_MISMATCH')
+            item={**item,'company_ids':[reference.company_id],'company_source':'context','company_quote':'',
+                  'periods':[[reference.year,reference.month]],'period_source':'context','period_quote':''}
+            trusted={**trusted,'company_id':[reference.company_id],'periods':[(reference.year,reference.month)],
+                     'year':[reference.year],'month':[reference.month]}
         relation=item.get('relation','update')
         if type(relation) is not str or relation not in {'update','replace','clarify'}:
             raise BusinessRequestError('读取要求修订关系无效。','INVALID_ARGUMENTS')
@@ -776,8 +827,21 @@ def bind(content,*,actor,book,turn_id,request,revision=1,trusted_scope=None,prev
             new_filters={(f.field,f.operator,f.value) for f in filters}
             if old_filters-new_filters:
                 unresolved.append(target_id+'.previous_filters_not_replaced')
+            for field in ('purpose_check','directory','reference'):
+                if getattr(old,field) is not None and locals()[field] is None:
+                    unresolved.append(target_id+'.previous_'+field+'_not_replaced')
+        if directory and (any(m.operation!='details' or m.field not in {'*','invoice_no','invoice_date','amount_cents'} for m in metrics)
+                or group or comparisons):
+            raise BusinessRequestError('目录视图只交付原目录列，不能冒充统计或完整发票行。','INVALID_ARGUMENTS')
+        if reference and (any(m.operation!='details' for m in metrics) or group or comparisons):
+            raise BusinessRequestError('引用入口只交付该真实对象的当前详情。','INVALID_ARGUMENTS')
+        if purpose_check and (any(m.operation not in {'details','count','sum'} for m in metrics)
+                or any(m.operation=='sum' and m.field!='amount_cents' for m in metrics)
+                or group or comparisons):
+            raise BusinessRequestError('用途规则缺项只支持完整集合详情、张数及金额。','INVALID_ARGUMENTS')
         targets.append(ReadRequirement(target_id,obj,tuple(ids),pairs,seller,tuple(filters),tuple(metrics),
-            tuple(group),tuple(comparisons),company_source,period_source,relation,relation_source,previous_id))
+            tuple(group),tuple(comparisons),company_source,period_source,relation,relation_source,previous_id,
+            purpose_check,directory,reference))
     if len({t.target_id for t in targets})!=len(targets):raise BusinessRequestError('读取目标标识重复。','INVALID_ARGUMENTS')
     selected=tuple(sorted({c for t in targets for c in t.company_ids}))
     req=BusinessRequest(actor,str(Path(book).resolve()),turn_id,revision,Source('current',request),digest(request),
