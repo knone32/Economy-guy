@@ -5,6 +5,7 @@ human UI, never by an RPC/model payload. This is not authentication or a server.
 """
 from contextlib import contextmanager
 from dataclasses import asdict
+import json
 from pathlib import Path
 import sqlite3
 from threading import Lock, get_ident
