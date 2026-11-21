@@ -283,6 +283,7 @@ DEFINITION = {
       'annual':'Agent已将可信完整年度规范为12个月时，使用period_source=context并逐对列出这12个月；不从目录补年'},
    'seller':{'required_for':'invoices；bank_transactions省略或null',
       'modes':['single','set','ambiguous','none'],
+      'readonly_mirror':{'names':'可省略的字符串列表；仅允许与Runtime按来源和目录独立绑定的名称集合完全一致。不是筛选条件，不授予范围；冲突拒绝。'},
       'quote':'所有mode均须非空、当前原话中的目标自身连续片段；有效context来源除外',
       'none':'value必须为空串；quote引用本目标统计或明细要求本身，不虚构“无筛选”原话，不混入其他对象条件',
       'single':'一家登记销售方，不能从共享简称代选',
@@ -797,7 +798,7 @@ def bind(content,*,actor,book,turn_id,request,revision=1,trusted_scope=None,prev
         if obj=='invoices':
             body=item.get('seller')
             if (type(body) is not dict or not {'mode','value'}<=set(body)
-                    or set(body)-{'mode','quote','value','source'} or body.get('mode') not in {'single','set','ambiguous','none'}):
+                    or set(body)-{'mode','quote','value','source','names'} or body.get('mode') not in {'single','set','ambiguous','none'}):
                 raise BusinessRequestError('须独立明确销售方关系，包括无销售方筛选。')
             value=body['value'];mode=body['mode']
             if type(value) is not str or len(value)>2000:raise BusinessRequestError('销售方值无效。','INVALID_ARGUMENTS')
@@ -821,6 +822,11 @@ def bind(content,*,actor,book,turn_id,request,revision=1,trusted_scope=None,prev
                 if not chosen:mode='ambiguous'
                 if mode=='ambiguous':unresolved.append(target_id+'.seller')
             check_current_key(declaration,source,'seller')
+            if 'names' in body:
+                mirror = body['names']
+                if (type(mirror) is not list or any(type(name) is not str for name in mirror)
+                        or len(set(mirror)) != len(mirror) or set(mirror) != set(chosen)):
+                    raise BusinessRequestError('销售方只读名称镜像与已核实范围不一致，未采用该结果。','SCOPE_MISMATCH')
             seller=SellerRequirement(mode,chosen,value,source)
         fields=({'invoice_no','invoice_date','item_name','purpose','remark','amount_cents'} if obj=='invoices'
                 else {'transaction_no','transaction_date','direction','counterparty_name','remark','amount_cents'})

@@ -2,6 +2,8 @@
 
 ## 当前任务：冻结有限业务交接，设计前端会话接口
 
+2e4294d有限连续性实际首执：A与B的完整销售方统计均正确，A快照真实落在原Store，切回A的新Agent也已恢复正确要求（semantic_input.previous_requirement=true）。首拒在接收结构：模型保留A名称/期间及sum/count，却复制previous metadata中的只读seller.names，原绑定器禁止该额外字段，未查询/展示数字。不能归为未理解旧条件，也不是快照丢失。原文件与首错保留；此前导航按钮未挂载的runner阻断另记，A没有重跑。原账159/1346970tokens/2068815微元峰价上界，累计null。当前只统一该只读镜像契约：names可省略，提供时必须等于Runtime根据原来源/目录独立求得的集合，不参与身份选择，冲突拒绝；其他源key/quote/范围核验不放宽。修后需真实fresh重建被失败新轮退役的A要求，不从旧Trace回填，再续切回及冷启动；不重做B种子或提交链。
+
 最新恢复收尾源码4c0220e已在正常新进程通过：原请求启动时由同一owner只读核实COMMITTED、committed_this_turn=false，不再把已核实历史一直挂成当前未知；Store保留、未保存轮次14仍INTERRUPTED、不恢复其trace/hint或草稿批准、财务/模型消耗不变，实际窗口正常退出。证据本地evidence-root/recovery-boundary-20261121/closeout-4c0220e/RESULT.public.json。以下旧SHA证据不迁移。
 
 下一有限连续性源码缺口：切换/重启生成新Agent时，原Store只有可见历史及只读scope，独立语义阶段却仅接收previous BusinessRequest而不读这些聊天历史；因此结构化销售方条件没有恢复入口。没有为已知信息缺失再花Live。当前只将原BusinessRequest作为无授权快照加法保存到原chats记录：Agent只恢复类型和用户来源、重新核对actor/账簿/当前目录，不恢复结果值、SQL、草稿或批准；Store.finish与本轮一同原子保存，begin/取消/分界使未完成的新要求不能在重启时复活旧条件。原TUI在begin前装载，未来前端复用宿主入口。只待冻结后有限双对话条件对照与新进程续查，不新增中文路由、Loop、长期记忆或状态owner。
