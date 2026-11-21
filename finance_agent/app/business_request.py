@@ -204,6 +204,12 @@ DEFINITION = {
  'period':'账期为YYYY-MM；明确完整年月可以无记录，不从记录目录默认补日期。',
  'units':{'amount_cents':'整数分','sum(amount_cents)':'整数分，显示元时除100','count(*)':'条/张'},
  'protocol':{
+   'entry_routes':{
+      'selection':'先判断本轮要取得事实还是办理变更，再决定是否继承前文读取要求。前文有查询不表示本轮仍是查询。',
+      'read':{'output':'原read结构','use':'取得当前业务事实；unresolved只承载读取要求的未决项，不承载待写入内容。'},
+      'legacy':{'output':{'kind':'legacy'},
+          'use':'发起、补充、更正、替换、暂缓、恢复或取消修改/管理事项，包括新内容尚未给全的变更。交原办理owner保留待补、核对身份与权限、生成预览和确认；不在读取target中继承旧指标或登记待写值。此route本身不授权任何读写。'},
+      'general':{'output':{'kind':'general','text':'回答'},'use':'一般对话或知识说明，不提供当前账簿事实或操作回执。'}},
    'read_top_level':{'allowed_keys':['kind','targets','unresolved'],'kind':'read',
       'additional_keys':False,'targets':'1至12个对象target的JSON列表',
       'unresolved':'JSON字符串列表list[str]，无未决项用[]；不能放对象、字段描述字典或布尔值'},
@@ -323,7 +329,7 @@ def messages(request,current_catalog,*,trusted_scope=None,previous_request=None,
         if references:
             definition={**definition,'trusted_invoice_references':references}
     output = [{'role':'system','content':
-        '先独立解释当前要求，不生成SQL、不调用工具，不看拟执行方案。仅JSON。'
+        '先按business_definition.protocol.entry_routes独立判断本轮动作，再解释读取要求；不生成SQL、不调用工具，不看拟执行方案。仅JSON。'
         'read顶层仅kind、targets、unresolved，禁止额外type等标签；unresolved仅字符串列表，无未决项用[]，不能用对象列表。'
         'seller.value在ambiguous时也必须是当前原话简称字符串，不传候选列表；候选由Runtime目录生成。'
         '按业务对象分别列target，发票销售方/用途不能移到银行。公司和账期不可从目录默认补。'
@@ -335,12 +341,12 @@ def messages(request,current_catalog,*,trusted_scope=None,previous_request=None,
         '完整字段约定见business_definition.protocol；IN用列表，LIKE文本片段须有原话，is_blank的value用空串而非null。'
         'company_source/period_source可用字符串current/context或受控Source对象同义声明；对象key若非空须核实，quote不替代Runtime依据。只有已给唯一可信scope才允许继承；可信槽空时可用已核previous_requirement同对象的唯一目标，必要时指明previous_target_id且企业/全部账期必须精确相等，已有可信槽冲突不可回退。'
         '若可信全年已规范trusted_scope.periods为12个月，列出这12个月并用period_source=context，不将全年原话冒作逐月字面。'
-        '有效前文是不可变读取要求，不是历史金额；延续问题时不可删掉前文销售方、用途等筛选。'
+        '有效前文是不可变读取要求，不是历史金额；延续读取问题时不可删掉前文销售方、用途等筛选。'
         'seller/filter/metric可加source={kind:context,key:前目标ID.seller或前目标ID.filters.0或前目标ID.metrics.0}，'
         '字段和值须与有效前文一致；quote可以留空，由程序取原来源。目标可传previous_target_id。'
         '默认relation=update保留旧筛选，显式update无quote或空quote与省略同义、不增加权限；用户明确新查询或替换要求时可relation=replace，但须relation_quote当前原话并指明previous_target_id；不清则clarify。'
         '问候或一般知识可直接{"kind":"general","text":"回答"}；修改/管理走{"kind":"legacy"}，'
-        '该route不授予业务读取或写入许可。业务对象或目标不清时用read+unresolved，不能擅自删目标。'},
+        '该route不授予业务读取或写入许可。已确定为读取但业务对象或目标不清时用read+unresolved，不能擅自删目标。'},
         {'role':'user','content':__import__('json').dumps({'request':request,'read_catalog':current_catalog,
             'trusted_scope':scope,'previous_requirement':previous_request.metadata() if previous_request else None,
             'business_definition':definition},ensure_ascii=False)}]

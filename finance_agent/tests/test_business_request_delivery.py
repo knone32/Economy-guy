@@ -471,3 +471,44 @@ class RequestedDetailFieldsTests(unittest.TestCase):
                 self.assertFalse(agent.update_session.drafts)
                 with closing(sqlite3.connect(self.book)) as db:
                     self.assertEqual(db.execute('SELECT count(*) FROM invoice_audit').fetchone()[0], 0)
+
+    def test_incomplete_change_route_after_read_reaches_original_pending_owner(self):
+        from app.agent import Agent
+        from tests.test_answer_evidence import facts, final, tool
+        from tests.test_business_request_single_entry import semantic_input
+        request = self.detail()
+        target = {**self.target, 'periods':[[2026,9]], 'period_quote':'2026年9月', 'group_by':[],
+                  'metrics':[{'operation':m.operation,'field':m.field,'quote':m.source.quote}
+                             for m in request.targets[0].metrics]}
+        phase = 'read'; calls = []
+        def model(context, tools):
+            calls.append(phase)
+            if semantic_input(context):
+                if phase == 'change':
+                    payload = json.loads(context[1]['content'])
+                    self.assertIsNotNone(payload['previous_requirement'])
+                    routes = payload['business_definition']['protocol']['entry_routes']
+                    self.assertEqual(routes['legacy']['output'], {'kind':'legacy'})
+                    return {'role':'assistant','content':'{"kind":"legacy"}'}
+                return {'role':'assistant','content':json.dumps(
+                    {'kind':'read','targets':[target],'unresolved':[]},ensure_ascii=False)}
+            if phase == 'change':
+                return tool('change_invoice',company_id='C001',invoice_no='A',field='purpose')
+            if any(f.get('type') == 'result' for f in facts(context)):
+                return final(answer=[f['ref'] for f in facts(context) if f['type']=='result'])
+            return tool('query_business_sql',sql='SELECT invoice_no,amount_cents,purpose,remark '
+                "FROM invoices WHERE seller_name='玄野服务有限公司' AND purpose='展会物料'")
+        agent = Agent('U001',self.book,model,mode='mock',trace_path=self.book.with_suffix('.jsonl'))
+        agent.context.display_ids = []
+        agent.ask(request.current_source.quote)
+        self.assertTrue(agent.last_response['business_request_final_coverage']['complete'],agent.last_response)
+        phase = 'change'
+        agent.ask('就查询中编号A这一张，先准备补充用途，具体内容我稍后再给。')
+        self.assertEqual(calls.count('change'),2,agent.last_response)
+        self.assertEqual(agent.last_response['execution']['stop_reason'],'WAITING_USER')
+        self.assertEqual(agent.pending_intent['scope']['invoice_no'],['A'])
+        self.assertEqual(agent.pending_intent['missing_fields'],('new_value',))
+        self.assertIsNone(agent.business_request)
+        self.assertFalse(agent.update_session.drafts);self.assertFalse(agent.update_session.confirmations)
+        with closing(sqlite3.connect(self.book)) as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM invoice_audit').fetchone()[0],0)
