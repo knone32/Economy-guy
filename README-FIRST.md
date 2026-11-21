@@ -1,3 +1,9 @@
+# 当前 GUI 交付入口
+
+双击 **START-GUI.bat**。先读 [启动说明](START-HERE.md) 与 [最终冻结清单](docs/delivery/FINAL-FREEZE.md)。账号为本机模拟身份；已有 Profile 的密钥不随包分发。下列内容是旧 Textual 入口说明，不能视为当前 GUI 验收成绩。
+
+---
+
 # Economy-guy 2026 初赛 v2.0.2
 
 **双击 START.bat，选 1 运行真实系统，选 2 运行离线流程演示。**

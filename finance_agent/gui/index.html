@@ -277,7 +277,7 @@
       </section>
       <section class="todo-card">
         <h2>其他持久待办</h2>
-        <div class="sub">只读展示，本页不提供假办结按钮。</div>
+        <div class="sub">查看详情或进入原任务办理；进入不代表已办结。</div>
         <div id="todo-tasks"></div>
       </section>
     </div>
@@ -287,7 +287,7 @@
     <div class="view-head">
       <div>
         <h1>设置</h1>
-        <p>显示宿主实际绑定的账号、账簿、模型连接和已有 Profile；当前页不做热切换。</p>
+        <p>查看本机受信绑定；可切换已有 Profile。模拟账号不是登录认证。</p>
       </div>
       <span class="spacer"></span>
       <button class="btn small" id="refresh-settings">刷新状态</button>
@@ -521,17 +521,7 @@ function renderTodos() {
     pausedBox.append(item);
   }
 
-  const tasks = S.tasks || [];
-  if (!tasks.length) {
-    taskBox.append(el("div", "hint", "当前没有其他持久待办。"));
-  }
-  for (const task of tasks) {
-    const item = el("div", "todo-item");
-    item.textContent = (task.company_name || task.company_id || "") + " · "
-      + text(task.year) + " 年 " + text(task.month) + " 月 · " + text(task.status)
-      + (task.note ? "\\n备注：" + task.note : "");
-    taskBox.append(item);
-  }
+  renderTaskEntries(taskBox);
 }
 
 function renderSettings() {
@@ -646,11 +636,12 @@ function renderChat() {
     box.append(el("div", "empty", "从一句真实业务问题开始。结果卡来自本轮实际工具证据，不以模型文字为准。"));
     return;
   }
+  if (turns.length) box.append(el("div", "hint", "历史对话记录，不代表当前账簿事实；请以本轮核验结果和操作回执为准。"));
   for (const turn of turns) {
     for (const message of turn.messages || []) {
       if (message.card) {
         const card = el("div", "card");
-        card.append(el("h3", "", message.role));
+        card.append(el("h3", "", "历史记录 · " + message.role));
         card.append(el("div", "body", message.text));
         box.append(card);
         continue;
@@ -721,7 +712,10 @@ function renderCandidates() {
 }
 
 function renderTasks() {
-  const box = $("tasks");
+  renderTaskEntries($("tasks"));
+}
+
+function renderTaskEntries(box) {
   box.replaceChildren();
   const tasks = S.tasks || [];
   if (!tasks.length) {

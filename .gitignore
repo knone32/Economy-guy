@@ -5,6 +5,8 @@
 !/README.md
 !/docs/
 !/finance_agent/
+!/START-GUI.bat
+!/START-HERE.md
 
 # 凭据与本地配置（不要把真实值写入源码或历史）。
 .env

@@ -222,6 +222,7 @@ def main(argv=None):
     finally:
         server.shutdown()
         server.server_close()
+        host.close()
     return 0
 
 
