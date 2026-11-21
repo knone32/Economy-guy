@@ -1,5 +1,7 @@
 # 验收（V3；不同SHA不拼接）
 
+7ca6a90原链5HTTP：查询与修改route正确；原澄清格式missing_fields=[purpose]被通用待补接收后目标丢失，FAIL首点为表达/状态交接，非数值或权限错误。修订只将无旧待补、单编辑字段缺值且原展示唯一的澄清候选归一到既有change_invoice，原resolver/fresh/ACL及待补持久化复用，无新值/批准/owner。不跑零API，直接新Live，原run-08失败保留。同原账115请求，零业务写入。
+
 73e3b0e新续办2HTTP：legacy选路PASS，首次get_invoice被原读取依据门禁拒绝，FAIL归工具暴露/执行契约；无越权、无业务写入。仅收紧原legacy工具暴露到现有owner实际可执行能力，保留显式编辑owner合法点读，change_invoice内部目标解析和fresh读取及原分发拒绝不变。不跑零API，下一次真实模型重新建立fresh查询来源后直接办理，旧失败保留、不重算陌生首分。同原账110请求；API0的旧进程会话占锁启动另记。证据为run-07/OBSERVATION.public.json。
 
 ed2e79f续办：选择对象和建立用途待补PASS，模型暂缓意图PASS；原会话持久化FAIL，候选为空。首断点为脱敏器将真实task-chain路径中的sk-误当密钥，候选载荷因此未通过严格原样校验；不是模型暂停错误。修订仅收紧凭据token边界，依最新指示不跑零API，下一次直接Live验证持久化并继续GUI恢复/改口。新增4HTTP，原账108/963780tokens/1495974微元，业务写入/自动批准0。原失败及明细查询旧成绩不改，程序与人工GUI仍分开。证据为本地run-05/OBSERVATION.public.json。

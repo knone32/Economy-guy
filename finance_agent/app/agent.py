@@ -21,6 +21,7 @@ from .seller_semantic_review import load_review
 from .pending_transition import (contract_error as pending_contract_error, transition as apply_pending_transition,
     PendingTransitionError)
 from .invoice_action import change_invoice as execute_invoice_action, public_state as invoice_business_state
+from .references import resolve_reference
 from .write_coordination import WriteCoordinator
 from .updates import commit_invoice_update, edit_scope_error
 from .provenance import SOURCES, READ_SOURCES, ScopeProof, supplement_read_literals, current_sql_invoice_identity
@@ -2023,6 +2024,7 @@ class Agent:
             confirmed_fields.update(("year", "month"))
         scope_reminder_sent = False
         business_phase = business_preflight
+        business_action_route = False
         business_references = None
         business_trusted = {key:list(values) for key,values in self.context.proof().values.items()
                             if self.context.proof().sources.get(key) in READ_SOURCES}
@@ -2336,6 +2338,7 @@ class Agent:
                         raise BusinessRequestError('读取要求结构补正不能切换为其他业务路径。','INVALID_ARGUMENTS')
                     if route.get('kind')=='legacy' and set(route)=={'kind'}:
                         business_phase=False
+                        business_action_route=True
                         # Advertise only reachable capabilities for this owner.
                         # Without a read request, financial queries would be
                         # rejected at dispatch. Single-invoice actions already
@@ -2888,6 +2891,33 @@ class Agent:
                 self.coordinator.pending = None
                 if natural["kind"] == "clarification" or natural.get('missing_fields'):
                     fields = natural["missing_fields"]
+                    # The existing clarification protocol can name a missing
+                    # editable field instead of calling change_invoice with no
+                    # new value. Normalize that incomplete proposal through the
+                    # same owner, using only an actual unique displayed object.
+                    # No model prose/key supplies identity, value or approval.
+                    edit_fields=set(fields)&{'purpose','remark'}
+                    if (business_action_route and not active_pending
+                            and len(edit_fields)==1 and set(fields)==edit_fields
+                            and not self.context.references_blocked and self.context.display_ids):
+                        reference=resolve_reference(self.db_path,actor,None,
+                            display_ids=self.context.display_ids,coalesce_identical_singletons=True)
+                        if reference['status']=='SUCCESS':
+                            target=reference['evidence']['scope']
+                            result,next_pending,planned,runtime_reads=execute_invoice_action(self,
+                                {'company_id':target['company_id'],'invoice_no':target['invoice_no'],
+                                 'field':next(iter(edit_fields))},None,current_request)
+                            if result['status']=='WAITING_USER' and planned is None:
+                                self.pending_intent=active_pending=next_pending
+                                explicit_pending_applied=True
+                                read_results.extend(runtime_reads)
+                                self.trace('business.clarification_bound',{
+                                    'pending':next_pending,'source':'display_reference',
+                                    'model_tool_call':False,'business_authorization':False})
+                                execution.stop('WAITING_USER')
+                                question=render_clarification({'missing_fields':['new_value']})
+                                return finish(question,store=False,category='clarification',
+                                              missing_fields=['new_value'],chat_notice=question)
                     if model_text is None and simple_directory and self.context.previous_directory(read_results):
                         self.messages.pop()
                         return finish(render_information(read_results), store=False, category="database_query")
