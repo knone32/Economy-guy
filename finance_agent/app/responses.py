@@ -289,6 +289,8 @@ def parse_final(content):
         return None
     if type(value) is not dict or type(value.get("kind")) is not str or value["kind"] not in {"general", "information", "clarification", "explanation"}:
         return None
+    if value.get('turn_action') is None:
+        value.pop('turn_action',None)
     fields = {"kind", "text", "missing_fields"} if value["kind"] == "clarification" else {"kind", "text"}
     if not fields <= set(value) or not set(value) <= FINAL_KEYS or type(value.get("text")) is not str or not value["text"].strip():
         return None
@@ -298,7 +300,9 @@ def parse_final(content):
             or not isinstance(value['answer'], list) or not 1 <= len(value['answer']) <= 64
             or any(not valid_answer_item(ref) for ref in value['answer'])):
         return None
-    if 'turn_action' in value and (value['kind'] != 'information' or value['turn_action'] not in {'stop','pause'}):
+    if 'turn_action' in value and (value['kind'] not in {'information','clarification'}
+                                  or type(value['turn_action']) is not str
+                                  or value['turn_action'] not in {'continue','stop','pause'}):
         return None
     if "pending_change" in value:
         change = value["pending_change"]

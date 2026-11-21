@@ -1,5 +1,7 @@
 # 验收（V3；不同SHA不拼接）
 
+组合语义修订待Live：独立入口固定本轮动作和当前明确字段，原owner先核身份/ACL、fresh读取并保留待补，明确暂停才转为待续；没有候选不声称暂停。最终information/clarification采用统一动作约定，执行提案不覆盖先行要求；不新增中文路由或另一状态owner。工作台确认原SessionStore中确有匹配的可恢复PAUSED行后才显示恢复回执。最小实际验收只针对缺内容/禁止提交→对象字段保留零写入、随后明确暂缓→可恢复待办及多对象不猜选；已披露原题计回归不改首分，先不宣称修后通过。不运行零API，不重跑完整旧链。
+
 新增风险验收已执行：受测21e47a2，只改正常WAITING_USER展示及Runtime待补摘要，未改业务状态/权限/确认。一次独立聚焦源码复核无新增阻断；独立验收者封存的新账簿和两条陌生原话首次执行5HTTP，U01查询PASS，U02续办FAIL。首个确定程序拒绝是clarification+missing_fields=[purpose]+turn_action=pause被responses.py:301拒绝；模型可见说明未写information-only限制。独立语义legacy正确、正文有对象理解证据，仍不能判完整自然语言通过或把模型关系解释作事实。
 
 旧已知业务链签收复用；本次新等待卡未到达，Live未验证；真实INVALID_RESPONSE错误提示保留。真人接续与真人权限反例NOT_RUN，未后台补候选、未重放或改题。按只改展示边界未放宽新协议组合，未改变暂停状态机制。零API测试0，业务写入/审计/批准0。原首分、题目哈希及失败保留，不宣称人工可用性通过。同原账129/1126502tokens/1720057微元峰价上界，累计限额null、unknown_usage=false；无在途请求/待批后已关闭停止进程并释放会话锁。证据：本地evidence-root/independent-usability-20261121/public/MODEL-FIRST.public.json、FIRST-DIAGNOSIS.public.json、FINAL-THREE-LAYERS.public.json及PROCESS-EXIT.public.json。

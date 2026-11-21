@@ -207,8 +207,10 @@ DEFINITION = {
    'entry_routes':{
       'selection':'先判断本轮要取得事实还是办理变更，再决定是否继承前文读取要求。前文有查询不表示本轮仍是查询。',
       'read':{'output':'原read结构','use':'取得当前业务事实；unresolved只承载读取要求的未决项，不承载待写入内容。'},
-      'legacy':{'output':{'kind':'legacy'},
-          'use':'发起、补充、更正、替换、暂缓、恢复或取消修改/管理事项，包括新内容尚未给全的变更。交原办理owner保留待补、核对身份与权限、生成预览和确认；不在读取target中继承旧指标或登记待写值。此route本身不授权任何读写。'},
+      'legacy':{'output':{'kind':'legacy','turn_action':'continue|pause|stop','action_quote':'pause/stop须引用当前原话，continue可省略',
+          'field':'仅单票办理当前明确的新字段purpose|remark；未改或未知省略','field_quote':'给field时须引用当前字段要求原话'},
+          'use':'发起、补充、更正、替换、暂缓、恢复或取消修改/管理事项，包括新内容尚未给全的变更。交原办理owner保留待补、核对身份与权限、生成预览和确认；不在读取target中继承旧指标或登记待写值。此route本身不授权任何读写。',
+          'turn_action':'省略/null同continue，表示正常办理，缺内容时等待补值；要求不提交也用continue，不能据此推断暂停或取消。可选quote省略/null同空串，但pause/stop及已给field仍须非空当前原话来源。仅明确暂缓本次单票事项才pause；明确取消才stop。pause/stop是本轮业务关系解释，不是授权；管理待办仍走原管理工具。新办理须先由原owner核实并建立候选，再执行明确暂缓。'},
       'general':{'output':{'kind':'general','text':'回答'},'use':'一般对话或知识说明，不提供当前账簿事实或操作回执。'}},
    'read_top_level':{'allowed_keys':['kind','targets','unresolved'],'kind':'read',
       'additional_keys':False,'targets':'1至12个对象target的JSON列表',
@@ -346,6 +348,9 @@ def messages(request,current_catalog,*,trusted_scope=None,previous_request=None,
         '字段和值须与有效前文一致；quote可以留空，由程序取原来源。目标可传previous_target_id。'
         '默认relation=update保留旧筛选，显式update无quote或空quote与省略同义、不增加权限；用户明确新查询或替换要求时可relation=replace，但须relation_quote当前原话并指明previous_target_id；不清则clarify。'
         '问候或一般知识可直接{"kind":"general","text":"回答"}；修改/管理走{"kind":"legacy"}，'
+        'legacy可带turn_action=continue|pause|stop；省略即continue，缺内容或要求不提交不等于暂缓。'
+        '明确暂缓或取消单票时分别用pause/stop，并用action_quote引用当前原话；后续执行提案不能扩大本轮动作。'
+        '单票办理已明确要改用途或备注时，用field=purpose|remark及field_quote保留当前字段要求；字段未知或本轮未更正时省略，由原owner继承有效待补。'
         '该route不授予业务读取或写入许可。已确定为读取但业务对象或目标不清时用read+unresolved，不能擅自删目标。'},
         {'role':'user','content':__import__('json').dumps({'request':request,'read_catalog':current_catalog,
             'trusted_scope':scope,'previous_requirement':previous_request.metadata() if previous_request else None,

@@ -1680,8 +1680,24 @@ class AgentWorkspace(ConversationUI, App):
                 if "year" in scope and "month" in scope:
                     self.period = scope["year"], scope["month"]
         self.workspace_widget("#supplement", Button).display = bool(self.agent.pending_edit)
-        self.save_turn(calls, "UNKNOWN_OUTCOME" if any(c["status"] == "UNKNOWN_OUTCOME" for c in calls) else status,
-                       read_only, operation=operation)
+        saved_turn=self.save_turn(calls, "UNKNOWN_OUTCOME" if any(c["status"] == "UNKNOWN_OUTCOME" for c in calls) else status,
+                                  read_only, operation=operation)
+        paused=getattr(self.agent,'paused_invoice_candidate',None)
+        if paused:
+            recoverable=None
+            if saved_turn and self.conversation:
+                try:
+                    recoverable=next((row for row in self.conversation.list_invoice_candidates()
+                        if row['state']=='PAUSED' and (row['id'],row['revision'])==self.conversation.invoice_token
+                        and row['pending'].get('request_id')==paused.get('request_id')),None)
+                except (OSError,ValueError,PermissionError,sqlite3.Error):
+                    pass
+            if recoverable:
+                self.business_message('发票修改 · 已暂缓，可恢复',self.invoice_candidate_text(recoverable)
+                    +'\n可在“待办”中选择恢复；恢复后仍须重新核对和确认。',
+                    recoverable['pending'].get('scope',{}).get('company_id',()))
+            else:
+                self.chat_message('待续事项未保存','暂未核实可恢复的待续记录，请保留当前窗口并查看执行记录；发票内容未修改。')
         self.remember_focus()
         read_stops = {"NO_PROGRESS", "MODEL_LIMIT", "TOOL_LIMIT", "CONTEXT_LIMIT", "NO_LEGAL_WORK",
                       "EXTENSION_LIMIT", "EVIDENCE_RETURNED"}

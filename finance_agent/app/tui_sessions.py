@@ -261,7 +261,7 @@ class ConversationUI:
 
     def save_turn(self, calls, status, read_only, *, operation=None):
         if self.turn_seq is None or not self.conversation:
-            return
+            return False
         read_tools = ANNUAL | {"get_finance_summary","list_invoices","list_invoice_directory",
                       "check_missing_purpose","get_invoice","resolve_invoice_reference","list_bank_transactions"}
         reads = [call for call in calls if call["status"] in {"SUCCESS","NO_DATA"} and call["tool"] in read_tools]
@@ -293,8 +293,10 @@ class ConversationUI:
                                          'COMPLETED' if status in {'COMMITTED','COMMITTED_UNVERIFIED','CURRENT_VALUE_MATCHES','UNKNOWN_OUTCOME'}
                                          or any(change.get('status') in {'COMMITTED','COMMITTED_UNVERIFIED'} for change in (operation or {}).get('changes',[])) else None))
             self.has_saved_history = True
+            return True
         except (OSError, ValueError, sqlite3.Error):
             self.notify("本轮历史保存失败。请检查执行记录与当前业务状态。", severity="warning")
+            return False
         finally:
             self.turn_seq = None
             self.turn_display = []

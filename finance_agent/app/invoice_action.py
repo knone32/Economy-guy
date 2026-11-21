@@ -29,7 +29,29 @@ def public_state(pending):
     return {'known': known, 'missing_fields': list(pending.get('missing_fields', ()))}
 
 
-def change_invoice(agent, args, previous, request):
+def bind_clarification(agent, fields, previous, request, *, field=None):
+    """Use structured field candidates and original display identity, never prose."""
+    editable=set(fields)&{'purpose','remark'}
+    args=({'field':field} if field is not None else
+          {'field':next(iter(editable))} if len(editable)==1 else {})
+    if not previous or previous.get('business_action')!='single_invoice':
+        previous=None
+        if not agent.context.references_blocked and agent.context.display_ids:
+            reference=resolve_reference(agent.db_path,agent.user_id,None,
+                display_ids=agent.context.display_ids,coalesce_identical_singletons=True)
+            if reference['status']=='SUCCESS':
+                scope=reference['evidence']['scope']
+                args.update(company_id=scope['company_id'],invoice_no=scope['invoice_no'])
+        if not args:
+            return tool_result('WAITING_USER',evidence={'source':'harness_business_action',
+                'missing_fields':['invoice_no'],'business_authorization':False},
+                error='没有唯一可信的当前单票，请先明确要办理的发票。'),None,None,[]
+    # A final clarification does not request a preview. The original owner
+    # rechecks scope/ACL/current values and retains only unapproved slots.
+    return change_invoice(agent,args,previous,request,defer_preview=True)
+
+
+def change_invoice(agent, args, previous, request, *, defer_preview=False):
     """Return result, pending state, candidate and actual runtime read evidence."""
     try:
         target_origin = None
@@ -108,7 +130,8 @@ def change_invoice(agent, args, previous, request):
     candidate['missing_fields'] = tuple(key for key in BUSINESS_KEYS
         if len(candidate.get('change' if key in ('field', 'new_value') else 'scope', {}).get(key, ())) != 1)
     known = public_state(candidate)['known']
-    if candidate['missing_fields'] or candidate.get('blocked_reason') == 'ambiguous_business_choice':
+    if (defer_preview or candidate['missing_fields']
+            or candidate.get('blocked_reason') == 'ambiguous_business_choice'):
         return waiting(reads)
     # This witness is constructed by trusted runtime after request_change has
     # validated every supplied/inherited slot. It is never model-supplied data.

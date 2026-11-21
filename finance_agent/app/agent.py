@@ -20,8 +20,8 @@ from .business_request import (BusinessRequest, BusinessRequestError, read_catal
 from .seller_semantic_review import load_review
 from .pending_transition import (contract_error as pending_contract_error, transition as apply_pending_transition,
     PendingTransitionError)
-from .invoice_action import change_invoice as execute_invoice_action, public_state as invoice_business_state
-from .references import resolve_reference
+from .invoice_action import (change_invoice as execute_invoice_action, public_state as invoice_business_state,
+                             bind_clarification as bind_invoice_clarification)
 from .write_coordination import WriteCoordinator
 from .updates import commit_invoice_update, edit_scope_error
 from .provenance import SOURCES, READ_SOURCES, ScopeProof, supplement_read_literals, current_sql_invoice_identity
@@ -129,7 +129,7 @@ SYSTEM += """
 单张发票修改只用change_invoice表达业务动作及已知参数。对象未知也应主动调用，由系统保存已知信息并明确追问；后续补充或更正仍用相同参数，可只补invoice_no。系统继承可信业务状态、校验权限、fresh读取并组织正式预览，模型不用传selection_id、pending_id、action、mode、确认、生命周期事件，也不需要先查后转述。
 只读查询不建立修改事项。含糊对象不能猜选；业务参数不是授权，只有正式界面可接受用户确认。不能从正文自称保存推导状态。新值精确照录用户原话；缺项省略，不能填猜测值。不能把读取集合变修改集合。
 propose_invoice_changes保留给批量/规则/复杂选集及兼容调用；其selection引用只属于该高级选集接口。单张业务不得在两种接口之间切换。
-当前单票办理的known是系统保存的来源可追溯业务候选，不代表已执行或已授权；missing_fields由系统计算，不是模型要维护的状态机。change_invoice只传本轮明确新增或更正的业务槽位，省略已在known且本轮未改的企业、年月、字段和内容；运行时合并未变槽位。不要在最终JSON另写pending/pending_change或amend意图。用户暂缓、稍后继续用turn_action=pause；明确取消、不要办了用turn_action=stop，两者都不撤销历史事务。
+当前单票办理的known是系统保存的来源可追溯业务候选，不代表已执行或已授权；missing_fields由系统计算，不是模型要维护的状态机。change_invoice只传本轮明确新增或更正的业务槽位，省略已在known且本轮未改的企业、年月、字段和内容；运行时合并未变槽位。不要在最终JSON另写pending/pending_change或amend意图。缺内容是正常等待；禁止提交不等于暂缓或取消。正常办理省略turn_action或用continue；仅明确暂缓本次事项才pause，明确取消才stop。information与clarification都接受这三种动作，不能据kind改变业务含义；本轮已独立判定的harness_business_action优先，执行提案不得另行暂停或取消。新办理先由change_invoice核实对象并建立待补，再执行明确暂缓；没有可恢复候选不能声称已暂缓。动作均不撤销历史事务，也不提供提交许可。
 更正关系由你判断：change_invoice默认relation=update补充当前办理；用户撤销旧要求重新定义时用replace，未确定字段和内容的对应关系时用clarify，不代选。field只表示当前要修改的字段，保留不动的字段不传。新内容照录当前原话；沿用上一有效内容可省略new_value，同字段由系统继承；换字段沿用旧内容或显式重传历史值须value_ref=previous。明确清空用value_ref=clear；字段变更不自动串用旧值。系统验证原文/有效待补来源，不以标点、词序判断语义；这些动作均不授予写入许可。
 查询最终JSON使用kind/text/answer，answer只引用本轮有指标/范围/单位的事实或已支持的compare/subtract。未知事实不能声称已验证，未完成不能声称完成。
 其他只读接口的规范化可继续使用intent={action:"read",target:{company_id,year,month,invoice_no?},sources:{各槽:{kind:"current",text:原话}}}，不成为写许可。query_business_sql只接受read_scope补充尚缺的SQL范围，不能用旧intent的model_read_candidate建立SQL快照；已有合法可信范围时仍可只传sql。
@@ -247,9 +247,13 @@ class Agent:
         """Retain only unapproved business data; all execution state is retired."""
         from copy import deepcopy
         candidate = self.pending_intent
+        if (not isinstance(candidate,dict) or candidate.get('business_action')!='single_invoice'
+                or candidate.get('actor')!=self.user_id or candidate.get('workbook')!=str(self.db_path)):
+            return None
         self.cancel_update()
-        self.paused_invoice_candidate = (deepcopy(candidate) if candidate
-            and candidate.get('business_action') == 'single_invoice' else None)
+        self.paused_invoice_candidate = deepcopy(candidate)
+        # Retiring execution/approval is not cancelling the business request.
+        self.coordinator.receipt=self._receipt('NOT_SUBMITTED')
         return self.paused_invoice_candidate
 
     def commit_update(self, request_id, fingerprint):
@@ -2025,6 +2029,8 @@ class Agent:
         scope_reminder_sent = False
         business_phase = business_preflight
         business_action_route = False
+        business_turn_action = None
+        business_turn_field = None
         business_references = None
         business_trusted = {key:list(values) for key,values in self.context.proof().values.items()
                             if self.context.proof().sources.get(key) in READ_SOURCES}
@@ -2063,6 +2069,31 @@ class Agent:
             invoice_write=False
             business_context_transition='pending_to_read'
             business_entry['handoff_entered']=True
+
+        def accept_invoice_transition(result,next_pending,planned,runtime_reads,action):
+            nonlocal active_pending,explicit_pending_applied,invoice_change
+            read_results.extend(runtime_reads)
+            if (result['status'] in {'WAITING_USER','WAITING_CONFIRMATION'}
+                    or result.get('evidence',{}).get('business_state_updated')):
+                self.pending_intent=active_pending=next_pending
+                explicit_pending_applied=True
+                invoice_change=planned
+            known=invoice_business_state(next_pending)['known'] if next_pending else {}
+            # Pause only after the original owner has fresh-read a unique key.
+            fresh=any(name=='get_invoice' and read['status']=='SUCCESS'
+                and all(read['data'].get(key)==known.get(key) for key in ('company_id','invoice_no'))
+                for name,read in runtime_reads)
+            if (action=='pause' and result['status']=='WAITING_USER' and next_pending
+                    and fresh and not next_pending.get('blocked_reason')):
+                paused=self.pause_invoice_update()
+                if paused is not None:
+                    active_pending=None
+                    result['evidence']['user_message']=('本轮单票已暂缓，未提交发票修改；'
+                        '工作台保存待续事项后可恢复，恢复后仍须重新核对和确认。')
+                    self.trace('business.paused_candidate',{'candidate':paused,'persisted':False,
+                                                          'business_authorization':False})
+            self.trace('business.state',{'pending':self.pending_intent,'preview':bool(planned)})
+            return result
 
         for index in range(self.max_requests):
             model_text = model_change = rejected_reply = None
@@ -2336,9 +2367,31 @@ class Agent:
                     if type(route) is not dict:raise BusinessRequestError('读取要求结构无效。')
                     if (business_format_repair_used or business_read_reentry) and route.get('kind') != 'read':
                         raise BusinessRequestError('读取要求结构补正不能切换为其他业务路径。','INVALID_ARGUMENTS')
-                    if route.get('kind')=='legacy' and set(route)=={'kind'}:
+                    if route.get('kind')=='legacy' and set(route)<={'kind','turn_action','action_quote','field','field_quote'}:
+                        action=route.get('turn_action')
+                        if action is None:action='continue'
+                        quote=route.get('action_quote')
+                        if quote is None:quote=''
+                        field=route.get('field')
+                        field_quote=route.get('field_quote')
+                        if field_quote is None:field_quote=''
+                        if (type(action) is not str or action not in {'continue','pause','stop'} or type(quote) is not str
+                                or quote and quote not in current_request
+                                or action in {'pause','stop'} and not quote.strip()
+                                or type(field_quote) is not str
+                                or field is not None and (type(field) is not str or field not in {'purpose','remark'}
+                                    or not field_quote.strip() or field_quote not in current_request)
+                                or field is None and field_quote):
+                            raise BusinessRequestError('办理动作及当前原话来源无效。','INVALID_ARGUMENTS')
                         business_phase=False
                         business_action_route=True
+                        business_turn_action=action
+                        business_turn_field=field
+                        self.messages.append({'role':'user','name':'harness_business_action',
+                            'content':json.dumps({'turn_action':action,'source_quote':quote,
+                                **({'field':field,'field_source_quote':field_quote} if field is not None else {}),
+                                'interpretation':'independent_model_business_relation',
+                                'business_authorization':False},ensure_ascii=False)})
                         # Advertise only reachable capabilities for this owner.
                         # Without a read request, financial queries would be
                         # rejected at dispatch. Single-invoice actions already
@@ -2352,7 +2405,13 @@ class Agent:
                         turn_tools=[tool for tool in turn_tools
                             if tool['function']['name'] not in FINANCIAL_TOOLS
                             or tool['function']['name']=='get_invoice' and point_read]
-                        self.trace('business_request.legacy_route',{'read_authorization':False})
+                        self.trace('business_request.legacy_route',{'read_authorization':False,
+                            'turn_action':action,'source_quote':quote,'field':field,'field_quote':field_quote,
+                            'formal_semantic_proof':False})
+                        if action=='stop':
+                            self.cancel_update()
+                            execution.stop('CANCELLED')
+                            return finish('已取消本轮未提交事项；此前已提交的记录不受影响。',store=False)
                         continue
                     if route.get('kind')=='general' and set(route)=={'kind','text'} and type(route['text']) is str:
                         conflict=reply_evidence_conflict(route['text'],read_results,current_request,actor=self.user_id)
@@ -2437,7 +2496,8 @@ class Agent:
                 try:
                     envelope=load_review(reply.get('content')) if reply.get('content') else None
                     if isinstance(envelope,dict):
-                        state_candidate=bool(set(envelope)&{'pending','pending_change','turn_action'})
+                        state_candidate=bool(set(envelope)&{'pending','pending_change'}
+                            or 'turn_action' in envelope and envelope['turn_action'] not in (None,'continue'))
                         intent=envelope.get('intent')
                         state_candidate=state_candidate or isinstance(intent,dict) and intent.get('action')!='read'
                 except (ValueError,TypeError,RecursionError):
@@ -2501,9 +2561,11 @@ class Agent:
                     answer = render_information(read_results)
                 else:
                     closing_reply = parse_final(reply.get('content'))
-                    if closing_reply and closing_reply.get('turn_action') == 'stop':
+                    closing_action=(business_turn_action if business_turn_action is not None else
+                                    (closing_reply or {}).get('turn_action'))
+                    if closing_reply and closing_action == 'stop':
                         self.cancel_update()
-                    elif closing_reply and closing_reply.get('turn_action') == 'pause':
+                    elif closing_reply and closing_action == 'pause':
                         self.pause_invoice_update()
                     answer = (select_current_answer(closing_reply.get('answer'), answer_catalog(read_results,self.write_receipt,self.trace_id))
                               if closing_reply else None) or render_information(read_results)
@@ -2589,17 +2651,38 @@ class Agent:
                     final_payload.pop('intent', None)
                     final_content = json.dumps(final_payload, ensure_ascii=False)
                 natural = parse_final(final_content)
-                if natural is not None and natural.get('turn_action') == 'pause':
-                    self.pause_invoice_update()
-                    execution.stop('WAITING_USER')
-                    return finish('已暂缓当前未提交单票。可从待续单票列表显式恢复；尚未保存，恢复后需重新预览和确认。',store=False)
-                if natural is not None and natural.get('turn_action') == 'stop':
+                proposed_action=(natural or {}).get('turn_action')
+                action=business_turn_action if business_turn_action is not None else proposed_action
+                if proposed_action and business_turn_action is not None and proposed_action!=business_turn_action:
+                    self.trace('business.action_proposal_ignored',{'proposed':proposed_action,
+                        'current_requirement':business_turn_action,'business_authorization':False})
+                if natural is not None and action == 'stop':
                     # A stop is a bounded current-session action, never an
                     # authorization or a rollback of a historical transaction.
                     self.cancel_update()
                     execution.stop('CANCELLED')
                     return finish('已停止本轮继续办理；此前已执行的事项不会撤销。\n操作回执：'
                                   + self.write_receipt['message'], store=False)
+                if natural is not None:
+                    fields=natural.get('missing_fields',())
+                    native=active_pending and active_pending.get('business_action')=='single_invoice'
+                    if (action=='pause' or business_action_route and
+                            (business_turn_field is not None or proposed_action in {'pause','stop'} or natural['kind']=='clarification'
+                             and (native or set(fields)&{'purpose','remark'}))):
+                        if self.user_id!=actor:
+                            execution.stop('DENIED')
+                            return finish('本轮身份已变化，未执行业务动作。',store=False)
+                        result,next_pending,planned,runtime_reads=bind_invoice_clarification(
+                            self,fields,active_pending,current_request,field=business_turn_field)
+                        result=accept_invoice_transition(result,next_pending,planned,runtime_reads,action)
+                        execution.stop(result['status'])
+                        missing=result.get('evidence',{}).get('missing_fields',())
+                        notice=result.get('evidence',{}).get('user_message') or result.get('error')
+                        if not notice:
+                            notice=(render_clarification({'missing_fields':missing}) if missing else
+                                    '本次办理内容已保留，尚未保存；请明确继续或更正。')
+                        return finish(notice,store=False,category='clarification',
+                                      missing_fields=missing,chat_notice=notice)
                 if current_read_denial and not current_read_companies and not invoice_write:
                     execution.stop(current_read_denial)
                     return finish(current_read_notice, store=False, chat_notice=current_read_notice)
@@ -2891,33 +2974,6 @@ class Agent:
                 self.coordinator.pending = None
                 if natural["kind"] == "clarification" or natural.get('missing_fields'):
                     fields = natural["missing_fields"]
-                    # The existing clarification protocol can name a missing
-                    # editable field instead of calling change_invoice with no
-                    # new value. Normalize that incomplete proposal through the
-                    # same owner, using only an actual unique displayed object.
-                    # No model prose/key supplies identity, value or approval.
-                    edit_fields=set(fields)&{'purpose','remark'}
-                    if (business_action_route and not active_pending
-                            and len(edit_fields)==1 and set(fields)==edit_fields
-                            and not self.context.references_blocked and self.context.display_ids):
-                        reference=resolve_reference(self.db_path,actor,None,
-                            display_ids=self.context.display_ids,coalesce_identical_singletons=True)
-                        if reference['status']=='SUCCESS':
-                            target=reference['evidence']['scope']
-                            result,next_pending,planned,runtime_reads=execute_invoice_action(self,
-                                {'company_id':target['company_id'],'invoice_no':target['invoice_no'],
-                                 'field':next(iter(edit_fields))},None,current_request)
-                            if result['status']=='WAITING_USER' and planned is None:
-                                self.pending_intent=active_pending=next_pending
-                                explicit_pending_applied=True
-                                read_results.extend(runtime_reads)
-                                self.trace('business.clarification_bound',{
-                                    'pending':next_pending,'source':'display_reference',
-                                    'model_tool_call':False,'business_authorization':False})
-                                execution.stop('WAITING_USER')
-                                question=render_clarification({'missing_fields':['new_value']})
-                                return finish(question,store=False,category='clarification',
-                                              missing_fields=['new_value'],chat_notice=question)
                     if model_text is None and simple_directory and self.context.previous_directory(read_results):
                         self.messages.pop()
                         return finish(render_information(read_results), store=False, category="database_query")
@@ -3109,6 +3165,10 @@ class Agent:
                         if fn.get('name') == 'change_invoice':
                             try:
                                 business_args = validate_arguments('change_invoice', fn.get('arguments'))
+                                if business_turn_field is not None:
+                                    if 'field' in business_args and business_args['field']!=business_turn_field:
+                                        raise ValueError('办理字段与本轮独立要求不一致')
+                                    business_args={**business_args,'field':business_turn_field}
                                 result = execution.guard('change_invoice', business_args)
                                 if result is None and self.user_id != actor:
                                     result = tool_result('DENIED', error='本轮身份已变化，未执行业务动作。')
@@ -3118,8 +3178,8 @@ class Agent:
                                             and business_args.get('value_ref') == 'previous'):
                                         before = business_repair_source
                                     result, next_pending, planned, runtime_reads = execute_invoice_action(
-                                        self, business_args, before, current_request)
-                                    read_results.extend(runtime_reads)
+                                        self, business_args, before, current_request,
+                                        defer_preview=business_turn_action=='pause')
                                     if (business_repair_source is None and before and len(calls) == 1
                                             and result.get('evidence',{}).get('needs_value_reference_decision')
                                             and execution.model_requests < min(execution.block_limit,self.max_requests)
@@ -3130,12 +3190,8 @@ class Agent:
                                         business_repair_notice = result['evidence']['user_message']
                                         repair_scope = True
                                         self.trace('business.value_reference_repair', {'retry':1,'physical_write':False})
-                                    if (result['status'] in {'WAITING_USER','WAITING_CONFIRMATION'}
-                                            or result.get('evidence',{}).get('business_state_updated')):
-                                        self.pending_intent = active_pending = next_pending
-                                        explicit_pending_applied = True
-                                        invoice_change = planned
-                                        self.trace('business.state', {'pending':next_pending,'preview':bool(planned)})
+                                    result=accept_invoice_transition(result,next_pending,planned,
+                                        runtime_reads,business_turn_action)
                             except (TypeError,ValueError):
                                 from .business_sources import suspend
                                 if self.user_id == actor:
