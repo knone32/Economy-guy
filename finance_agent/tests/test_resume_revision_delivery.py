@@ -18,10 +18,12 @@ class ResumeRevisionDeliveryTests(unittest.IsolatedAsyncioTestCase):
             root = Path(folder)
             book = root / 'fictional.sqlite3'
             import_workspace(helpers.FIXTURE, book)
-            app = AgentWorkspace(book, DEFAULT_TEMPLATE, root / 'none.json',
-                model=lambda *_: call('change_invoice', {
+            def model(messages,tools):
+                if not tools:return {'role':'assistant','content':'{"kind":"legacy"}'}
+                return call('change_invoice', {
                     'company_id': 'C001', 'year': 2026, 'month': 9,
-                    'field': 'remark', 'new_value': '待复核'}),
+                    'field': 'remark', 'new_value': '待复核'})
+            app = AgentWorkspace(book, DEFAULT_TEMPLATE, root / 'none.json',model=model,
                 session_path=root / 'sessions.sqlite3', trace_path=root / 'trace.jsonl')
             app.mode = 'mock'
             async with app.run_test(size=(150, 42)) as pilot:
@@ -36,7 +38,8 @@ class ResumeRevisionDeliveryTests(unittest.IsolatedAsyncioTestCase):
                 candidate_id, claimed_revision = app.conversation.invoice_token
                 self.assertEqual(claimed_revision, old_revision + 1)
                 chat = '\n'.join(line.text for line in app.workspace_widget('#chat-log').lines)
-                self.assertRegex(chat, f'已选择 {candidate_id} · 修订\\s+{claimed_revision}。')
+                self.assertIn('已恢复',chat);self.assertIn('甲企业',chat)
+                self.assertNotIn(candidate_id,chat)
                 with self.assertRaises(ValueError):
                     app.conversation.resume_invoice_candidate(candidate_id, old_revision)
                 self.assertIsNone(app.agent)

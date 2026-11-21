@@ -939,6 +939,8 @@ class AgentWorkspace(ConversationUI, App):
             self.open_chat_invoice_directory()
         elif key == "new-task" and not self.busy:
             self.new_task()
+        elif key == 'continue-invoice' and not self.busy:
+            self.show_invoice_candidates()
         elif key == "configure-ai":
             self.open_settings()
         elif key.startswith("todo-"):
@@ -1755,6 +1757,8 @@ class AgentWorkspace(ConversationUI, App):
         if self.task_route:
             return self.task_detail_widgets(self.task_route)
         widgets = [TextAction("新建待办", id="new-task", variant="primary")]
+        if self.conversation and self.conversation.list_invoice_candidates():
+            widgets.append(TextAction('继续未完成的发票修改',id='continue-invoice'))
         for company in company_access(self.db, self.user):
             if not company["read"]:
                 continue

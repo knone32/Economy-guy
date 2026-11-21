@@ -198,20 +198,44 @@ class ConversationUI:
                 self.workspace_widget(selector).scroll_end(animate=False)
             self.note("已继续上次对话。当前业务状态将在查询时重新读取。")
         if self.conversation.list_invoice_candidates():
-            self.chat_message('待续单票', '有未提交的单票候选。输入 /pending 查看；新聊天需按候选编号和修订显式恢复，历史内容不提供批准。')
+            self.chat_message('待续发票修改', '有尚未保存的发票修改，可在“待办”中选择继续办理。恢复后仍须核对新的确认预览，历史内容不提供批准。')
         return self.has_saved_history
+
+    def invoice_candidate_text(self, row):
+        state=invoice_business_state(row['pending']);known=state['known']
+        company=self.company_name(known['company_id']) if known.get('company_id') else '企业待补充'
+        year,month=known.get('year'),known.get('month')
+        period=f'{year} 年 {month} 月' if year and month else '完整年月待补充'
+        number=known.get('invoice_no') or '编号待补充'
+        field={'purpose':'用途','remark':'备注'}.get(known.get('field'),'修改项目待确认')
+        lines=[f'{company} · {period} · 发票 {number}',f'准备修改：{field}。']
+        if 'new_value' in known:
+            lines.append('已提供的新内容：'+known['new_value'])
+        labels={'company_id':'企业','year':'年份','month':'月份','invoice_no':'发票编号',
+                'field':'修改项目','new_value':'新内容','change_choice':'修改项目及新内容',
+                'invoice_selection':'目标发票核验'}
+        if state['missing_fields']:
+            lines.append('待补充：'+'、'.join(labels.get(key,'办理信息') for key in state['missing_fields'])+'。')
+        lines.append('状态：'+('暂缓' if row.get('state')=='PAUSED' else '等待继续')+'，尚未保存。')
+        return '\n'.join(lines)
 
     def show_invoice_candidates(self):
         if not self.conversation:
             self.note('当前未启用本地会话存储。')
             return
         rows = self.conversation.list_invoice_candidates()
-        lines = []
-        for row in rows:
-            known = invoice_business_state(row['pending'])['known']
-            summary = '；'.join(f'{key}：{value}' for key,value in known.items())
-            lines.append(f"{row['id']} · 修订 {row['revision']} · {'暂缓' if row['state']=='PAUSED' else '待补'}\n{summary}\n/resume {row['id']} {row['revision']}")
-        self.chat_message('待续单票', '\n\n'.join(lines) if lines else '没有可续办的单票候选。')
+        from .tui_screens import Choices
+        choices=[(self.invoice_candidate_text(row),(row['id'],row['revision'])) for row in rows]
+        if not choices:choices=[('没有可继续办理的发票修改。',None)]
+        owner=self.conversation;identity=(self.user,self.db,self.session_epoch)
+        def resume(selected):
+            if selected is None:return
+            if self.busy or self.conversation is not owner or identity!=(self.user,self.db,self.session_epoch):
+                self.note('当前会话已变化，请重新打开待办选择。');return
+            try:self.resume_invoice_selection(f'{selected[0]} {selected[1]}')
+            except (OSError,ValueError,PermissionError,sqlite3.Error) as error:
+                self.note(str(error) or '该修改已变化，请重新打开待办选择。')
+        self.push_screen(Choices('选择要继续的发票修改',choices),resume)
 
     def resume_invoice_selection(self, argument):
         if not self.conversation:
@@ -220,10 +244,11 @@ class ConversationUI:
             raise ValueError('请先 /pause 暂缓或 /cancel 取消当前事项。')
         candidate_id, revision = argument.split()
         candidate = self.conversation.resume_invoice_candidate(candidate_id,int(revision))
-        claimed_id, claimed_revision = self.conversation.invoice_token
         self.reset_agent(clear_log=False,retire_candidate=False)
         self.resume_invoice_pending = candidate
-        self.chat_message('待续单票', f'已选择 {claimed_id} · 修订 {claimed_revision}。请明确继续或更正；随后重新核权、读取当前值并生成新预览，尚未批准或保存。')
+        self.select_pane('chat')
+        summary=self.invoice_candidate_text({'pending':candidate,'state':'ACTIVE'})
+        self.chat_message('待续发票修改', '已恢复：'+summary+'\n请补充或更正办理内容；系统会重新核权、读取当前值并生成新预览，尚未批准或保存。')
 
     def pause_invoice_selection(self):
         if not self.conversation:
@@ -232,7 +257,7 @@ class ConversationUI:
         self.conversation.pause_invoice_candidate()
         self.reset_agent(clear_log=False,retire_candidate=False)
         self.resume_invoice_pending = None
-        self.note('已暂缓未提交单票。可在新聊天输入 /pending 后显式恢复；尚未保存。')
+        self.note('已暂缓发票修改，可在“待办”中选择继续办理；尚未保存。')
 
     def retire_invoice_candidate(self):
         """Persist trusted out-of-turn cancellation, even before Agent creation."""
