@@ -197,6 +197,20 @@ class Agent:
         except (OSError, ValueError, sqlite3.Error):
             return False
 
+    def business_request_snapshot(self):
+        request = self.business_request or self._last_business_request
+        return {'version':1,'request':request.metadata()} if request is not None else None
+
+    def restore_business_request(self, snapshot):
+        """Trusted active-chat state only; restore meaning, never facts/approval."""
+        from .business_request import restore_snapshot
+        if self._active or self._retired or self.business_request or self._last_business_request:
+            raise ValueError('当前不能替换读取要求。')
+        if snapshot is not None:
+            self._last_business_request = restore_snapshot(snapshot,actor=self.user_id,book=self.db_path)
+            self.trace('business_request.restored',{'request_hash':self._last_business_request.request_hash,
+                'revision':self._last_business_request.revision,'authorization':False})
+
     def restore_invoice_candidate(self, candidate):
         """Trusted session adapter only: restore data, never a draft/approval."""
         from .business_sources import recover_candidate
@@ -230,8 +244,10 @@ class Agent:
 
     _receipt = staticmethod(WriteCoordinator._receipt)
 
-    def cancel_update(self):
+    def cancel_update(self, *, retire_request=False):
         self._check_identity()
+        if retire_request:
+            self.business_request = self._last_business_request = None
         self.pending_intent = None
         self.invoice_query_chain = None
         if self.management_turn:
@@ -604,6 +620,7 @@ class Agent:
             self.workbook_guard()
         previous_business_request = self.business_request or self._last_business_request
         self.business_request = None
+        self._last_business_request = None
         self._business_contract_required = False
         business_preflight = False
         business_format_repair_used = False
@@ -2425,6 +2442,7 @@ class Agent:
                             return finish('本轮没有取得可核实的业务事实或保存回执。请明确要查询的对象和范围。',
                                 store=False,category='general_unverified',final_only=True)
                         business_phase=False
+                        self._last_business_request=previous_business_request
                     else:
                         revision=previous_business_request.revision+1 if isinstance(previous_business_request,BusinessRequest) else 1
                         transition=('pending_to_read' if active_pending and

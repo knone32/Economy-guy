@@ -162,6 +162,42 @@ class BusinessRequest:
         return self
 
 
+def restore_snapshot(snapshot, *, actor, book):
+    """Trusted Store snapshot of requirements, never facts or authorization."""
+    try:
+        if (type(snapshot) is not dict or set(snapshot) != {'version','request'}
+                or type(snapshot['version']) is not int or snapshot['version'] != 1):
+            raise ValueError('读取要求快照版本无效')
+        data = dict(snapshot['request'])
+        if (data.pop('authorization') is not False or data.pop('formal_semantic_proof') is not False
+                or data.pop('interpretation') != 'model_with_current_user_sources'):
+            raise ValueError('历史读取要求不能提供授权')
+        def sourced(cls, value):
+            part = dict(value)
+            part['source'] = Source(**part['source'])
+            return cls(**part)
+        targets = []
+        for item in data['targets']:
+            target = dict(item)
+            for key in ('company_source','period_source','relation_source'):
+                if target.get(key) is not None:
+                    target[key] = Source(**target[key])
+            if target.get('seller') is not None:
+                target['seller'] = sourced(SellerRequirement,target['seller'])
+            for key, cls in (('filters',ReadFilter),('metrics',ReadMetric),('comparisons',ReadComparison)):
+                target[key] = tuple(sourced(cls,value) for value in target[key])
+            for key, cls in (('purpose_check',PurposeCheck),('directory',DirectoryRequirement),('reference',ReferenceRequirement)):
+                if target.get(key) is not None:
+                    target[key] = sourced(cls,target[key])
+            targets.append(ReadRequirement(**target))
+        data['targets'] = tuple(targets)
+        data['current_source'] = Source(**data['current_source'])
+        request = BusinessRequest(**data)
+        return request.require_context(actor,book)
+    except (KeyError,TypeError,ValueError) as error:
+        raise BusinessRequestError('无法恢复有效读取要求，请重新明确查询范围。','REQUEST_UNRESOLVED') from error
+
+
 def read_catalog(book,actor,*,company_ids=None):
     current=company_catalog(book,actor)
     rows=current['companies']

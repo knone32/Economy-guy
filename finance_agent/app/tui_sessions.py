@@ -302,7 +302,8 @@ class ConversationUI:
                 self.resume_focus = next_focus
         # Snapshot the reference owner's *post-turn* state, not earlier reads
         # from a turn which may have just been cancelled. Null is meaningful.
-        hint = {**(hint or {}), 'reference_state': self.agent.context.reference_state_snapshot()}
+        hint = {**(hint or {}), 'reference_state': self.agent.context.reference_state_snapshot(),
+                'business_request':self.agent.business_request_snapshot()}
         try:
             evidence = [{**call, "id": self.storage_text(call["id"]),
                          "error": self.storage_text(call["error"]) if call.get("error") else None} for call in calls]

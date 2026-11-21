@@ -94,4 +94,6 @@ failure: stage?, original_status?, recoverable?, message?
 
 验证追加：上述恢复入口在af64a09已由原工作台实际通过故障保持／只读核查恢复，未重写财务。启动时再由同一owner检查历史UNKNOWN引用，成功与暂不可读分开显示。其余snapshot/前端命令仍为设计；有效BusinessRequest目前主要在同一Agent内传递，新Agent的结构化要求恢复尚未接线，不能据原raw历史恢复声称跨对话筛选继承已通过。现有有限原话、候选修订、取消终态和来源引用不包含批准，长期记忆不在本轮范围。
 
+有限连续性接线追加：`Agent.business_request_snapshot()`、`Agent.restore_business_request(snapshot)` 和 `SessionStore.business_request_snapshot()` 复用同一不可变 BusinessRequest。快照只在原 Store 的当前账号／账簿／chat 下保存，Store以加法列迁移；宿主必须先装载当前chat的快照、再begin、再调用唯一Agent.ask，最后原子finish。恢复只做固定业务类型的反序列化并重查目录与权限，不是从聊天／SQL重建要求；显式取消、分界和未完成新轮使旧快照失效。当前接入TUI，CLI仅同步显式取消时的旧读取要求失效；未来snapshot/RPC宿主仍未实现。新自然语言跨会话证据待冻结验证，不把接口存在当通过。
+
 验收只补这些交接风险；每次先说明要区分的两种解释，首错定位，不扩大全量、不堆同题重试。旧首执失败、程序证据、真实模型回归和真人操作分开记录。

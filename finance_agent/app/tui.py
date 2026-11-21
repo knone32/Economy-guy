@@ -663,6 +663,10 @@ class AgentWorkspace(ConversationUI, App):
             self.agent.context.annual_focus = self.resume_focus
         if self.conversation:
             self.agent.workbook_guard = self.conversation.validate_invoice_revision
+            try:
+                self.agent.restore_business_request(self.conversation.business_request_snapshot())
+            except (OSError,ValueError,PermissionError,sqlite3.Error):
+                self.note('已存读取范围暂不能核实，请重新明确查询条件；未恢复任何批准。')
             if self.task_focus:
                 self.agent.focus_task(*self.task_focus)
             self.agent.context.restored_turns = list(self.resumed)
@@ -894,12 +898,20 @@ class AgentWorkspace(ConversationUI, App):
             self.exit()
 
     def action_cancel_edit(self):
-        if not self.busy and self.resume_invoice_pending is not None and self.agent is None:
-            self.retire_invoice_candidate()
-            self.note('已取消当前未提交的单票候选。')
+        if not self.busy and self.agent is None and self.conversation:
+            try:
+                if self.resume_invoice_pending is not None:
+                    self.retire_invoice_candidate()
+                self.conversation.set_reference_state({'version':1,'retired':True,'invoice_query':None})
+            except (OSError,ValueError,sqlite3.Error):
+                self.note('取消记录未能保存，请保留当前窗口并重新核对。')
+                return
+            verification = self._switched_update()
+            receipt = verification.cancel_update() if verification is not None else None
+            self.note(receipt['message'] if receipt else '已取消当前会话未提交的要求，历史事务不受影响。')
             return
         if self.agent and not self.busy:
-            receipt = self.agent.cancel_update()
+            receipt = self.agent.cancel_update(retire_request=True)
             self.retire_invoice_candidate()
             if self.conversation and self.conversation.chat:
                 try:

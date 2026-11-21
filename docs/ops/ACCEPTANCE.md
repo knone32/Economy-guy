@@ -1,5 +1,7 @@
 # 验收（V3；不同SHA不拼接）
 
+4c0220e正常原工作台冷启动收尾通过：Store打开、原未知请求只读核实为历史COMMITTED、本次未提交、未保存轮次INTERRUPTED且无trace/hint、无草稿批准、财务和模型账不变；这是实际GUI程序恢复证据，不是新的自然语言首执。当前结构化读取要求的跨会话恢复仅源码接线：原Store新增快照列、原Agent恢复并重查目录/权限；有效要求不含SQL/金额结果/授权。下一Live只检验两对话不同销售方条件能否分别保留并冷恢复，不重跑提交链、不以固定工具或SQL验收。当前原账154/1312219/1999720、累计null。
+
 af64a09新增风险限定结果：原工作台冷恢复→故障下UNKNOWN保留→只读恢复核查COMMITTED、readback_verified=true、committed_this_turn=false，通过，无财务重写/模型调用；是实际GUI程序故障证据，不是自然语言首执。实际模型IO边界另4HTTP：受控客户端交付中断的provider回复未执行；受控历史finish失败有真实警告、查询事实完整，原失败轮次重启后INTERRUPTED且不恢复草稿/批准。财务/审计不变，累计154/1312219/1999720、三限null。自然服务断网、待补候选的持久化故障、已有有效批准的失效、真人独立整套GUI仍未签收；不扩相似矩阵。最后正常启动的原请求自动只读核查/历史措辞收尾另记对应SHA，不重跑已签收完整提交链。
 
 新增单一恢复风险：da70a53原工作台、真实模型2HTTP、真人批准新虚构备注修改。独立实际行/唯一审计/预览指纹核对一致；受控原请求回读失败后UNKNOWN正确且持久checkpoint。新进程保持该只读故障时恢复历史抛异常、丢失整个Store，首错记录RESTORE_AUDIT_ERROR_DISCARDS_SESSIONSTORE，依赖停止且无重提。该重启阶段是实际GUI故障注入程序证据，0新模型请求，不冒充自然语言首执；未运行零API单测/全量。原账150/1283241/1965004，累计null。证据在本地evidence-root/recovery-boundary-20261121/preview/HUMAN-COMMIT-VERIFIED.public.json与restart-audit-down/OBSERVATION.public.json。当前恢复修订待原工作台验证，只核查已批准原请求，不再写这张票。

@@ -129,7 +129,7 @@ def chat_loop(agent, args, profile_options, serialize, home):
                 if home and text.strip() == "1":
                     edit = input("描述修改目标和新值（/cancel 取消）：").strip()
                     if not edit or edit in {"/cancel", "0"}:
-                        print(agent.cancel_update()["message"])
+                        print(agent.cancel_update(retire_request=True)["message"])
                         continue
                     text = edit if edit in {"/home", "/quit"} else "/edit " + edit
             except (EOFError, KeyboardInterrupt):
@@ -161,7 +161,7 @@ def chat_loop(agent, args, profile_options, serialize, home):
                         print('未切换：'+str(error))
                     continue
                 if text.strip() == "/cancel":
-                    print(serialize(agent.cancel_update(), indent=2))
+                    print(serialize(agent.cancel_update(retire_request=True), indent=2))
                     continue
                 if text.strip() == "/inspect-update":
                     print(serialize(agent.reconcile_update(), indent=2))
@@ -219,7 +219,7 @@ def chat_loop(agent, args, profile_options, serialize, home):
                 for request_id, draft in list(agent.update_session.drafts.items()):
                     if home and redact(asdict(draft)) != asdict(draft):
                         print("草稿包含需脱敏的内容。请移除敏感信息并重新提出修改。")
-                        agent.cancel_update()
+                        agent.cancel_update(retire_request=True)
                         break
                     print("本轮原始要求：" + (safe_text(draft.source_request) if home else draft.source_request))
                     print(serialize(asdict(draft), indent=2))
@@ -229,7 +229,7 @@ def chat_loop(agent, args, profile_options, serialize, home):
                     except (EOFError, KeyboardInterrupt):
                         confirmation = ""
                     if confirmation != "confirm " + request_id:
-                        print(serialize(agent.cancel_update(), indent=2))
+                        print(serialize(agent.cancel_update(retire_request=True), indent=2))
                         continue
                     outcome = agent.commit_update(request_id, draft.fingerprint())
                     print(serialize(outcome, indent=2))
@@ -246,4 +246,4 @@ def chat_loop(agent, args, profile_options, serialize, home):
                                   agent.write_receipt["status"])
     finally:
         if home:
-            agent.cancel_update()
+            agent.cancel_update(retire_request=True)
