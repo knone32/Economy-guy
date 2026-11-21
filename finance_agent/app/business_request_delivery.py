@@ -424,9 +424,16 @@ def _project_detail_result(request, original, actor, book):
     if query['table']=='invoices' and 'amount_cents' in fields:
         data['invoice_projection']={c['field']:i for i,c in enumerate(query['columns'])}
     accepted=annotate(original,request,ids)
+    from .business_sql import TABLES
+    all_fields={part.strip().split()[0] for part in TABLES[query['table']].split(',')}
+    # The fixed pre-execution metric defines the required columns. Explain a
+    # partial result instead of letting the generated projection define '*'.
+    accepted['evidence']['business_request']['missing']=[{
+        'target_id':target.target_id,'operation':'details','field':metric.field,
+        'missing_columns':sorted((all_fields if metric.field=='*' else {metric.field})-fields)}
+        for target in matched for metric in target.metrics if metric.operation=='details'
+        and (all_fields if metric.field=='*' else {metric.field})-fields]
     if (query.get('query_set_complete') and not query.get('limited') and data.get('truncated') is False):
-        from .business_sql import TABLES
-        all_fields={part.strip().split()[0] for part in TABLES[query['table']].split(',')}
         accepted['evidence']['business_request']['measures']=[{
             'target_id':target.target_id,'operation':'details','field':metric.field,
             'scope':deepcopy(query['scope']),'dimensions':{},'conditions':deepcopy(query.get('conditions',())),

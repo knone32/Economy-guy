@@ -363,3 +363,17 @@ class BusinessRequestDeliveryTests(unittest.TestCase):
                 result=handle_tool('query_business_sql',json.dumps({'sql':candidate}),'U002',self.book,
                                    sql_workspace=workspace,business_request=request)
                 self.assertEqual(result['status'],expected,result);self.assertIsNone(result['data'])
+
+    def test_partial_details_name_missing_columns_without_relaxing_coverage(self):
+        from app.business_request_delivery import assess_results
+        target={**self.target,'metrics':[{'operation':'details','field':'*','quote':'发票'}],'group_by':[]}
+        request=self.requirement(target)
+        columns='company_id,invoice_no,invoice_date,seller_name,amount_cents,purpose,remark'
+        tail=" FROM invoices WHERE seller_name='玄野服务有限公司' AND purpose='展会物料'"
+        partial=accept_result(request,'query_business_sql',self.actual_result('SELECT '+columns+tail),'U002',self.book)
+        self.assertFalse(assess_results(request,[('query_business_sql',partial)])['complete'])
+        self.assertEqual(partial['evidence']['business_request']['missing'],[
+            {'target_id':'i1','operation':'details','field':'*','missing_columns':['item_name']}])
+        full=accept_result(request,'query_business_sql',self.actual_result('SELECT '+columns+',item_name'+tail),'U002',self.book)
+        self.assertTrue(assess_results(request,[('query_business_sql',full)])['complete'])
+        self.assertEqual(full['evidence']['business_request']['missing'],[])
