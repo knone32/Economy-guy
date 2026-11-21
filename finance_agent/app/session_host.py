@@ -137,7 +137,8 @@ class SessionHost:
                   'CANCELLED' if cancelled else
                   receipt['status'] if saved else
                   response['host_execution']['status'] if response.get('host_execution') else
-                  'PAUSE_FAILED' if paused and self._persistence['status'] == 'FAILED' else
+                  'PAUSE_FAILED' if self._persistence['status'] == 'FAILED'
+                      and self._persistence.get('stage') == 'pause' else
                   'PAUSED' if saved_pause and self._persistence['status'] != 'FAILED' else
                   'WAITING_CONFIRMATION' if preview else
                   'WAITING_USER' if pending else
@@ -350,7 +351,18 @@ class SessionHost:
                 self.store.set_invoice_pending(pending, state='PAUSED',
                     reference_state=self._agent.context.reference_state_snapshot())
             except (OSError, ValueError, sqlite3.Error) as error:
+                # Failure to persist a pause is not a successful runtime pause.
+                # Restore only the same unapproved business candidate through
+                # its original validation owner; drafts/approvals stay retired.
+                self._agent.paused_invoice_candidate = None
+                restored = False
+                try:
+                    self._agent.restore_invoice_candidate(pending)
+                    restored = True
+                except (OSError,ValueError,PermissionError,sqlite3.Error):
+                    pass
                 self._persistence = {'status': 'FAILED', 'error':type(error).__name__,
+                    'stage':'pause','pending_restored':restored,
                     'message': '暂缓未能保存，不能宣布可恢复。'}
                 raise SessionConflict('暂缓未能保存，不能宣布可恢复；当前业务尚未提交。') from error
             self._persistence = {'status': 'SAVED', 'error': None}
