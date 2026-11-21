@@ -1,5 +1,7 @@
 # 预算状态（非交易账本）
 
+2026-11-21最新有效政策：用户明确取消原64请求／700000tokens／2.20元累计上限，并授权完成现有业务闭环所必需Live。已在同一原账与budget_id设置explicit-unbounded-cumulative-v1、三项累计limits=null，保留原64条／629620tokens／758261微元峰价上界，不清零、不增加另一本交易账。历史未知消耗继续UNKNOWN_NOT_ZERO；备份只作不可执行证据。新AUTH为evidence-root/V3-AUTHORIZATION-CLOSURE-UNBOUNDED-20261121.json，冻结绑定前禁止HTTP。8192输出、原单轮计数、零重试及未知usage停机不变；原bounded授权不能误用新policy账。原guard未改。详见[原账迁移结果](../../../evidence-root/budget-policy-migration-20261121/MIGRATION-RESULT.public.json)。以下额度及余额均为历史，不再代表有效累计约束。
+
 验收后最新：7ec8358一次只查询Live新增3真实HTTP，原61条前缀保留；原账64／629620tokens／758261微元峰价保守上界（非提供商账单），unknown_usage=false。原64次物理上限已满，尚余70380tokens及1441739微元不构成额外请求许可。第四个逻辑请求已在HTTP前拒绝，无自动重试或额外费用；不重置、不增限、不再付费。历史累计42元UNKNOWN仍不记零。
 
 当前61请求／608090tokens／691874微元峰价上界，unknown_usage=false；原60条前缀不变。余3／91910／1508126，64／700000／2200000上限不改。8b61公开续查仅新增1HTTP后在默认关系来源处拒绝，原失败保留；共同规范化与有限复核API0。下一次仅一轮公开统计续查cap3，不自动恢复写办理，不重置消耗或新增预算。

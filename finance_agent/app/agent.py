@@ -631,6 +631,7 @@ class Agent:
         budget_close_active = False
         budget_refusal = None
         bound_answer = None
+        runtime_fact_completion = False
         answer_selection_assessment = None
         grounded_model_text = None
         natural = None
@@ -1573,14 +1574,16 @@ class Agent:
                 self.last_response["text"] = text
                 self.last_response["chat_notice"] = notice + "\n" + (self.last_response["chat_notice"] or "")
                 self.last_response["system_notice"] = self.last_response["chat_notice"]
-            if (model_text is not None and category in {"database_query", "clarification", "general_unverified"}
+            if ((model_text is not None or runtime_fact_completion)
+                    and category in {"database_query", "clarification", "general_unverified"}
                     and execution.stop_reason in {"ANSWERED", "COMPLETED", "WAITING_USER", "CANCELLED"}):
                 if category == 'database_query' and not self.teaching:
                     if bound_answer is not None:
                         text = bound_answer
                         if write_expected:
                             text += '\n操作回执：' + self.write_receipt['message']
-                        self.last_response['delivery_source'] = 'model_ordered_current_evidence'
+                        self.last_response['delivery_source'] = ('runtime_ordered_current_evidence'
+                            if runtime_fact_completion else 'model_ordered_current_evidence')
                     elif grounded_model_text is not None:
                         text = '\n'.join(filter(None, (render_information(read_results), grounded_model_text)))
                         self.last_response['delivery_source'] = 'existing_grounded_explanation'
@@ -3350,6 +3353,25 @@ class Agent:
                     if known:
                         notice = f"{known}\n其余查询结果尚未核实。{notice}"
                 return finish(notice, chat_notice=notice)
+            if (self.business_request is not None and completed_read_calls
+                    and all(may_finish_duplicate(record) for record in completed_read_calls.values())):
+                try:
+                    self.business_request.require_current(self.user_id, self.db_path, turn_id=self.trace_id)
+                    from .business_request_delivery import verified_statistics_answer
+                    catalog = answer_catalog(read_results, self.write_receipt, self.trace_id)
+                    selection = verified_statistics_answer(self.business_request, catalog, read_results)
+                    if selection is not None:
+                        bound_answer = select_current_answer(selection, catalog)
+                        if bound_answer is not None and answer_selection_assessment['complete']:
+                            runtime_fact_completion = True
+                            self.trace('business_request.completed_from_facts', {
+                                'request_hash': self.business_request.request_hash,
+                                'revision': self.business_request.revision,
+                                'answer': selection, 'additional_model_requests': 0})
+                            execution.stop('ANSWERED')
+                            return finish(bound_answer, store=False, category='database_query', final_only=True)
+                except (BusinessRequestError, ValueError, TypeError) as error:
+                    self.trace('business_request.auto_finish_unavailable', {'reason': type(error).__name__})
         if not execution.stop_reason:
             execution.stop("MODEL_LIMIT")
         self.trace("error", "模型请求上限")

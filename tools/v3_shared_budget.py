@@ -18,6 +18,9 @@ import uuid
 
 PEAK_RATES = {'input_hit': 0.04, 'input_miss': 2, 'output': 8}
 ACCOUNTING_BASIS = 'conservative_peak_price_upper_bound_not_provider_bill'
+BOUNDED_POLICY = 'bounded-cumulative-v1'
+UNBOUNDED_POLICY = 'explicit-unbounded-cumulative-v1'
+CUMULATIVE_FIELDS = ('max_c_requests', 'max_c_tokens', 'incremental_cost_limit_micros')
 
 
 class BudgetStop(RuntimeError):
@@ -122,8 +125,21 @@ class SharedBudget:
             raise BudgetStop('no_main_control_authorization')
         if self.auth.get('budget_mode') != 'incremental-cohort-budget-v1':
             raise BudgetStop('existing_incremental_cohort_required')
-        for key, ceiling in (('max_c_requests', 64), ('max_c_tokens', 700000),
-                             ('max_output_tokens', 8192), ('incremental_cost_limit_micros', 2200000)):
+        self.policy = self.auth.get('cumulative_policy', BOUNDED_POLICY)
+        if type(self.policy) is not str or self.policy not in {BOUNDED_POLICY, UNBOUNDED_POLICY}:
+            raise BudgetStop('unknown_cumulative_policy')
+        if self.policy == UNBOUNDED_POLICY:
+            authority = self.auth.get('cumulative_policy_authorization')
+            if (not isinstance(authority, dict) or authority.get('authorized') is not True
+                    or authority.get('authorized_by') != 'user'
+                    or not isinstance(authority.get('instruction'), str) or not authority['instruction'].strip()
+                    or any(key not in self.auth or self.auth[key] is not None for key in CUMULATIVE_FIELDS)):
+                raise BudgetStop('explicit_unbounded_cumulative_authorization_required')
+            bounded_fields = (('max_output_tokens', 8192),)
+        else:
+            bounded_fields = (('max_c_requests', 64), ('max_c_tokens', 700000),
+                              ('max_output_tokens', 8192), ('incremental_cost_limit_micros', 2200000))
+        for key, ceiling in bounded_fields:
             if not integer(self.auth.get(key)) or not 0 < self.auth[key] <= ceiling:
                 raise BudgetStop('invalid_allocation_limits')
         if self.auth.get('accounting_scope') != 'new_explicit_authorization':
@@ -151,6 +167,11 @@ class SharedBudget:
             raise BudgetStop('shared_ledger_identity_mismatch')
         if data.get('unknown_usage') is not False:
             raise BudgetStop('shared_ledger_not_reconciled')
+        if data.get('cumulative_policy', BOUNDED_POLICY) != self.policy:
+            raise BudgetStop('cumulative_policy_mismatch')
+        if self.policy == UNBOUNDED_POLICY and (
+                data.get('cumulative_policy_authorization') != self.auth['cumulative_policy_authorization']):
+            raise BudgetStop('cumulative_policy_authorization_mismatch')
         if (data.get('accounting_scope') != self.auth['accounting_scope']
                 or data.get('prior_consumption') != self.auth.get('prior_consumption')):
             raise BudgetStop('incremental_scope_or_prior_index_mismatch')
@@ -193,7 +214,10 @@ class SharedBudget:
                     'cost_micros': self.auth['incremental_cost_limit_micros']}
         for key, ceiling in ceilings.items():
             limit = data.get('limits', {}).get(key)
-            if not integer(limit) or not totals[key] <= limit <= ceiling:
+            if self.policy == UNBOUNDED_POLICY:
+                if key not in data.get('limits', {}) or limit is not None:
+                    raise BudgetStop('explicit_null_unbounded_limits_required')
+            elif not integer(limit) or not totals[key] <= limit <= ceiling:
                 raise BudgetStop('shared_account_ceiling')
         expiration = datetime.fromisoformat(self.auth['expires_at_utc'])
         if expiration.tzinfo is None or datetime.now(timezone.utc) >= expiration:
@@ -204,8 +228,9 @@ class SharedBudget:
         with exclusive(self.path):
             data = load(self.path)
             return {'totals': self.validate(data), 'limits': data['limits'], 'budget_id': data['budget_id'],
+                    'cumulative_policy': self.policy,
                     'accounting_basis': ACCOUNTING_BASIS, 'prior_consumption_status': 'unknown_preserved',
-                    'historical_cumulative_limit_micros': 42000000,
+                    'historical_cumulative_limit_micros': (None if self.policy == UNBOUNDED_POLICY else 42000000),
                     'historical_cumulative_compliance': 'UNKNOWN_NOT_ZERO'}
 
     def _save_local(self, data, entry, save_local):
@@ -236,7 +261,8 @@ class SharedBudget:
             data = load(self.path)
             totals = self.validate(data)
             reservation = {'requests': 1, 'tokens': reserve_tokens, 'cost_micros': reserve_cost}
-            if any(totals[key] + value > data['limits'][key] for key, value in reservation.items()):
+            if any(data['limits'][key] is not None and totals[key] + value > data['limits'][key]
+                   for key, value in reservation.items()):
                 raise BudgetStop('shared_remaining_balance_or_reservation')
             entry = {'id': uuid.uuid4().hex, 'owner': self.owner, 'case': case_id, 'status': 'pending',
                      'adapter_version': 'v3', 'started_at': now(), 'pid': os.getpid(),

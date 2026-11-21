@@ -705,13 +705,8 @@ def assess_results(request, results):
             'coverage_kind': 'execution_evidence', 'final_delivery_verified': False}
 
 
-def assess_selection(request, answer, facts, results):
-    """Bind current fact selections to accepted proofs and requested comparisons.
-
-    Arithmetic dependencies do not count as displayed monthly values. A whole
-    result reference covers only its actual, accepted scalar children.
-    """
-    from .fact_arithmetic import derive
+def _proven_scalars(request, facts, results):
+    """Match actual scalar facts to this revision's accepted execution proofs."""
     proven = {}
     for index, (name, result) in enumerate(results):
         meta = (result.get('evidence') or {}).get('business_request') or {}
@@ -743,6 +738,88 @@ def assess_selection(request, answer, facts, results):
                     matches.append((index, proof))
             if matches:
                 proven[ref] = matches
+    return proven
+
+
+def _comparison_requirements(request, item, facts, proven):
+    from .fact_arithmetic import derive
+    if derive(item, facts) is None:
+        return set()
+    left, right = facts[item['left']], facts[item['right']]
+    matches = set()
+    for _, lp in proven.get(item['left'], ()):
+        for _, rp in proven.get(item['right'], ()):
+            if lp['target_id'] != rp['target_id']:
+                continue
+            target = next(t for t in request.targets if t.target_id == lp['target_id'])
+            for number, comparison in enumerate(target.comparisons):
+                same_groups = {k: v for k, v in lp.get('dimensions', {}).items()
+                               if not k.endswith(('_date_month', '_date_year'))} == {
+                                   k: v for k, v in rp.get('dimensions', {}).items()
+                                   if not k.endswith(('_date_month', '_date_year'))}
+                if (item['op'] == comparison.operation
+                        and (lp['operation'], lp['field']) == (rp['operation'], rp['field'])
+                        == (comparison.metric_operation, comparison.metric_field)
+                        and _periods(left['scope']) == {comparison.left_period}
+                        and _periods(right['scope']) == {comparison.right_period}
+                        and _companies(left['scope']) == _companies(right['scope']) and same_groups):
+                    matches.add((target.target_id, number))
+    return matches
+
+
+def verified_statistics_answer(request, facts, results):
+    """Select complete accepted statistics using the existing delivery checks.
+
+    This chooses references, never meanings, values or a completion flag. The
+    same selection assessor and renderer still decide whether it is deliverable.
+    Non-statistical and partial requests stay on their existing reply path.
+    """
+    if (request.unresolved or not request.targets
+            or any(m.operation not in {'sum', 'count', 'min', 'max'}
+                   for target in request.targets for m in target.metrics)
+            or any(result.get('status') not in {'SUCCESS', 'NO_DATA'} for _, result in results)
+            or not assess_results(request, results)['complete']):
+        return None
+    proven = _proven_scalars(request, facts, results)
+    answer, values = [], {}
+    for ref in proven:
+        fact = facts[ref]
+        # Conflicting readings of one measure cannot be auto-finalized. Equal
+        # duplicate readings contribute one displayed fact, not duplicate text.
+        key = json.dumps([sorted({p['target_id'] for _, p in proven[ref]}),
+                          fact['metric'], fact.get('unit'), fact.get('basis'),
+                          sorted(_companies(fact['scope'])), sorted(_periods(fact['scope'])),
+                          fact.get('dimensions') or {}], sort_keys=True, ensure_ascii=False)
+        if key in values:
+            if values[key] != fact['value']:
+                return None
+            continue
+        values[key] = fact['value']
+        answer.append(ref)
+    refs = tuple(answer)
+    operations = {comparison.operation for target in request.targets for comparison in target.comparisons}
+    for operation in sorted(operations):
+        for left in refs:
+            for right in refs:
+                item = {'op': operation, 'left': left, 'right': right}
+                if _comparison_requirements(request, item, facts, proven):
+                    answer.append(item)
+                    if len(answer) > 64:
+                        return None
+    if not answer or len(answer) > 64 or not assess_selection(request, answer, facts, results)['complete']:
+        return None
+    from .answer_evidence import select
+    return answer if select(answer, facts) is not None else None
+
+
+def assess_selection(request, answer, facts, results):
+    """Bind current fact selections to accepted proofs and requested comparisons.
+
+    Arithmetic dependencies do not count as displayed monthly values. A whole
+    result reference covers only its actual, accepted scalar children.
+    """
+    from .fact_arithmetic import derive
+    proven = _proven_scalars(request, facts, results)
     selected = set()
     comparisons = set()
     invalid = []
@@ -754,25 +831,8 @@ def assess_selection(request, answer, facts, results):
         if type(item) is not dict or derive(item, facts) is None:
             invalid.append({'answer_index': position, 'reason': 'invalid_arithmetic'})
             continue
-        left, right = facts[item['left']], facts[item['right']]
-        matched = False
-        for _, lp in proven.get(item['left'], ()):
-            for _, rp in proven.get(item['right'], ()):
-                if lp['target_id'] != rp['target_id']:
-                    continue
-                target = next(t for t in request.targets if t.target_id == lp['target_id'])
-                for number, comparison in enumerate(target.comparisons):
-                    same_groups = {k: v for k, v in lp.get('dimensions', {}).items()
-                                   if not k.endswith(('_date_month', '_date_year'))} == {
-                                       k: v for k, v in rp.get('dimensions', {}).items()
-                                       if not k.endswith(('_date_month', '_date_year'))}
-                    if (item['op'] == comparison.operation
-                            and (lp['operation'], lp['field']) == (rp['operation'], rp['field'])
-                            == (comparison.metric_operation, comparison.metric_field)
-                            and _periods(left['scope']) == {comparison.left_period}
-                            and _periods(right['scope']) == {comparison.right_period}
-                            and _companies(left['scope']) == _companies(right['scope']) and same_groups):
-                        comparisons.add((target.target_id, number)); matched = True
+        matched = _comparison_requirements(request, item, facts, proven)
+        comparisons.update(matched)
         if not matched:
             invalid.append({'answer_index': position, 'reason': 'comparison_requirement_mismatch'})
     selected_results = []

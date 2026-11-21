@@ -110,7 +110,7 @@ class CommonReadSourceTests(unittest.TestCase):
     def test_current_wrong_keys_quote_conflicts_and_unknown_source_types_are_invalid(self):
         for slot in ('seller','filter','metric'):
             for declaration in ({'kind':'current','key':'scope.periods'}, {'kind':'current','quote':'conflict'},
-                                {'kind':'unknown'}, {'kind':'current','quote':False}, {'kind':'current','approved':True},None):
+                                {'kind':'unknown'}, {'kind':'current','quote':False}, {'kind':'current','approved':True},False):
                 target=self.fixture.target();body=target['seller'] if slot=='seller' else target['filters'][0] if slot=='filter' else target['metrics'][0]
                 body['source']=declaration
                 with self.subTest(slot=slot,source=declaration),self.assertRaises(BusinessRequestError) as error:self.fixture.make(target)

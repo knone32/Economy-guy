@@ -86,8 +86,8 @@ class ScopeSourceShapeTests(unittest.TestCase):
         self.assertEqual(error.exception.status,'INVALID_ARGUMENTS')
 
     def test_wrong_types_extra_authority_fields_and_conflicting_quotes_are_structural_errors(self):
-        for declaration in (None,True,[],{'kind':'anchor'},{'kind':'context','quote':False},
-                            {'kind':'context','key':7},{'kind':'context','key':''},
+        for declaration in (0,True,[],{'kind':'anchor'},{'kind':'context','quote':False},
+                            {'kind':'context','key':7},{'kind':'context','key':False},
                             {'kind':'context','authorized':True}):
             target=deepcopy(self.target);target['company_source']=declaration
             with self.subTest(value=declaration),self.assertRaises(BusinessRequestError) as error:self.followup(target)

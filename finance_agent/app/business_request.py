@@ -376,11 +376,26 @@ def _source(quote,request,slot):
     return Source('current',quote)
 
 
+# Only these syntax carriers have an empty/default equivalence. Business values,
+# collections and Source.kind never pass through this table.
+_OPTIONAL_SOURCE_FIELDS=('quote','key')
+
+
+def _optional_source_fields(value):
+    result=dict(value)
+    for field in _OPTIONAL_SOURCE_FIELDS:
+        if field in result and (result[field] is None or type(result[field]) is str and result[field]==''):
+            result.pop(field)
+    return result
+
+
 def _source_declaration(value, quote, slot):
     """Normalize syntax only; runtime source resolution remains authoritative."""
+    if value is None or type(value) is str and value=='':value='current'
     if type(value) is str:
         declaration=Source(value,'',None)
     elif (type(value) is dict and 'kind' in value and not set(value)-{'kind','quote','key'}):
+        value=_optional_source_fields(value)
         kind,raw_quote,key=value.get('kind'),value.get('quote',''),value.get('key')
         if (type(kind) is not str or type(raw_quote) is not str or len(raw_quote)>4000
                 or key is not None and (type(key) is not str or not key or len(key)>512)):
@@ -474,7 +489,7 @@ def bind(content,*,actor,book,turn_id,request,revision=1,trusted_scope=None,prev
     trusted=trusted_scope or {};targets=[]
     for item in entries:
         allowed={'target_id','object','company_ids','company_quote','company_source','periods','period_quote','period_source',
-                 'seller','filters','metrics','group_by','comparisons','previous_target_id','relation','relation_quote'}
+                 'seller','filters','metrics','group_by','comparisons','previous_target_id','relation','relation_quote','relation_source'}
         if type(item) is not dict or set(item)-allowed:
             raise BusinessRequestError('读取目标含未知字段。','INVALID_ARGUMENTS')
         target_id,obj=item.get('target_id'),item.get('object')
@@ -487,9 +502,14 @@ def bind(content,*,actor,book,turn_id,request,revision=1,trusted_scope=None,prev
         relation_quote=item.get('relation_quote')
         if 'relation_quote' in item and type(relation_quote) is not str:
             raise BusinessRequestError('修订关系原话须为字符串。','INVALID_ARGUMENTS',slot='relation')
+        relation_declaration=None
+        if item.get('relation_source') is not None and item.get('relation_source')!='':
+            relation_declaration,relation_quote=_source_declaration(item['relation_source'],relation_quote,'relation')
+            if relation_declaration.kind!='current':
+                raise BusinessRequestError('修订关系必须由当前原话核实。','INVALID_ARGUMENTS',slot='relation')
         # Explicit default update is the same declaration as omitted update.
         # It grants neither replacement nor deletion of existing conditions.
-        if relation!='update' or relation_quote:
+        if relation!='update' or relation_quote or relation_declaration is not None:
             relation_source=_source(relation_quote,request,'relation')
         previous_id=item.get('previous_target_id')
         if previous_id is not None and (type(previous_id) is not str or not previous_id):
@@ -499,6 +519,8 @@ def bind(content,*,actor,book,turn_id,request,revision=1,trusted_scope=None,prev
                 raise BusinessRequestError('替换必须引用当前有效前文中的实际读取目标。','SCOPE_MISMATCH')
             relation_source=Source('current',relation_source.quote,
                 f'{previous.revision}/{previous.request_hash}/{previous_id}')
+        if relation_declaration is not None:
+            check_current_key(relation_declaration,relation_source or Source('current',''),'relation')
         if relation=='clarify':unresolved.append(target_id+'.relation')
         ids=item.get('company_ids',[])
         if type(ids) is not list or len(ids)>8 or any(type(c) is not str for c in ids):
