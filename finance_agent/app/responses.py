@@ -1322,16 +1322,43 @@ def preference_receipt(results):
     return '可信管理回执：偏好已按具体确认保存；尚未取得所有保存目标的后续独立读取核对证据，不能声称核对完成。'
 
 
+def render_invoice_pending(state, *, company_name=None, paused=False, actions=False):
+    """Render runtime-owned business slots, without inventing values or status."""
+    known=state['known']
+    company=company_name or known.get('company_id') or '企业待补充'
+    year,month=known.get('year'),known.get('month')
+    period=f'{year} 年 {month} 月' if year and month else '完整年月待补充'
+    number=known.get('invoice_no') or '编号待补充'
+    field={'purpose':'用途','remark':'备注'}.get(known.get('field'),'修改项目待确认')
+    lines=[f'{company} · {period} · 发票 {number}',f'准备修改：{field}。']
+    if 'new_value' in known:
+        lines.append('已提供的新内容：'+known['new_value'])
+    labels={'company_id':'企业','year':'年份','month':'月份','invoice_no':'发票编号',
+            'field':'修改项目','new_value':field+'的新内容' if known.get('field') in {'purpose','remark'} else '新内容',
+            'change_choice':'修改项目及新内容','invoice_selection':'目标发票核验'}
+    missing=state['missing_fields']
+    if missing:
+        lines.append('待补充：'+'、'.join(labels.get(key,'办理信息') for key in missing)+'。')
+    status='暂缓' if paused else '等待补充' if missing else '等待继续'
+    lines.append('状态：'+status+'，尚未保存。')
+    if actions:
+        lines.append('可选操作：补充内容、更正要求、暂缓后继续，或取消本次修改。')
+    return '\n'.join(lines)
+
+
 def render_stopped(results, stop_reason):
-    """失败不能回滚此前真实结果；也不展示拒绝项的业务data。"""
+    """Keep verified facts while distinguishing normal waiting from failure."""
     verified=[(name,outcome) for name,outcome in results
               if outcome['status'] in {'SUCCESS','NO_DATA','NO_CHANGE'} and name!='prepare_invoice_update'
               and outcome.get('evidence', {}).get('source') in {'current_sqlite', 'local_display_preference'}]
     if not verified:
         return None
-    failures=[]
+    failures=[];waiting=[]
     for index,(name,outcome) in enumerate(results):
         if outcome['status'] in {'SUCCESS','NO_DATA','NO_CHANGE'}:continue
+        if outcome['status']=='WAITING_USER':
+            waiting.append(render_tool_failure(outcome['status'],name,outcome))
+            continue
         key=outcome.get('evidence',{}).get('operation',{}).get('key')
         company=outcome.get('evidence',{}).get('scope',{}).get('company_id')
         resolved=(name=='manage_preference' and outcome['status']=='NOT_FOUND' and key and any(
@@ -1339,7 +1366,11 @@ def render_stopped(results, stop_reason):
             and r.get('evidence',{}).get('scope',{}).get('company_id')==company
             and r.get('evidence',{}).get('operation',{}).get('key')==key for n,r in results[index+1:]))
         if not resolved:failures.append(render_tool_failure(outcome['status'],name,outcome))
+    if stop_reason=='WAITING_USER' and not failures:
+        notice='\n'.join(dict.fromkeys(waiting)) or '等待您补充必要信息，尚未保存。'
+        return '已核实的结果：\n'+render_information(verified)+'\n'+notice
     reason={'MODEL_LIMIT':'模型请求上限','TOOL_LIMIT':'实际工具调用上限','CONTEXT_LIMIT':'上下文上限',
+            'WAITING_USER':'等待补充信息，尚未保存',
             'WAITING_CONFIRMATION':'等待可信确认，尚未保存'}.get(stop_reason,'按真实执行状态停止')
     return ('已核实的部分结果：\n'+render_information(verified)
             +'\n当前状态：'+reason+'。后续处理已停止；已查到的结果保留，保存状态以操作回执为准。'
@@ -1378,6 +1409,14 @@ def render_clarification(value):
 
 def render_tool_failure(status, tool=None, outcome=None):
     """User-facing guidance; diagnostic codes and provider details stay in Trace."""
+    if status=='WAITING_USER':
+        data=(outcome or {}).get('data') or {}
+        if ((outcome or {}).get('evidence',{}).get('source')=='harness_business_action'
+                and isinstance(data.get('known'),dict) and isinstance(data.get('missing_fields'),(list,tuple))):
+            return render_invoice_pending(data,actions=True)
+        if (outcome or {}).get('error'):
+            return outcome['error']
+        return '等待您补充必要信息，尚未保存。'
     if (outcome or {}).get("evidence", {}).get("source") in {"seller_request_scope", "business_request"}:
         return outcome["error"]
     if status == "DENIED" and (outcome or {}).get("evidence", {}).get("source") == "tool_dispatch":

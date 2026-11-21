@@ -5,7 +5,7 @@ import sqlite3
 from .cli_chat import safe_text
 from .cli_workspaces import company_access
 from .provenance import ANNUAL
-from .responses import explicit_scope, render_reference_error
+from .responses import explicit_scope, render_reference_error, render_invoice_pending
 from .session_store import SessionBusyError, SessionStore
 from .tasks import task_details
 from .updates import inspect_request
@@ -204,20 +204,7 @@ class ConversationUI:
     def invoice_candidate_text(self, row):
         state=invoice_business_state(row['pending']);known=state['known']
         company=self.company_name(known['company_id']) if known.get('company_id') else '企业待补充'
-        year,month=known.get('year'),known.get('month')
-        period=f'{year} 年 {month} 月' if year and month else '完整年月待补充'
-        number=known.get('invoice_no') or '编号待补充'
-        field={'purpose':'用途','remark':'备注'}.get(known.get('field'),'修改项目待确认')
-        lines=[f'{company} · {period} · 发票 {number}',f'准备修改：{field}。']
-        if 'new_value' in known:
-            lines.append('已提供的新内容：'+known['new_value'])
-        labels={'company_id':'企业','year':'年份','month':'月份','invoice_no':'发票编号',
-                'field':'修改项目','new_value':'新内容','change_choice':'修改项目及新内容',
-                'invoice_selection':'目标发票核验'}
-        if state['missing_fields']:
-            lines.append('待补充：'+'、'.join(labels.get(key,'办理信息') for key in state['missing_fields'])+'。')
-        lines.append('状态：'+('暂缓' if row.get('state')=='PAUSED' else '等待继续')+'，尚未保存。')
-        return '\n'.join(lines)
+        return render_invoice_pending(state,company_name=company,paused=row.get('state')=='PAUSED')
 
     def show_invoice_candidates(self):
         if not self.conversation:

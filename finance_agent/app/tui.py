@@ -1572,7 +1572,18 @@ class AgentWorkspace(ConversationUI, App):
         coverage = response.get("goal_coverage")
         operation = response["operation_receipt"]
         unchanged = not receipt and not batch and operation["status"] == "CURRENT_VALUE_MATCHES"
-        notice = response.get("assistant_text") or response["chat_notice"]
+        pending=self.agent.pending_intent
+        waiting_notice=None
+        if (stop=='WAITING_USER' and operation['status'] in {'NOT_SUBMITTED','AMBIGUOUS'}
+                and isinstance(pending,dict) and pending.get('business_action')=='single_invoice'
+                and pending.get('actor')==self.user and pending.get('workbook')==str(self.db)
+                and pending.get('missing_fields')
+                and all(outcome['status'] in {'SUCCESS','NO_DATA','NO_CHANGE','WAITING_USER','WAITING_CONFIRMATION'}
+                        for _,outcome in results)):
+            waiting_notice=self.invoice_candidate_text({'pending':pending,'state':'ACTIVE'})
+            waiting_notice+='\n可选操作：补充内容、更正要求、暂缓后继续，或取消本次修改。'
+            self.business_message('发票修改 · 等待补充',waiting_notice,pending.get('scope',{}).get('company_id',()))
+        notice = waiting_notice or response.get("assistant_text") or response["chat_notice"]
         if notice:
             for tool, result in (() if response.get("assistant_text") is not None else results):
                 if result["status"] not in {"SUCCESS", "NO_DATA"} or result["evidence"].get("source") != "current_sqlite":
