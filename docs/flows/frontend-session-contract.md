@@ -134,3 +134,10 @@ view = host.send_message(user_text, expected=view['context'])
 宿主忙碌时，其他线程读取／命令返回 `SessionConflict`，避免切换中把旧 Agent 与新 chat 拼成快照；真人确认 UI 使用回调中已经绑定的快照。当前草稿或实际提交回执优先于旧提案，执行后的原 batch status／逐项结果在 `execution` 中返回，确认完成不会继续呈现为待批准提案。宿主异常另给持久化失败信息，不把错误伪报为未提交。以上最后的适配边界收紧为源码核对，未扩付费回归。
 
 Windows 已存凭据的宿主应复用 TUI 路径：`resolve_connection(..., require_key=False)` 取得已授权配置，再由 `WindowsVault.read(profile_target(profile, actor))` 读取该 Profile 的现有密钥，构造 `ModelConnection` 交给 Agent；不能只依赖环境变量而宣称系统没有凭据。密钥只留宿主，不能输出到快照、前端或日志。
+
+
+### 实际入口补验签收（1a05bc9）
+
+fb85 的最后源码核对项已补成实际调用证据：原历史提交核实后的状态投影、存储失败独立回执、pause/cancel 的 current/historical 分离，以及真实会话切换中间态的同线程／跨线程拒绝。新会话恢复后不继承旧要求、对象或批准。模型仅用于新的可信锚点／待补前置，其中一次 get_invoice 明细覆盖首错已修；相同四个逐字段事实引用在 1a05bc9 回归为 4/4。程序边界证据与 Live 分开，完整提交和真人批准没有重复。
+
+DSH 对接以 `docs/ops/DSH-ENTRY-HANDOFF.md` 为当前交接摘要。上述“最后仅源码核对”保留为历史状态，现由本节取代；不据此宣布前端或真人 GUI 验收通过。

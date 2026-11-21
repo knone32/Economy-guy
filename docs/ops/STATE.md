@@ -1,5 +1,17 @@
 # V3当前状态（总控权威；上海2026-11-21）
 
+## 2026-11-21：DSH 交接前实际入口边界补验完成
+
+业务源码冻结并受测于 `1a05bc993e19817d0015b3adab81d1cd38874905`，快照／并发实现仍为 `fb85a7b`。原 SessionHost 实际入口已补验：历史真人提交只读核实后投影 COMMITTED、readback_verified=true、committed_this_turn=false；受控会话存储异常单列 FAILED，不覆盖原成功提交回执。以上两项在 fb85 通过，后续修复不重跑、不迁移成绩。
+
+新未提交待补经实际模型建立后，原 pause/cancel 入口分别返回真实 PAUSED／CANCELLED；当前 result=null，旧正文仅置 historical_result，取消不留有效要求、候选或预览。原 new_conversation 已实际到达“Store 已切换、旧 Agent 未替换”的中间边界：同线程混合会话读取、其他线程 snapshot／cancel 均 SessionConflict；恢复执行后新会话没有旧对象、要求或批准。该调度屏障及存储异常为程序故障／并发证据，不是模型或人工成绩。
+
+首个真实阻断保留：fb85 的 get_invoice 正确展示四字段，却缺少完整票号目标的明细覆盖证明，逐字段事实也未被计入交付，最终 0/4。1a05bc9 仅补既有证明器：独立要求含精确票号、fresh 结果匹配该联合对象时生成实际字段证明；选中字段须对应同一父结果。单张不能替代整月、遗漏字段不能完成，不改语义接口、提示词、SQL 或批准。失败节点真实回归仍用 get_invoice 和四个逐字段引用，最终 4/4；随后仅执行尚未执行的待补与边界步骤。
+
+全轮新增 8 HTTP（原失败 3、修后回归／待补 5），原账累计 188 次／1,591,359 tokens／2,555,727 微元峰价上界，累计上限 null。全部原始停止／失败保留；初次复用提交时选错当前会话另记为 0 HTTP 准备错误，随后通过原 Store 切换到提交所属归档会话。账簿／审计零变化，无新批准或提交，原完整保存链和 A/B／重启证据均复用。
+
+限定签收：可将此薄接口交 DSH 对接；不代表新 GUI、真人可用性或陌生泛化已验。交接入口见 `docs/ops/DSH-ENTRY-HANDOFF.md` 与现有接口契约。本轮不再增加检查或重跑已通过节点。证据目录：本地 `evidence-root/recovery-boundary-20261121/fb85-entry-boundary-fixed/CLOSEOUT.public.json`、RESULT、逐节点快照及 BUSY-BOUNDARY；原失败留在 fb85-entry-boundary-correct-chat。
+
 ## 2026-11-21：有限历史裁剪与 DSH 薄适配收口
 
 受测源码 `91ed81a293377353934b31dd086a8a43748591a1`，在隔离已提交工作树执行，未纳入并行新增的 GUI 文件。沿原 Agent／Context／SessionStore，实际 18,000 字符上限触发 `older_session_turns` 裁剪，没有注入虚假历史。真实模型保留改口后的销售方 B、2027-02 和金额／张数，首卡与末答交付 1,120.40 元／1 张；裁剪后的 MK-58219 备注待补仍保留可信对象、字段与缺少 new_value，禁止提交未被当作暂停。之后原候选确实暂停／CAS 恢复，并继续保留待补；取消留终态，旧对象未复活。
