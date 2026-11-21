@@ -120,7 +120,8 @@ def catalog(results, receipt, turn_id):
                 if field in data:
                     value = data[field] if data[field] not in (None, '') else '（空）'
                     add(key + '.' + field, label, f'{scope} {identity}：{label} {value}。',
-                        type='text', value=value, parent_ref=parent)
+                        type='text', value=value, parent_ref=parent, source_object='invoices',
+                        source_field='amount_cents' if field == 'amount' else field)
                     if field == 'amount':
                         facts[prefix + key + '.' + field].update(scalar(cents(data[field]), unit='cents',
                             metric=('invoices', 'column', 'amount_cents'), cohort='[]', subject=identity + ' · ' + label,

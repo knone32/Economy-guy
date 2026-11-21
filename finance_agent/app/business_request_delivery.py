@@ -663,16 +663,22 @@ def check_dedicated(request, name, result, actor, book):
     if not rows:
         ids.update(t.target_id for t in targets)
     accepted = annotate(result, request, sorted(ids))
-    # Monthly detail executors return the entire authorized period, not a page
-    # or one selected invoice. Attribute only actual requested source fields;
-    # a single-invoice lookup cannot certify the whole period by this route.
-    if TOOL_SPECS[name].read_mode == 'monthly' and object_name == 'invoices':
+    # A monthly executor supplies its full period. A single-invoice executor
+    # supplies a complete set only when the independent request itself fixes
+    # that exact invoice key; a lookup must never certify the whole period.
+    single_invoice = (TOOL_SPECS[name].read_mode == 'invoice' and object_name == 'invoices'
+                      and len(rows) == 1 and rows[0].get('invoice_no') == scope.get('invoice_no'))
+    detail_targets = targets if TOOL_SPECS[name].read_mode == 'monthly' else [
+        target for target in targets if single_invoice and any(
+            f.field == 'invoice_no' and f.operator == '=' and f.value == scope['invoice_no']
+            for f in target.filters)]
+    if object_name == 'invoices' and detail_targets:
         from .business_sql import TABLES
         declared = [part.strip().split()[0] for part in TABLES[object_name].split(',')]
         returned = {field for field in declared
                     if all(('amount' if field == 'amount_cents' else field) in row for row in rows)}
         proofs, displayed = [], []
-        for target in targets:
+        for target in detail_targets:
             if set(target.group_by) - {'company_id', 'period'}:
                 continue
             for metric in target.metrics:
@@ -681,7 +687,8 @@ def check_dedicated(request, name, result, actor, book):
                     continue
                 proofs.append({'target_id':target.target_id,'operation':'details','field':metric.field,
                     'scope':deepcopy(scope),'dimensions':{},'conditions':_expected_filters(target),
-                    'all_groups':True,'source_columns':sorted(returned),'absence':not rows})
+                    'all_groups':True,'source_columns':sorted(returned),'absence':not rows,
+                    'single_invoice':single_invoice})
                 displayed.extend(field for field in fields if field not in displayed)
         accepted['evidence']['business_request']['measures'] = proofs
         if displayed:
@@ -933,6 +940,20 @@ def assess_selection(request, answer, facts, results):
                 and original_meta.get('revision')==request.revision):
             meta['measures'].extend(proof for proof in original_meta.get('measures',())
                                     if proof.get('operation')=='details')
+        elif (original_meta.get('request_hash') == request.request_hash
+                and original_meta.get('revision') == request.revision):
+            # Runtime field facts from one proven exact invoice may be delivered
+            # individually. A missing requested field stays partial; a scalar
+            # value or selected row never certifies an unselected monthly table.
+            parents = {ref for ref, fact in facts.items() if fact.get('type') == 'result'
+                       and ref.rsplit(':', 1)[-1] == f'r{index}.result'}
+            fields = {fact['source_field'] for ref, fact in facts.items()
+                      if ref in selected and fact.get('parent_ref') in parents
+                      and fact.get('source_object') == 'invoices' and fact.get('source_field')}
+            meta['measures'].extend(proof for proof in original_meta.get('measures', ())
+                if proof.get('operation') == 'details' and proof.get('single_invoice') is True
+                and (set(proof['source_columns']) <= fields if proof['field'] == '*'
+                     else proof['field'] in fields))
         selected_results.append((name, copied))
     assessment = assess_results(request, selected_results)
     # The ordinary axes above have known request domains. Other actual business
