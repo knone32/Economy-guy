@@ -106,3 +106,19 @@ failure: stage?, original_status?, recoverable?, message?
 原 TUI 已通过同一账号／账簿两对话的真实模型续查与正常冷启动续查：不同销售方的有效要求分别由原 SessionStore 保存，经原 Agent 类型及目录／权限核对后使用，实际首卡和末答完整交付。只读 `seller.names` 镜像只有与 Runtime 独立绑定的集合完全相同时才接受，不参与身份或权限判定；存储的 Source 引用使用 `source_ref`，不放宽全局脱敏规则。来源、范围、部分交付核验继续保留。
 
 此实现只覆盖原 TUI 的有限当前读取要求连续性；上文“新 Agent 恢复尚未接线／自然语言证据待验证”为当时历史状态，现由本节取代。通用 `snapshot(session)`、远程命令宿主、Dot/DSH、Chat 前端仍是设计；没有第二状态 owner，也不从摘要恢复草稿、授权或批准。未知提交继续交给原 WriteCoordinator 只读核实，不用新模型回答或再次提交来猜测结果。
+
+## DSH 可调用宿主适配（进程内）
+
+`app.session_host.SessionHost(store, agent_factory, confirm=trusted_human_callback)` 已提供薄调用入口；没有 HTTP 服务、前端或生产认证。`store` 必须是宿主以实际账号／账簿打开的原 `SessionStore`；`agent_factory(actor, workbook)` 必须创建同身份的新原 `Agent`，模型配置和密钥由宿主持有。消息线程调用同步方法，确认回调在原办理链等待真人决定，前端自行转发到 UI 主线程。不得把客户端函数或模型参数接成该回调。
+
+```python
+host = SessionHost(store, agent_factory, confirm=human_dialog)
+view = host.snapshot()
+view = host.send_message(user_text, expected=view['context'])
+```
+
+可调用方法：`snapshot()`、`list_conversations()`、`new_conversation(expected=...)`、`switch_conversation(chat, expected=...)`、`send_message(text, expected=...)`、`resume_candidate(id, revision, expected=...)`、`pause_current(expected=...)`、`cancel_current(expected=...)`、`preview()`、`inspect_submission(expected=...)`。候选列表在快照 `candidates` 中，恢复采用原 CAS 修订。宿主绑定 generation／revision／chat／candidate token；过期或并行命令抛 `SessionConflict`，必须刷新，不能自动重放。退出后关闭宿主持有的 `store`。
+
+统一快照分开给出 `requirement`、`pending`、`candidates`、`proposal`、`preview`、`receipt`、`persistence` 和 `result`（正文、覆盖与原事实渲染卡片）。草稿指纹、批准 token 不作为客户端命令参数。`preview()` 只读；实际确认由原 `run_invoice_batch` 或原单票 coordinator 执行。未安装可信确认通道时只返回核验提案，不代批、代拒或提交。持久化失败单列 `persistence.status=FAILED`，不能覆盖实际提交回执；未知提交先用原 owner 核查，不重提。
+
+适配器不恢复聊天正文中的对象、事实或批准；只读取原 Store 当前 BusinessRequest、reference_state 与原待补记录。历史未知请求交原 WriteCoordinator，只读核实。新前端应采用快照及实际回执展示状态，不能从模型末答猜是否保存。本节的具体 Live／程序验证范围以同 SHA 验收记录为准，接口存在本身不等于人工可用性通过。
