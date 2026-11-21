@@ -131,8 +131,9 @@ class SessionHost:
                           'cards': render_information(results) if results else ''}
         candidates = self.store.list_invoice_candidates()
         token = self.store.invoice_token
+        paused_data = json.loads(json.dumps(pending,ensure_ascii=False)) if paused else None
         saved_pause = paused and any((row['id'],row['revision']) == token and row['state'] == 'PAUSED'
-                                     and row['pending'] == pending for row in candidates)
+                                     and row['pending'] == paused_data for row in candidates)
         status = ('UNKNOWN_OUTCOME' if agent.coordinator.has_unverified_update else
                   'CANCELLED' if cancelled else
                   receipt['status'] if saved else
