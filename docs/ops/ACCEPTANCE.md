@@ -12,7 +12,7 @@
 | 零API④ 完整／部分收尾 | 13b67a8 | 无 | 全指标事实直出；缺张数仍partial | 无；审计0 | PASS；准备参数错误保留，CORRECTION.json |
 | A01 完整名称 | 13b67a8 | 无 | 唯一销售方金额/张数卡片及末答正确 | 无；审计0 | PASS；A01-original-first.json |
 | A02 共享简称 | 13b67a8 | 无 | 两家可区分候选并追问，未合并统计 | 无；审计0 | PASS；A02-original-first.json |
-| A03 仅回答名称 | 13b67a8 | 工具调用参数 | 要求继承正确，但多余顶层seller被拒，无统计 | 无；审计0 | FAIL；A03-original-first.json |
+| A03 仅回答名称 | 13b67a8 | 工具说明／Schema层级不一致 | 要求继承正确，但多余顶层seller被拒，无统计 | 无；审计0 | 原FAIL保留；A03-original-first.json |
 | B01 筛选前置 | 13b67a8 | SQL证据核验 | 要求正确；查询形式未获证据支持，无统计 | 无；审计0 | FAIL；B01-original-first.json |
 | B02 保留筛选 | 13b67a8 | 前置失败，停止依赖 | 未发送模型输入 | 无；审计0 | NOT_RUN；依赖B01 |
 | B03 明确撤销筛选 | 13b67a8 | 前置失败，停止依赖 | 未发送模型输入 | 无；审计0 | NOT_RUN；依赖B01 |
@@ -21,7 +21,7 @@
 
 证据根目录为本地business-20261120/v3-c2-acceptance/read-context-skill-13b67-v1-complete/。原独立首表FINAL-FIRST-UNIFIED-SIX-COLUMN.public.json不变；USER-SIX-COLUMN-FIRST.public.json仅投影上述六列并追加归因，不修改原分。所有实际要求已由独立SQL/业务合同核对，不能拿生成SQL自身作用户要求的依据。
 
-A03是模型工具参数超出声明schema，不冒充Runtime对合法参数误拒。B01原件仅明确SQL_EVIDENCE_UNSUPPORTED；is_blank是允许的SQLite函数，静态代码可定位=0形式等归因能力边界，但未通过重放动态隔离唯一内部原因，不能称SQL非法或业务理解失败。C02只读依赖检查确认rules为空，不把验收前提缺失算作模型不理解，也不补规则改原首分。B两项改口和Skill词义能力均尚未验证，不追加相似题。
+A03参数确实超出Schema，Runtime拒绝符合契约；补充审查确认，当时模型实际工具描述写“可选seller”，却未说明它只能位于read_scope.seller，给出了与Schema不一致的层级指引。因此不能只记作模型不遵协议，原FAIL不改。当前第一刀统一说明与Schema：BusinessRequest由Runtime持有，SQL仍落实筛选/指标/分组；兼容候选只能位于read_scope，顶层seller继续拒绝，不静默删除。描述契约红例复现后，3项零API契约正反检查通过；尚未迁移为修后Live成绩。B01原件仅明确SQL_EVIDENCE_UNSUPPORTED；is_blank是允许的SQLite函数，静态代码可定位=0形式等归因能力边界，但未通过重放动态隔离唯一内部原因，不能称SQL非法或业务理解失败。C02只读依赖检查确认rules为空，不把验收前提缺失算作模型不理解，也不补规则改原首分。B两项改口和Skill词义能力均尚未验证，不追加相似题。
 
 新增9请求／55505tokens／133971微元峰价保守上界；同账累计78／718959／967451，unknown_usage=false、累计三限null。整个虚构库字节未变，审计/草稿/确认0。原Live分数、旧提交链及人工GUI反馈继续单列。
 

@@ -87,7 +87,7 @@ DESCRIPTIONS = {
     "set_schedule":"仅真正多步依赖时提出本轮粗计划；不是长期任务或授权。再次调用为一次显式重规划，不创造进展或预算。简单查询直接调用业务工具。",
 }
 PARAMETERS = {"relation":"本次要求与上一办理的业务关系，不是权限或内部状态。",
-              "read_scope":"可选。仅当前可信范围缺失时，与SQL同次提交只读归一化候选：规范企业和年月、当前原话中的企业及日期quote。企业quote须与read_catalog中登记的编号/全称/简称精确唯一对应；两位年须由该企业账期目录唯一核实。不会授权修改，无法唯一绑定时追问。",
+              "read_scope":"可选兼容候选，仅当前可信读取范围缺失时提供。包含规范企业、年月及当前原话quote；销售方候选只能嵌套为read_scope.seller。已绑定BusinessRequest时通常省略本候选，不能用它重新定义或扩大已固定要求。企业/日期/销售方仍按当前目录和来源核验，不授予修改权限。",
               "value_ref":"本次填写内容的语义来源，由系统验证实际出处。",
               "sql":"单条 SELECT 或只读 WITH 查询。严格遵守运行时给出的企业、账期与投影字段。",
               "company_id":"企业编号，例如C001；不能凭空猜测。", "year":"明确的业务年份。",
@@ -128,8 +128,17 @@ for tool in TOOLS:
             schema["description"] += " 年度目录只将月份设为0；全账簿目录年份和月份都设为0。"
 for tool in TOOLS:
     if tool['function']['name']=='query_business_sql':
-        tool['function']['parameters']['properties']['read_scope'] = {**READ_SCOPE_SCHEMA,'description':PARAMETERS['read_scope']}
-        tool['function']['description'] += ' 当前企业或年月尚未合法绑定时，可在同一次调用用read_scope按当前read_catalog给出可精确核验的原话候选；不能从SQL里的编号或日期自行取得范围。未登记简称或多义年份需追问。 可选seller={mode:single或contains,quote:当前完整条件原话,value:原话名称或包含词}；single多家须追问，contains仅记录模型对当前条件的解释，不能推翻原话完整卖方身份。'
+        scope_schema = deepcopy(READ_SCOPE_SCHEMA)
+        scope_schema['description'] = PARAMETERS['read_scope']
+        scope_schema['properties']['seller'] = {**scope_schema['properties']['seller'],
+            'description':'仅位于read_scope.seller；字段及枚举以此嵌套Schema为准。候选关系仍须按原话、当前目录和已固定要求核实，不是范围或修改授权。'}
+        tool['function']['parameters']['properties']['read_scope'] = scope_schema
+        tool['function']['description'] += (' 顶层参数只接受sql和可选read_scope，不接受顶层seller、company_id或periods。'
+            '已绑定BusinessRequest时，Runtime持有当前用户要求、企业/账期快照及来源；通常仅传sql，'
+            '由SQL落实所需筛选、指标与分组，结果仍与同一要求核对，不必再复制一份销售方候选。'
+            '仅兼容路径在可信读取范围缺失时可用read_scope按read_catalog提交来源候选；'
+            '其可选销售方对象必须位于read_scope.seller，不能由SQL或该候选自行取得或扩大范围。'
+            '多义对象仍追问；不得将模糊范围替代完整销售方身份。')
     if tool["function"]["name"] == "count_invoice_fields":
         selector = tool["function"]["parameters"]["properties"]["selector"]
         selector["enum"] = list(queries.INVOICE_FIELD_LABELS)
