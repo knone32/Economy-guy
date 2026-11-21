@@ -2336,6 +2336,19 @@ class Agent:
                         raise BusinessRequestError('读取要求结构补正不能切换为其他业务路径。','INVALID_ARGUMENTS')
                     if route.get('kind')=='legacy' and set(route)=={'kind'}:
                         business_phase=False
+                        # Advertise only reachable capabilities for this owner.
+                        # Without a read request, financial queries would be
+                        # rejected at dispatch. Single-invoice actions already
+                        # resolve their target and read fresh values internally.
+                        scope=self.update_session.expected_scope or {}
+                        point={key:values[0] for key,values in scope.items()
+                               if key in {'company_id','invoice_no'}
+                               and isinstance(values,(list,tuple)) and len(values)==1}
+                        point_read=self.coordinator.read_basis('get_invoice',point,
+                            actor=actor,book=self.db_path) is not None
+                        turn_tools=[tool for tool in turn_tools
+                            if tool['function']['name'] not in FINANCIAL_TOOLS
+                            or tool['function']['name']=='get_invoice' and point_read]
                         self.trace('business_request.legacy_route',{'read_authorization':False})
                         continue
                     if route.get('kind')=='general' and set(route)=={'kind','text'} and type(route['text']) is str:

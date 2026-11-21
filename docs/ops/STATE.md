@@ -2,6 +2,8 @@
 
 ## 当前主任务：可读、可恢复并由真人完成的一条办理链
 
+73e3b0e新Live继续：本轮legacy选路正确，但模型先调用工具列表中的get_invoice；原分发因缺BusinessRequest/有效显式办理read_basis而正确拒绝。首错是当前可见工具与实际可执行能力不一致，未放宽权限。原失败暂缓已使旧展示来源失效，不从历史回包伪造锚点。现在在原legacy交接处按现有能力过滤不可执行财务读取；单票change_invoice继续复用原目标解析、fresh读取、待补/预览与真人确认。显式编辑owner确有read_basis时仍保留对应get_invoice，分发拒绝不变。依用户指示不跑零API；提交后用真实模型重新建立fresh查询来源，直接接原完整链，不将查询重查计为新陌生成绩。新增2HTTP，同原账累计110，零业务写入/自动批准。run-06因旧已停止工作台占锁而API0，属启动阻断，不记模型失败；旧进程已关闭。证据为本地run-07/OBSERVATION.public.json及run-06/BOOTSTRAP-BLOCK.public.json。
+
 ed2e79f真实续办已通过选中VX-A→原change_invoice fresh读取→用途待补，随后模型正确输出turn_action=pause，原Runtime暂缓回执正确。但会话第6/7轮仍RUNNING、候选表为空，恢复节点停止。源码定位：候选存储拒绝被redact改变的载荷；脱敏正则未限制sk-的词边界，误命中真实账簿路径task-chain，实际输入亦可见accountant-ta[REDACTED]。现在仅收紧密钥token边界，结构化密钥字段、Bearer及独立sk-凭据仍按原逻辑遮蔽，不放宽候选来源/权限/修订。依用户最新指示不再运行零API测试，提交后直接Live重走尚未持久化的办理段；不重查已签收查询。原失败保留。新增4HTTP/29912tokens/42562微元，同原账108/963780/1495974，三限null、unknown_usage=false，零业务写入与自动批准。证据为本地run-05/OBSERVATION.public.json。
 
 59d7d38原链Live回归：查询PASS，独立要求保留四个details(field)，首卡与末答均显示VX-A、3478.50元、用途/备注未填写，与独立SQLite真值相同。下一句开始用途修改并暂缺新值时，模型错误输出read并继承查询指标，将待填用途记为读取unresolved；现有legacy route可表达办理，未被选中。该节点未调用业务工具，无候选/预览/批准/提交，依赖停止。4HTTP新增35682tokens/87718微元，同原账104/933868/1453412，三限null、unknown_usage=false；旧失败及本次新失败均保留。证据：本地evidence-root/accountant-task-chain-20261121/run-04/OBSERVATION.public.json。

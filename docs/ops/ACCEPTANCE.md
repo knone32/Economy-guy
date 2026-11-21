@@ -1,5 +1,7 @@
 # 验收（V3；不同SHA不拼接）
 
+73e3b0e新续办2HTTP：legacy选路PASS，首次get_invoice被原读取依据门禁拒绝，FAIL归工具暴露/执行契约；无越权、无业务写入。仅收紧原legacy工具暴露到现有owner实际可执行能力，保留显式编辑owner合法点读，change_invoice内部目标解析和fresh读取及原分发拒绝不变。不跑零API，下一次真实模型重新建立fresh查询来源后直接办理，旧失败保留、不重算陌生首分。同原账110请求；API0的旧进程会话占锁启动另记。证据为run-07/OBSERVATION.public.json。
+
 ed2e79f续办：选择对象和建立用途待补PASS，模型暂缓意图PASS；原会话持久化FAIL，候选为空。首断点为脱敏器将真实task-chain路径中的sk-误当密钥，候选载荷因此未通过严格原样校验；不是模型暂停错误。修订仅收紧凭据token边界，依最新指示不跑零API，下一次直接Live验证持久化并继续GUI恢复/改口。新增4HTTP，原账108/963780tokens/1495974微元，业务写入/自动批准0。原失败及明细查询旧成绩不改，程序与人工GUI仍分开。证据为本地run-05/OBSERVATION.public.json。
 
 59d7d38已执行原链回归：查询PASS；四个独立逐字段要求、首卡和末答完整，SQLite真值VX-A/347850分/空用途/空备注。第二节点FAIL：开始修改但尚缺新值被模型解释成旧查询的read+unresolved，未选择已支持的legacy，业务工具0；后续暂停/恢复/改口/确认/保存/重启均停止，业务记录/旧审计不变。4HTTP，同原账累计104/933868tokens/1453412微元峰价上界；旧首分不改。仅对已有route补齐读取与变更的定义及继承前提，原Loop/Schema/批准不变，9项相关零API检查通过。下一Live只从原会话已展示对象续办，不重复查询；不把程序接线成功当模型理解通过。详见本地run-04/OBSERVATION.public.json。
