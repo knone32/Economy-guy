@@ -47,6 +47,10 @@ def _field_label(field):
 class GuiHost:
     """HTTP-facing adapter; ``SessionHost`` is the only command/business owner."""
 
+    # A callback handle is ephemeral. On expiry the browser dialog is closed;
+    # this is an interruption, never an approval or a rejection.
+    CONFIRMATION_TIMEOUT = 900
+
     def __init__(self, db_path, user_id="U001", *, session_path=None, mode="live",
                  profile=None, model=None, trace_path=None, max_context_chars=48000,
                  profiles_file=None, profiles_local=None):
@@ -69,6 +73,7 @@ class GuiHost:
         self._last = None
         self._last_context = None
         self._confirmation = None
+        self._confirmation_expired = False
 
         self.store = SessionStore(self.session_path, self.db_path, self.user_id)
         self.host = SessionHost(self.store, self._factory, confirm=self._confirm,
@@ -118,13 +123,21 @@ class GuiHost:
         }
         with self._cond:
             self._confirmation = item
+            self._confirmation_expired = False
             bound = payload.get("snapshot") if isinstance(payload, dict) else None
             if isinstance(bound, dict):
                 self._last = bound
                 self._last_context = bound.get("context")
             self._cond.notify_all()
-        if not item["event"].wait(timeout=900):
-            raise GuiError('等待真人确认中断；未产生批准，不能自动提交。')
+        if not item["event"].wait(timeout=self.CONFIRMATION_TIMEOUT):
+            message = "等待真人确认已超时；未产生批准，未提交。请刷新或重新提出修改。"
+            with self._cond:
+                if self._confirmation is item:
+                    self._confirmation = None
+                self._confirmation_expired = True
+                self._error = message
+                self._cond.notify_all()
+            raise GuiError(message)
         return item["answer"] is True
 
     def _confirmation_view(self):
@@ -160,6 +173,8 @@ class GuiHost:
         with self._cond:
             item = self._confirmation
             if not item or item.get("id") != preview_id:
+                if self._confirmation_expired:
+                    raise GuiError("确认已超时失效；未批准、未提交，请刷新后重新提出修改。")
                 raise GuiError("预览已失效，请刷新后重新提出修改。")
             if context != (item['payload'].get('snapshot') or {}).get('context'):
                 raise GuiError('预览所属会话或修订不一致，请刷新。')
@@ -178,6 +193,8 @@ class GuiHost:
         with self._cond:
             item = self._confirmation
             if not item:
+                if self._confirmation_expired:
+                    raise GuiError("确认已超时失效；未批准、未提交，请刷新。")
                 raise GuiError("没有待确认的预览。")
             if preview_id != item['id'] or context != (item['payload'].get('snapshot') or {}).get('context'):
                 raise GuiError('取消指向旧预览，请刷新。')
@@ -229,6 +246,7 @@ class GuiHost:
             self._busy = True
             self._done.clear()
             self._confirmation = None
+            self._confirmation_expired = False
             self._worker = threading.Thread(target=self._worker_run, args=(text, expected), daemon=True)
             self._worker.start()
             while True:
@@ -454,9 +472,22 @@ class GuiHost:
                 chats = []
             turns = self._history()
         display = raw.get("display") if isinstance(raw.get("display"), dict) else None
+        confirmation_state = ("ACTIVE" if self._confirmation else
+                              "EXPIRED" if self._confirmation_expired else "NONE")
+        receipt = self._receipt_view(raw.get("receipt"))
+        if self._confirmation_expired:
+            # A timeout interrupts the confirmation wait; there is no current
+            # submission receipt to show. Never turn that interruption into a
+            # business "ERROR/UNKNOWN_OUTCOME" claim.
+            receipt = None
         return {
             "context": context,
             "display": display,
+            "confirmation": {
+                "state": confirmation_state,
+                "message": ("等待真人确认。" if confirmation_state == "ACTIVE" else
+                            "确认已超时失效；未批准、未提交。" if confirmation_state == "EXPIRED" else None),
+            },
             "session": {
                 "user": self.user_id,
                 "workbook": str(self.db_path),
@@ -469,7 +500,7 @@ class GuiHost:
             "candidates": self._candidates(raw),
             "tasks": self._tasks(),
             "preview": self._confirmation_view(),
-            "receipt": self._receipt_view(raw.get("receipt")),
+            "receipt": receipt,
             "persistence": self._persistence(raw),
             "current_result": current,
             "busy": bool(self._busy),
@@ -508,6 +539,9 @@ class GuiHost:
             with self._cond:
                 self._last = raw
                 self._last_context = raw.get("context")
+                self._confirmation_expired = False
+                self._confirmation = None
+                self._error = None
             return self._project(raw)
         except Exception as exc:
             with self._cond:

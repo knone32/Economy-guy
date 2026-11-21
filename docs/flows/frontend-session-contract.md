@@ -141,3 +141,23 @@ Windows 已存凭据的宿主应复用 TUI 路径：`resolve_connection(..., req
 fb85 的最后源码核对项已补成实际调用证据：原历史提交核实后的状态投影、存储失败独立回执、pause/cancel 的 current/historical 分离，以及真实会话切换中间态的同线程／跨线程拒绝。新会话恢复后不继承旧要求、对象或批准。模型仅用于新的可信锚点／待补前置，其中一次 get_invoice 明细覆盖首错已修；相同四个逐字段事实引用在 1a05bc9 回归为 4/4。程序边界证据与 Live 分开，完整提交和真人批准没有重复。
 
 DSH 对接以 `docs/ops/DSH-ENTRY-HANDOFF.md` 为当前交接摘要。上述“最后仅源码核对”保留为历史状态，现由本节取代；不据此宣布前端或真人 GUI 验收通过。
+
+
+## 浏览器两阶段确认与展示登记（426f7b2，当前交接）
+
+保留原页面；GUI 的 worker 只运行原 `SessionHost.send_message`。原 owner 生成预览并调用 `confirm(payload)` 后，worker 等待 GUI 的 Event，HTTP 先返回原预览。浏览器真人的 `preview_id + context` 必须同时匹配当前回调；同一句柄消费一次，再唤醒原 worker。超时是确认中断，不是用户拒绝；回调句柄不持久化，不能产生第二份草稿或批准。浏览器不传 `approved/confirmed`、指纹或 request_id。
+
+| GUI 操作 | 原宿主依据 |
+| --- | --- |
+| message | 当前 context；原 Agent.ask 与原办理 owner |
+| preview_confirm / preview_cancel | 当前随机预览 ID 与原回调 context，真人动作；前者继续原提交链，后者是明确拒绝 |
+| acknowledge | 页面实际 render 后传当前 trace/context；`SessionHost.acknowledge_display` 只读原结果产生引用，不接收模型／前端自报身份或行 |
+| pause / resume / cancel / inspect | 原候选 CAS、原 owner、原提交核查；不复制其状态 |
+
+`SessionHost(..., require_display_ack=True)` 启用浏览器约束：渲染前不登记锚点，前一结果未确认显示时不能进入下一业务消息；当前 trace 必须一致。原 Store 将 display_acknowledged 与 reference_state 一起保存；显示确认前重启不会把未显示记录变成展示来源。取消或暂缓退休的结果禁止再次登记。`conversation` 是同帧的历史／会话投影，GUI 不在旧 Agent 快照上拼接实时 Store。
+
+提交时原轮次一直保持打开；原 `checkpoint(seq, request_id)` 在原财务 commit 之前持久化 UNKNOWN_OUTCOME 与 lookup。真实事务／审计仍由原 UpdateSession / WriteCoordinator 执行。回执或回读未知时不自动重提；新进程只恢复该 lookup，由原 owner 只读核查，绝不恢复旧批准。
+
+暂停候选与引用退休状态由原 Store 同一事务保存。失败给出 PAUSE_FAILED／persistence=FAILED，并通过原 owner 恢复同一未批准待补；旧锚点和批准不恢复。只有当前候选 ID／修订对应实际 PAUSED 记录，且内容按原 JSON 存储表示一致，才呈现 PAUSED。GUI 不把 ACTIVE 候选当作暂停恢复成功。
+
+本轮未扩业务、未跑全量。真实查询展示／指代与暂停故障、修订原件分开保存；当前已到真人预览，checkpoint 后未知回执及重启核查仍待本次真人操作完成。最终状态以本轮实际验收记录为准，不能把本段接口说明当验收通过。

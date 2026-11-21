@@ -231,7 +231,12 @@ async function api(path, body) {
   let data;
   try { data = await response.json(); }
   catch (_) { throw new Error("本机宿主返回了无法解析的响应。"); }
-  if (!response.ok || !data.ok) throw new Error(data.error || "请求失败。");
+  if (!response.ok || !data.ok) {
+    const error = new Error(data.error || "请求失败。");
+    error.status = response.status;
+    error.data = data;
+    throw error;
+  }
   return data;
 }
 function setBusy(value) {
@@ -275,8 +280,28 @@ async function act(path, body, okMessage) {
     if (okMessage && !S.error && !unverified) toast(okMessage);
   } catch (error) {
     toast(error.message, true);
+    if (error.status === 409) {
+      // The host is authoritative: an expired/invalid confirmation handle
+      // must close the old modal instead of leaving an actionable dialog.
+      try { await refresh(); } catch (_) { /* keep the explicit error toast */ }
+    }
   } finally {
     setBusy(false);
+  }
+}
+
+let previewWatch = null;
+function updatePreviewWatch() {
+  const shouldWatch = !!(S && S.preview);
+  if (shouldWatch && !previewWatch) {
+    previewWatch = setInterval(async () => {
+      if (busy) return;
+      try { await refresh(); } catch (_) { /* transient local read failure */ }
+    }, 5000);
+  }
+  if (!shouldWatch && previewWatch) {
+    clearInterval(previewWatch);
+    previewWatch = null;
   }
 }
 
@@ -293,6 +318,7 @@ function render() {
   renderTasks();
   renderReceipt();
   renderPreview();
+  updatePreviewWatch();
   if (S.error) toast(S.error, true);
   else if (S.notice) toast(S.notice);
 }
@@ -421,6 +447,13 @@ function renderTasks() {
 function renderReceipt() {
   const box = $("receipt");
   box.replaceChildren();
+  const confirmation = S.confirmation || {};
+  if (confirmation.state === "EXPIRED") {
+    const expired = el("div", "receipt unknown");
+    expired.append(el("div", "", "确认已超时 • 未批准 • 未提交"));
+    if (confirmation.message) expired.append(el("div", "", confirmation.message));
+    box.append(expired);
+  }
   const receipt = S.receipt;
   if (receipt) {
     const unknown = receipt.status === "UNKNOWN_OUTCOME";
@@ -507,6 +540,9 @@ $("send").addEventListener("click", async () => {
     await acknowledgeDisplay();
   } catch (error) {
     toast(error.message, true);
+    if (error.status === 409) {
+      try { await refresh(); } catch (_) { /* host state wins on next refresh */ }
+    }
   } finally {
     setBusy(false);
   }
