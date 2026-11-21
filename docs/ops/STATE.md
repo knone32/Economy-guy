@@ -1,5 +1,17 @@
 # V3当前状态（总控权威；上海2026-11-21）
 
+## 本轮当前范围已闭环，停止追加执行
+
+实际受测源码 `00cb8b3479f3f67a7a831bdf3cc5f7ab8e746a64`，后续仅文档记录，不修改app。原公开同一fictional.sqlite／sessions.sqlite，查询及补值全部使用既定deepseek-flash官方服务，无script模型响应。歧义轮真实展示两销售方并追问；选择全名后两个模型请求、一个SQL实际调用，首卡与末答均C001／2027-04／砚川展览服务有限公司3478.50元、1张，完整覆盖，末答由既有事实渲染直接完成，无模型复述请求。原PAUSED候选通过/pending实际展示与/resume精确修订恢复，fresh预览仅NV-C备注“旧备注”→“公开链闭环复核”，用途未改。
+
+用户报告已点击确定；原工作台随后记录COMMITTED／readback_verified=true，原request_id与预览一致，审计仅1笔，其他发票及用途不变，候选COMPLETED。原Live进程66520停止后，新原工作台进程56596从同一账簿及会话库启动，经原目录选择／发票详情实际重新查询，备注、用途、唯一审计一致，无未完候选复活；重启检查API0、无Agent创建。当前看到发票详情就是该重启回读，不应重复弹批准或再次写入。
+
+Live共5 HTTP／33834tokens／75219微元峰价保守上界（非账单），全部usage已记；原账现69／663454／833480，原64条完整保留，累计三限null，unknown_usage=false。此前一次执行器登录清空预先profile导致配置失败，HTTP0；只使用既有FINANCE_MODEL_PROFILE修正启动环境，产品源码及提示词未改，失败原件保留。以下为历史快照。
+
+本结论仅该已公开链回归，不是陌生首执、全面泛化或全量回归通过。程序、Live、用户点击及重启分别记录；迟到的预览人眼反馈不一致保留，不宣称完整GUI可读性签收，不改GUI或再运行同类检查。当前业务无阻断，无需更多Live。证据：[闭环记录](../../../evidence-root/STAGE1-SAMEBOOK-CLOSURE-00cb8b3-RESULT.json)、[人工反馈补充](../../../evidence-root/STAGE1-SAMEBOOK-CLOSURE-00cb8b3-HUMAN-FEEDBACK-ADDENDUM.json)。
+
+---
+
 ## 当前候选：闭合既有公开链，尚待修后Live
 
 用户最新明确撤销旧64请求／700000tokens／2.20元累计限额；原路径与budget_id不变，全部64条、629620tokens、758261微元峰价上界消耗保留，原账三项有效limits显式null；旧预算原文、字节备份和迁移前后核对保留。每次8192输出、单轮9模型／12Handler、零自动重试、未知用量锁停仍在。新guard独立冻结，旧guard字节不变。证据：[原账迁移](../../../evidence-root/budget-policy-migration-20261121/MIGRATION-RESULT.public.json)。
