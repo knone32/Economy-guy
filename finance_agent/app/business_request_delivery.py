@@ -424,16 +424,9 @@ def _project_detail_result(request, original, actor, book):
     if query['table']=='invoices' and 'amount_cents' in fields:
         data['invoice_projection']={c['field']:i for i,c in enumerate(query['columns'])}
     accepted=annotate(original,request,ids)
-    from .business_sql import TABLES
-    all_fields={part.strip().split()[0] for part in TABLES[query['table']].split(',')}
-    # The fixed pre-execution metric defines the required columns. Explain a
-    # partial result instead of letting the generated projection define '*'.
-    accepted['evidence']['business_request']['missing']=[{
-        'target_id':target.target_id,'operation':'details','field':metric.field,
-        'missing_columns':sorted((all_fields if metric.field=='*' else {metric.field})-fields)}
-        for target in matched for metric in target.metrics if metric.operation=='details'
-        and (all_fields if metric.field=='*' else {metric.field})-fields]
     if (query.get('query_set_complete') and not query.get('limited') and data.get('truncated') is False):
+        from .business_sql import TABLES
+        all_fields={part.strip().split()[0] for part in TABLES[query['table']].split(',')}
         accepted['evidence']['business_request']['measures']=[{
             'target_id':target.target_id,'operation':'details','field':metric.field,
             'scope':deepcopy(query['scope']),'dimensions':{},'conditions':deepcopy(query.get('conditions',())),
@@ -551,6 +544,21 @@ def annotate(result, request, target_ids):
         'revision': request.revision, 'request_hash': request.request_hash,
         'target_ids': list(target_ids), 'interpretation': 'model_requirement_with_runtime_binding',
         'formal_semantic_proof': False, 'coverage': 'accepted_partial'}
+    query=accepted['evidence'].get('query_scope') or {}
+    if (query.get('status')=='VERIFIED' and query.get('row_shape')=='detail'
+            and (accepted.get('data') or {}).get('rows')):
+        from .business_sql import TABLES
+        if query.get('table') in TABLES:
+            fields={column['field'] for column in query.get('columns',()) if column.get('kind')=='column'}
+            all_fields={part.strip().split()[0] for part in TABLES[query['table']].split(',')}
+            # Report at the shared result boundary, including projections that
+            # cannot supply a complete identity. This grants no metric proof.
+            accepted['evidence']['business_request']['missing']=[{
+                'target_id':target.target_id,'operation':'details','field':metric.field,
+                'missing_columns':sorted((all_fields if metric.field=='*' else {metric.field})-fields)}
+                for target in request.targets if target.target_id in target_ids
+                and target.object==query['table'] for metric in target.metrics if metric.operation=='details'
+                and (all_fields if metric.field=='*' else {metric.field})-fields]
     return accepted
 
 

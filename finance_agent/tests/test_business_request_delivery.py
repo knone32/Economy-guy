@@ -374,6 +374,11 @@ class BusinessRequestDeliveryTests(unittest.TestCase):
         self.assertFalse(assess_results(request,[('query_business_sql',partial)])['complete'])
         self.assertEqual(partial['evidence']['business_request']['missing'],[
             {'target_id':'i1','operation':'details','field':'*','missing_columns':['item_name']}])
+        without_company=accept_result(request,'query_business_sql',self.actual_result(
+            'SELECT '+columns.removeprefix('company_id,')+tail),'U002',self.book)
+        self.assertFalse(assess_results(request,[('query_business_sql',without_company)])['complete'])
+        self.assertEqual(without_company['evidence']['business_request']['missing'],[
+            {'target_id':'i1','operation':'details','field':'*','missing_columns':['company_id','item_name']}])
         full=accept_result(request,'query_business_sql',self.actual_result('SELECT '+columns+',item_name'+tail),'U002',self.book)
         self.assertTrue(assess_results(request,[('query_business_sql',full)])['complete'])
         self.assertEqual(full['evidence']['business_request']['missing'],[])
