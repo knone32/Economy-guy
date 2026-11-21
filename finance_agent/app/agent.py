@@ -484,7 +484,7 @@ class Agent:
             result.setdefault('evidence',{})['read_basis']=read_basis
         return result
 
-    def switch_model(self,connection):
+    def switch_model(self,connection, *, retire_current=True):
         """可信轮次边界重建协议会话；仅携带可重查的业务范围和历史用户目标。"""
         self._check_identity()
         waiting=(self.last_response or {}).get('execution',{}).get('stop_reason')=='WAITING_CONFIRMATION'
@@ -511,14 +511,23 @@ class Agent:
                                          for key in scope if key in self.context.sources}
                     new.continuity={'source':'trusted_cli_switch','historical':True,'user_request':self.last_user_request,
                         'usage':'仅历史用户目标/已验证范围，不恢复授权；任务/偏好及当前业务须重新查询SQLite。'}
-        if self.management_turn: self.management_turn.active=False
-        if self.management_proposals: self.management_proposals.active=False
-        self.update_session.begin_turn('',False)
-        self.coordinator.pending=None
-        self._retired=True
+        if retire_current:
+            self.retire_session()
         return new
 
-    def focus_task(self, company_id, task_id):
+    def retire_session(self):
+        """Trusted host replacement only; do not transfer execution or approval."""
+        if self._active:
+            raise ProfileError('运行中的 Agent 不能被替换')
+        if self.management_turn:self.management_turn.active=False
+        if self.management_proposals:self.management_proposals.active=False
+        self.update_session.begin_turn('',False)
+        self.coordinator.pending=None
+        self.pending_intent=None
+        self.business_request=self._last_business_request=None
+        self._retired=True
+
+    def focus_task(self, company_id, task_id, *, retire_previous=True):
         """A trusted task link may establish a read focus after current checks."""
         from .tasks import task_details
         if self._active or self._retired:
@@ -527,7 +536,14 @@ class Agent:
         details = task_details(self.db_path, self.user_id, company_id, task_id)
         if not details["ok"] or not details["data"]["can_execute"]:
             return details
-        self.cancel_update()
+        if retire_previous:
+            self.cancel_update()
+        else:
+            if len(self.messages) != 1 or self.last_response or self.pending_intent or self.update_session.drafts:
+                raise ValueError('任务暂存只允许使用尚未执行的新 Agent')
+            self.context.scope = {}
+            self.context.sources = {}
+            self.context.references_blocked = True
         self.context.scope["task_id"] = [task_id]
         self.context.sources["task_id"] = "current_sqlite"
         self.context.accept_task(details)

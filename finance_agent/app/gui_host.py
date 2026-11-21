@@ -24,6 +24,7 @@ from .model_config import (DEFAULT_LOCAL, DEFAULT_TEMPLATE, ModelConnection, Pro
                            resolve_connection, safe_url, visible_profiles)
 from .responses import render_information, render_invoice_pending
 from .session_host import SessionConflict, SessionHost
+from .session_profiles import ExistingProfiles
 from .session_store import SessionStore
 from .tasks import list_tasks
 from .tui_local import session_path as default_session_path
@@ -65,6 +66,8 @@ class GuiHost:
         self._max_context_chars = max_context_chars
         self.profiles_file = profiles_file
         self.profiles_local = profiles_local
+        self.profiles = ExistingProfiles(template=profiles_file or DEFAULT_TEMPLATE,
+                                         local=profiles_local or DEFAULT_LOCAL)
 
         self._cond = threading.Condition()
         self._busy = False
@@ -86,7 +89,7 @@ class GuiHost:
 
         self.store = SessionStore(self.session_path, self.db_path, self.user_id)
         self.host = SessionHost(self.store, self._factory, confirm=self._confirm,
-                                require_display_ack=True)
+                                require_display_ack=True, profiles=self.profiles)
         self._last = self.host.snapshot()
         self._last_context = self._last.get("context")
 
@@ -142,7 +145,7 @@ class GuiHost:
         info = dict(self._connection_info)
         live = info.get("mode") == "live"
         if live and info.get("connected"):
-            status, label = "CONNECTED", "真实模型已连接"
+            status, label = "CONFIGURED", "已有配置已绑定；服务调用另行验证"
         elif live:
             status, label = "UNAVAILABLE", "真实模型未连接"
         else:
@@ -170,7 +173,8 @@ class GuiHost:
                 "mode": info.get("mode") or self.mode,
                 "status": status,
                 "label": label,
-                "connected": bool(info.get("connected")),
+                "configured": bool(info.get("connected")),
+                "connected": None,
                 "profile": info.get("profile"),
                 "model": info.get("model"),
                 "provider": info.get("provider"),
@@ -180,7 +184,7 @@ class GuiHost:
             "switching": {
                 "account": "当前进程绑定账号；运行中切换需 Sol 宿主接口，未提供。",
                 "workbook": "当前进程绑定账簿；运行中切换需 Sol 宿主接口，未提供。",
-                "model": "可用 Profile 仅用于下次宿主启动；运行中热切换需 Sol 宿主接口，未提供。",
+                "model": "已有 Profile 可通过原宿主切换；待补、预览和未知提交须先处理。",
             },
         }
 
@@ -455,18 +459,9 @@ class GuiHost:
             })
         return found
 
-    def _tasks(self):
+    def _tasks(self, raw):
         found = []
-        try:
-            companies = [row["company_id"] for row in company_access(self.db_path, self.user_id)
-                         if row.get("read")]
-        except (OSError, ValueError, sqlite3.Error):
-            return found
-        for company in companies[:4]:
-            try:
-                outcome = list_tasks(self.db_path, self.user_id, company)
-            except (OSError, ValueError, sqlite3.Error):
-                continue
+        for outcome in raw.get('tasks') or []:
             for task in outcome.get("data") or []:
                 if not isinstance(task, dict):
                     continue
@@ -480,7 +475,7 @@ class GuiHost:
                     "status": task.get("status"),
                     "note": _as_text(context.get("note") or ""),
                 })
-        return found[:20]
+        return found
 
     def _receipt_view(self, raw):
         if not isinstance(raw, dict):
@@ -574,7 +569,7 @@ class GuiHost:
             "turns": turns,
             "pending": self._pending(raw),
             "candidates": self._candidates(raw),
-            "tasks": self._tasks(),
+            "tasks": self._tasks(raw),
             "settings": self._settings(),
             "preview": self._confirmation_view(),
             "receipt": receipt,
@@ -656,6 +651,55 @@ class GuiHost:
         """Mark the actual rendered result as seen; enables same-chat references."""
         return self._command(
             lambda expected: self.host.acknowledge_display(str(trace), expected=expected), context)
+
+    def task_details(self, company_id, task_id, context=None):
+        if context != self.host.snapshot()['context']:
+            raise GuiError('待办详情所属会话已变化，请刷新。')
+        view = self.snapshot()
+        view['task_details'] = self.host.task_details(company_id,task_id)
+        return view
+
+    def open_task(self, company_id, task_id, context=None):
+        return self._command(lambda expected:self.host.open_task(company_id,task_id,expected=expected),context)
+
+    def switch_profile(self, name, context=None):
+        view = self._command(lambda expected:self.host.switch_profile(name,expected=expected),context)
+        if not view.get('error'):
+            connection = self.host.agent.connection
+            self.profile = connection.profile.profile_name
+            self._connection_info.update(profile=self.profile,model=connection.profile.model,
+                provider=connection.profile.provider,base_url=safe_url(connection.profile.base_url),connected=True)
+            view = self._project(self._last)
+        return view
+
+    def rebind_from_host(self, binding_factory, context=None):
+        """Trusted Python host only. No browser actor/path authorization endpoint."""
+        with self._cond:
+            if self._busy or self._confirmation:
+                raise GuiError('请先处理运行中的请求或预览，未重新绑定。')
+            try:
+                replacement = self.host.rebind(binding_factory,expected=context)
+            except Exception as error:
+                self._error = str(error)
+                self._last = self.host.snapshot()
+                self._last_context = self._last['context']
+                return self._project(self._last,error=self._error)
+            self.host = replacement
+            self.store = replacement.store
+            self.db_path = self.store.workbook.resolve()
+            self.user_id = self.store.actor
+            self.profiles = replacement.profiles
+            connection = replacement.agent.connection
+            self.profile = connection.profile.profile_name if connection else None
+            self._connection_info = {'mode':replacement.agent.mode,'connected':connection is not None,
+                'profile':self.profile,'model':connection.profile.model if connection else None,
+                'provider':connection.profile.provider if connection else None,
+                'base_url':safe_url(connection.profile.base_url) if connection else None}
+            self._error = None
+            self._confirmation_expired = False
+            self._last = replacement.snapshot()
+            self._last_context = self._last['context']
+            return self._project(self._last)
 
     def close(self):
         self.store.close()

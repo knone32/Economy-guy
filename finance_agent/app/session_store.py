@@ -213,11 +213,15 @@ class SessionStore(TicketCandidates):
         self.chat = new
         self.invoice_token = None
 
-    def select_focus(self, focus, task):
+    def select_focus(self, focus, task, *, retire_request=False):
         self.validate()
         with self.connection() as db:
             db.execute("UPDATE chats SET focus=?,task=?,updated=CURRENT_TIMESTAMP WHERE id=?",
                        (json.dumps(focus),json.dumps(task),self.chat))
+            if retire_request:
+                retired = _reference_state_json({'version':1,'retired':True,'invoice_query':None})
+                db.execute('UPDATE chats SET business_request=NULL,reference_state=?,invoice_pending=NULL WHERE id=?',
+                           (retired,self.chat))
 
     def boundary(self, message):
         self.validate()

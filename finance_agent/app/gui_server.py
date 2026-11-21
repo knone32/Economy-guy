@@ -96,6 +96,12 @@ class Handler(BaseHTTPRequestHandler):
             if name == "acknowledge":
                 return host.acknowledge_display(str(value.get("trace", "")),
                                                 context=value.get("context"))
+            if name == 'task_details':
+                return host.task_details(str(value.get('company_id','')),str(value.get('task_id','')),context=value.get('context'))
+            if name == 'task_open':
+                return host.open_task(str(value.get('company_id','')),str(value.get('task_id','')),context=value.get('context'))
+            if name == 'profile':
+                return host.switch_profile(str(value.get('profile_name','')),context=value.get('context'))
             raise GuiError("未知操作。")
         except GuiError as error:
             self._error(409, str(error), "conflict")
@@ -143,7 +149,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         route = self.path.removeprefix("/api/")
         if route not in {"message", "switch", "new", "preview_confirm", "preview_cancel",
-                         "pause", "cancel", "resume", "inspect", "acknowledge"}:
+                         "pause", "cancel", "resume", "inspect", "acknowledge", "task_details", "task_open", "profile"}:
             self._error(404, "未找到。", "not_found")
             return
         try:

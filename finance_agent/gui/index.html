@@ -304,6 +304,7 @@
         <select id="profile-select" aria-label="选择已有 Profile"></select>
         <div class="settings-note" id="profile-note">读取中…</div>
         <pre id="profile-command"></pre>
+        <button class="btn primary small" id="apply-profile">使用这个已有 Profile</button>
         <button class="btn small" id="copy-profile-command">复制启动命令</button>
         <div class="settings-warning" id="switch-gaps"></div>
       </section>
@@ -572,7 +573,7 @@ function renderSettings() {
     selectedProfile = "";
   } else {
     select.disabled = false;
-    const choose = el("option", "", "选择下次启动使用的 Profile");
+    const choose = el("option", "", "选择当前使用的已有 Profile");
     choose.value = "";
     select.append(choose);
     for (const profile of profiles) {
@@ -591,7 +592,7 @@ function renderSettings() {
     renderProfileCommand();
   };
   note.textContent = profiles.length
-    ? "选择仅生成下一次宿主启动命令；当前进程不会热切换账号、账簿或模型。"
+    ? "切换由原宿主重新核验配置；待补、预览或未知提交须先处理。账号与账簿仍由受信宿主绑定。"
     : "没有发现已有 Profile；请使用原配置入口新增，或通过 run_gui.py 的 --profile 指定。";
   const switching = settings.switching || {};
   gaps.textContent = [switching.account, switching.workbook, switching.model]
@@ -732,6 +733,26 @@ function renderTasks() {
     node.append(el("div", "state", (task.company_name || task.company_id || "") + " · "
       + (task.year || "") + " 年 " + (task.month || "") + " 月 · " + (task.status || "")));
     if (task.note) node.append(el("div", "", "备注：" + task.note));
+    const actions = el('div', 'todo-actions');
+    const details = el('div', 'hint');
+    actions.append(todoActionButton('详情', async () => {
+      try {
+        const data = await api('/api/task_details', {company_id:task.company_id, task_id:task.task_id});
+        const outcome = data.snapshot.task_details || {};
+        const value = outcome.data || {};
+        details.textContent = outcome.ok
+          ? ['当前状态：' + (value.task || {}).status,
+             '发票：' + (value.invoices || []).length + ' 张',
+             '用途缺项：' + ((value.check || {}).count ?? '未核实') + ' 张',
+             value.can_execute ? '可进入办理；尚未修改发票。' : (value.problem || '当前不可办理，请核对权限、状态或规则。')].join('\n')
+          : (outcome.error || outcome.status || '详情读取失败');
+      } catch (error) { toast(error.message, true); }
+    }));
+    actions.append(todoActionButton('进入办理', async () => {
+      await act('/api/task_open', {company_id:task.company_id, task_id:task.task_id});
+      if (!S.error) setView('chat');
+    }));
+    node.append(actions, details);
     box.append(node);
   }
 }
@@ -848,6 +869,14 @@ document.querySelectorAll(".nav-btn").forEach((button) => {
 });
 $("refresh-todos").addEventListener("click", () => refresh().catch((error) => toast(error.message, true)));
 $("refresh-settings").addEventListener("click", () => refresh().catch((error) => toast(error.message, true)));
+$("apply-profile").addEventListener("click", async () => {
+  if (!selectedProfile || busy) return;
+  await act('/api/profile', {profile_name:selectedProfile});
+  selectedProfile = ((S.settings || {}).model || {}).profile || '';
+  renderSettings();
+});
+$("apply-profile").dataset.action = 'profile-switch';
+
 $("copy-profile-command").addEventListener("click", async () => {
   const value = $("profile-command").textContent || "";
   if (!value) { toast("尚未生成启动命令。", true); return; }

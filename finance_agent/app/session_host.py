@@ -29,9 +29,13 @@ class SessionHost:
     host-owned model configuration. The caller owns/ closes the SessionStore.
     """
 
-    def __init__(self, store, agent_factory, *, confirm=None, require_display_ack=False):
+    def __init__(self, store, agent_factory, *, confirm=None, require_display_ack=False, profiles=None):
         self.store, self._factory, self._confirm = store, agent_factory, confirm
         self.require_display_ack = require_display_ack
+        if profiles is None:
+            from .session_profiles import ExistingProfiles
+            profiles = ExistingProfiles()
+        self.profiles = profiles
         self._lock = Lock()
         self._command_thread = None
         self._generation, self._revision = uuid4().hex, 0
@@ -50,7 +54,7 @@ class SessionHost:
         self.store.validate()
         if (self._agent.user_id != self.store.actor
                 or Path(self._agent.db_path).resolve() != self.store.workbook.resolve()
-                or self._agent_chat != self.store.chat):
+                or self._agent_chat != self.store.chat or self._agent._retired):
             raise SessionConflict('Host actor/workbook/conversation changed')
         self.store.validate_invoice_revision()
 
@@ -79,8 +83,11 @@ class SessionHost:
             self._lock.release()
 
     def _restore(self):
+        self._agent = self._hydrate(self._factory(self.store.actor,self.store.workbook))
+        self._agent_chat = self.store.chat
+
+    def _hydrate(self, agent):
         history = self.store.history()
-        agent = self._factory(self.store.actor, self.store.workbook)
         if (agent.user_id != self.store.actor
                 or Path(agent.db_path).resolve() != self.store.workbook.resolve()
                 or agent._active or agent._retired or len(agent.messages) != 1):
@@ -105,8 +112,10 @@ class SessionHost:
                 break
         if pending is not None and not agent.coordinator.has_unverified_update:
             agent.restore_invoice_candidate(pending)
-        self._agent = agent
-        self._agent_chat = self.store.chat
+        if (not history['business_request'] and history.get('task') and not pending
+                and not agent.coordinator.has_unverified_update):
+            agent.focus_task(*history['task'])
+        return agent
 
     def snapshot(self):
         """Projection of owners, not a second authoritative state snapshot."""
@@ -149,6 +158,10 @@ class SessionHost:
                   'WAITING_USER' if response.get('category') in {'clarification', 'reference_error'} else 'IDLE')
         return redact({'version': 1, 'context': self._token(), 'busy': self._lock.locked(),
             'actor': self.store.actor, 'workbook': self.store.identity,
+            'binding_mode': 'trusted_local_simulation_not_login_authentication',
+            'model': agent.connection.metadata() if agent.connection else None,
+            'task_focus': self.store.history().get('task'),
+            'tasks': self.list_tasks(),
             'business_status': status,
             'requirement': agent.business_request_snapshot(),
             'pending': invoice_business_state(pending) if pending else None,
@@ -210,6 +223,94 @@ class SessionHost:
     def list_conversations(self):
         self._binding()
         return self.store.list_chats()
+
+    def list_profiles(self):
+        self._binding()
+        return self.profiles.list(self.store.actor)
+
+    def _transition_ready(self):
+        agent = self._agent
+        if agent._active or agent.coordinator.has_unverified_update:
+            raise SessionConflict('运行中或提交结果未知，请先完成处理或只读核查。')
+        if (agent.pending_intent or agent.pending_edit or agent.update_session.drafts
+                or agent.update_session.confirmations or self.store.history().get('invoice_pending')):
+            raise SessionConflict('当前有待补或预览，请先明确暂缓或取消。')
+        request = agent.business_request or agent._last_business_request
+        waiting = (agent.last_response or {}).get('execution',{}).get('stop_reason') == 'WAITING_CONFIRMATION'
+        if (request is not None and request.unresolved) or (waiting and agent.management_proposals and agent.management_proposals.active):
+            raise SessionConflict('当前要求仍待澄清或确认，请先完成或取消。')
+
+    def list_tasks(self):
+        self._binding()
+        from .cli_workspaces import company_access
+        from .tasks import list_tasks
+        return [list_tasks(self.store.workbook,self.store.actor,row['company_id'])
+                for row in company_access(self.store.workbook,self.store.actor) if row['read']]
+
+    def task_details(self, company_id, task_id):
+        self._binding()
+        from .tasks import task_details
+        return task_details(self.store.workbook,self.store.actor,company_id,task_id)
+
+    def open_task(self, company_id, task_id, *, expected):
+        with self._command(expected):
+            self._transition_ready()
+            old = self._agent
+            new = (old.switch_model(old.connection,retire_current=False) if old.connection
+                   else self._factory(self.store.actor,self.store.workbook))
+            new.workbook_guard = self.store.validate_invoice_revision
+            new.defer_display_anchors = self.require_display_ack
+            new.continuity = None
+            outcome = new.focus_task(company_id,task_id,retire_previous=False)
+            if not outcome.get('ok') or not (outcome.get('data') or {}).get('can_execute'):
+                raise SessionConflict(outcome.get('error') or '当前待办不可办理，请核对权限、账期和规则。')
+            task = outcome['data']['task']
+            self.store.select_focus((company_id,task['year'],task['month']),(company_id,task_id),retire_request=True)
+            old.cancel_update(retire_request=True)
+            old.retire_session()
+            self._agent = new
+            self._persistence = {'status':'SAVED','error':None}
+        return self.snapshot()
+
+    def switch_profile(self, name, *, expected):
+        if type(name) is not str or not name:
+            raise SessionConflict('请选择已有的 Profile 名称。')
+        with self._command(expected):
+            self._transition_ready()
+            old = self._agent
+            connection = self.profiles.resolve(self.store.actor,name)
+            new = self._hydrate(old.switch_model(connection,retire_current=False))
+            old.retire_session()
+            self._agent = new
+            self._persistence = {'status':'UNCHANGED','message':'已切换本次宿主配置；未写入配置文件。'}
+        return self.snapshot()
+
+    def rebind(self, binding_factory, *, expected):
+        """Python-only trusted-host handoff, never a browser-supplied actor/path.
+
+        factory() must return a host-authorized (SessionStore, agent_factory,
+        ExistingProfiles) tuple. Browser selectors must be resolved by that host
+        policy first. Local simulated accounts are not login authentication.
+        """
+        with self._command(expected):
+            self._transition_ready()
+            if not callable(binding_factory):
+                raise SessionConflict('重新绑定只能由受信宿主提供。')
+            target_store = None
+            try:
+                target_store, factory, profiles = binding_factory()
+                if target_store is self.store:
+                    raise SessionConflict('新的绑定必须使用重新核验的会话。')
+                replacement = SessionHost(target_store,factory,confirm=self._confirm,
+                    require_display_ack=self.require_display_ack,profiles=profiles)
+                replacement.snapshot()
+            except Exception:
+                if target_store is not None and target_store is not self.store:
+                    target_store.close()
+                raise
+            self._agent.retire_session()
+            self.store.close()
+        return replacement
 
     def _save(self, seq, offset, text, *, state='COMPLETED', operation=None):
         agent = self._agent
@@ -315,10 +416,7 @@ class SessionHost:
 
     def _navigate(self, expected, change):
         with self._command(expected):
-            if self._agent.coordinator.has_unverified_update:
-                raise SessionConflict('Inspect the original unknown submission before switching')
-            if self._agent.update_session.drafts or self._agent.pending_intent:
-                raise SessionConflict('Pause or cancel unfinished work before switching')
+            self._transition_ready()
             change()
             self._agent.cancel_update(retire_request=True)
             self._agent._retired = True
