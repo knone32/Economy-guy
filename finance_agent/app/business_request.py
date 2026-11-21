@@ -142,6 +142,22 @@ class BusinessRequest:
         return {**asdict(self),'interpretation':'model_with_current_user_sources',
                 'formal_semantic_proof':False,'authorization':False}
 
+    def snapshot(self):
+        # Source.key is a business reference, not a credential. Keep the wire
+        # schema unchanged and use an unambiguous storage name rather than
+        # weakening credential redaction for arbitrary dictionaries.
+        def encode(value):
+            if type(value) is dict:
+                source = set(value) == {'kind','quote','key'}
+                return {('source_ref' if source and key == 'key' else key):encode(item)
+                        for key,item in value.items()}
+            if isinstance(value,(list,tuple)):
+                return [encode(item) for item in value]
+            return value
+        payload = self.metadata()
+        payload['business_authorization'] = payload.pop('authorization')
+        return {'version':1,'request':encode(payload)}
+
     def require_context(self,actor,book,turn_id=None):
         """Check effective prior requirements before exposing them to a model."""
         if (actor!=self.actor or str(Path(book).resolve())!=self.workbook
@@ -169,19 +185,25 @@ def restore_snapshot(snapshot, *, actor, book):
                 or type(snapshot['version']) is not int or snapshot['version'] != 1):
             raise ValueError('读取要求快照版本无效')
         data = dict(snapshot['request'])
-        if (data.pop('authorization') is not False or data.pop('formal_semantic_proof') is not False
+        if (data.pop('business_authorization') is not False or data.pop('formal_semantic_proof') is not False
                 or data.pop('interpretation') != 'model_with_current_user_sources'):
             raise ValueError('历史读取要求不能提供授权')
+        def source(value):
+            part = dict(value)
+            if 'key' in part or 'source_ref' not in part:
+                raise ValueError('读取要求来源快照无效')
+            part['key'] = part.pop('source_ref')
+            return Source(**part)
         def sourced(cls, value):
             part = dict(value)
-            part['source'] = Source(**part['source'])
+            part['source'] = source(part['source'])
             return cls(**part)
         targets = []
         for item in data['targets']:
             target = dict(item)
             for key in ('company_source','period_source','relation_source'):
                 if target.get(key) is not None:
-                    target[key] = Source(**target[key])
+                    target[key] = source(target[key])
             if target.get('seller') is not None:
                 target['seller'] = sourced(SellerRequirement,target['seller'])
             for key, cls in (('filters',ReadFilter),('metrics',ReadMetric),('comparisons',ReadComparison)):
@@ -191,7 +213,7 @@ def restore_snapshot(snapshot, *, actor, book):
                     target[key] = sourced(cls,target[key])
             targets.append(ReadRequirement(**target))
         data['targets'] = tuple(targets)
-        data['current_source'] = Source(**data['current_source'])
+        data['current_source'] = source(data['current_source'])
         request = BusinessRequest(**data)
         return request.require_context(actor,book)
     except (KeyError,TypeError,ValueError) as error:

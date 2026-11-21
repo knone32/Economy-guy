@@ -337,7 +337,7 @@ class SessionStore(TicketCandidates):
             payload = requirement.get('request') if type(requirement) is dict else None
             if (type(payload) is not dict or payload.get('actor') != self.actor
                     or payload.get('workbook') != str(self.workbook.resolve())
-                    or payload.get('authorization') is not False or redact(requirement) != requirement):
+                    or payload.get('business_authorization') is not False or redact(requirement) != requirement):
                 raise ValueError('Invalid runtime business request snapshot')
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')

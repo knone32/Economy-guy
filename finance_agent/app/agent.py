@@ -199,7 +199,7 @@ class Agent:
 
     def business_request_snapshot(self):
         request = self.business_request or self._last_business_request
-        return {'version':1,'request':request.metadata()} if request is not None else None
+        return request.snapshot() if request is not None else None
 
     def restore_business_request(self, snapshot):
         """Trusted active-chat state only; restore meaning, never facts/approval."""
