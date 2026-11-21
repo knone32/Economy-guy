@@ -1,5 +1,7 @@
 # DSH 原会话薄适配交接
 
+最新工作台入口以 [2026-11-22 接口归属](DSH-WORKBENCH-INTERFACE.md) 与 [限定验收](WORKBENCH-ENTRY-ACCEPTANCE-20261122.md) 为准：产品冻结 394441c；以下保留原 1a05bc9 证据，不迁移成绩。
+
 受测业务源码：`1a05bc993e19817d0015b3adab81d1cd38874905`。入口：`app.session_host.SessionHost`；详细契约见 [frontend-session-contract](../flows/frontend-session-contract.md)。本文件后的文档提交不迁移受测成绩。
 
 宿主以真实绑定的账号／账簿打开原 SessionStore，并提供构造原 Agent 的 factory。模型配置和现有 WindowsVault 凭据留在宿主。同步方法运行在宿主 worker；真人确认 callback 必须来自可信 UI，不能由模型或 RPC 的 approved/confirmed 字段产生。

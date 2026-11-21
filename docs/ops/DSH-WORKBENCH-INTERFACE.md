@@ -1,6 +1,6 @@
 # DSH 工作台入口：一次接口与文件归属对齐
 
-基线 `15de57e`；本轮候选最终 SHA 与验收记录后补。现有页面和业务范围保持；不创建登录系统、第二 Loop 或新业务状态 owner。
+DSH 页面基线 `c0de7a1`，业务入口受测冻结 `c16228b`；交付源码 `394441c` 仅修正两条设置说明。现有页面和业务范围保持；不创建登录系统、第二 Loop 或新业务状态 owner。限定结果见 [本轮验收](WORKBENCH-ENTRY-ACCEPTANCE-20261122.md)，程序、Live、真人分别记录。
 
 ## 归属
 
@@ -32,7 +32,13 @@ host = SessionHost(store, agent_factory, confirm=human_callback,
 
 snapshot 新增 `model`（当前连接的安全 metadata）、`task_focus`（原 Store 当前任务引用）、`binding_mode=trusted_local_simulation_not_login_authentication`。仍使用 context generation/revision/chat/candidate 做并发检查；重新绑定生成新 generation，不复制旧账号／账簿的原话、引用、要求、草稿或批准，只允许目标原 Store 恢复其自己的有效状态。
 
-Profile 解析复用 `ExistingProfiles.resolve(actor, name)`；GUI factory 也应使用同一个 profiles 服务，避免两套凭据读取逻辑。切换成功以返回的 `model.profile_name` 更新 GUI 自身的配置选择，使下一次新会话仍构造该 Profile。禁止根据按钮文字或模型正文宣布切换成功。
+Profile 切换解析复用 `ExistingProfiles.resolve(actor, name)`；初次 GUI factory 保留原 resolve_connection／WindowsVault 路径和同一配置文件，不创建另一套凭据。切换成功以返回的实际 connection 更新 GUI 自身配置选择，使下一次新会话仍构造该 Profile。禁止根据按钮文字或模型正文宣布切换成功；配置构造成功也不代表服务已调用成功。
+
+## GUI 已接委托路由
+
+现有本机 token 和精确 `context` 门禁不变。POST `/api/task_details`、`/api/task_open` 接收 `company_id, task_id, context`；POST `/api/profile` 接收 `profile_name, context`。均由 `GuiHost` 委托上表原入口，返回统一 `{ok, snapshot}`；详情在 snapshot.task_details 中保留原服务回包。页面已有“详情／进入办理／使用此 Profile”接线，界面布局保持。
+
+受信宿主调用 `GuiHost.rebind_from_host(binding_factory, context)`，成功才替换原 host/store、账号／账簿／Profile 元数据和缓存；失败返回旧真实状态。没有 `/api/rebind` 或浏览器提交 actor/path 的授权入口。运行中和真人预览时拒绝重新绑定，结果未知时必须先走原 inspect；不能先清空 UI 再宣称成功。DSH 后续若配置宿主选择目录，只传目录中的选择 ID，由受信宿主解析后构造工厂，不把这个入口改成浏览器自报身份。
 
 ## 本轮验收边界
 
