@@ -1,5 +1,9 @@
 # 预算状态（非交易账本）
 
+2026-11-21本次同账业务闭环完成：原账累计124请求／1084580tokens／1656109微元峰价保守上界（非供应商账单），unknown_usage=false，既有历史及同一budget_id保留。累计requests/tokens/cost有效limits仍全部null，不清零、不另建账、不恢复旧64／700000／2.20元上限。8e44772真实续办6HTTP、真人批准后新进程真实模型回读3HTTP，后者无新增业务写入或审计；达到本次完成标准后停止调用。历史未知消耗仍UNKNOWN_NOT_ZERO。证据：本地evidence-root/accountant-task-chain-20261121/BUSINESS-CLOSURE-COMPLETE.public.json。
+
+以下为历史阶段快照，不代表当前余额或累计约束。
+
 13b67a8本轮限定读取兼容性首执新增9真实HTTP／55505tokens／133971微元峰价上界；同一原账现78／718959／967451，全部完整用量、unknown_usage=false、历史前缀保留，累计三限null。计划8条用户消息，实际5条，Skill门禁跳过1条、B前置失败停2条；无重试/重放，不以物理次数充当成功标准。零API检查、准备修正及事后只读归因均无模型消耗。峰价上界不是提供商账单，历史未知费用仍UNKNOWN_NOT_ZERO；原账路径和budget_id未变。
 
 本轮闭环后：同一原账累计69请求／663454tokens／833480微元峰价保守上界（非账单），全部69条complete、unknown_usage=false，原64条逐项一致。新增同账公开Live 5请求／33834tokens／75219微元；执行器配置失败与实际重启回读均API0。累计requests/tokens/cost有效limits均null，不恢复旧限，不新建账、不清零。当前链完成，停止额外调用；历史未知消耗仍UNKNOWN_NOT_ZERO。证据：[闭环分账](../../../evidence-root/STAGE1-SAMEBOOK-CLOSURE-00cb8b3-RESULT.json)。
