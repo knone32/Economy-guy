@@ -99,3 +99,10 @@ failure: stage?, original_status?, recoverable?, message?
 持久化Source的`key`使用`source_ref`存储名，恢复时映回同一Source；无授权标记存为`business_authorization=false`。模型可见Schema不变。原因是通用凭据脱敏会遮蔽名为key、authorization的字段，不能为了保存业务引用而放宽凭据字典的保护。原用户引文等内容仍经过原脱敏一致性检查，不能借此存储密钥。
 
 验收只补这些交接风险；每次先说明要区分的两种解释，首错定位，不扩大全量、不堆同题重试。旧首执失败、程序证据、真实模型回归和真人操作分开记录。
+
+
+## 40dd2c2 实际接入与验收界限
+
+原 TUI 已通过同一账号／账簿两对话的真实模型续查与正常冷启动续查：不同销售方的有效要求分别由原 SessionStore 保存，经原 Agent 类型及目录／权限核对后使用，实际首卡和末答完整交付。只读 `seller.names` 镜像只有与 Runtime 独立绑定的集合完全相同时才接受，不参与身份或权限判定；存储的 Source 引用使用 `source_ref`，不放宽全局脱敏规则。来源、范围、部分交付核验继续保留。
+
+此实现只覆盖原 TUI 的有限当前读取要求连续性；上文“新 Agent 恢复尚未接线／自然语言证据待验证”为当时历史状态，现由本节取代。通用 `snapshot(session)`、远程命令宿主、Dot/DSH、Chat 前端仍是设计；没有第二状态 owner，也不从摘要恢复草稿、授权或批准。未知提交继续交给原 WriteCoordinator 只读核实，不用新模型回答或再次提交来猜测结果。
