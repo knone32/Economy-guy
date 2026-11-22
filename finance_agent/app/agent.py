@@ -2409,9 +2409,9 @@ class Agent:
                     if type(route) is not dict:raise BusinessRequestError('读取要求结构无效。')
                     if (business_format_repair_used or business_read_reentry) and route.get('kind') != 'read':
                         raise BusinessRequestError('读取要求结构补正不能切换为其他业务路径。','INVALID_ARGUMENTS')
-                    if route.get('kind')=='legacy' and set(route)<={'kind','turn_action','action_quote','field','field_quote','value_relation','value_quote','matter_relation','matter_quote'}:
-                        action=route.get('turn_action')
-                        if action is None:action='continue'
+                    if route.get('kind')=='legacy' and set(route)<={'kind','turn_action','action_reason','action_quote','field','field_quote','value_relation','value_quote','matter_relation','matter_quote'}:
+                        from .business_request import legacy_action
+                        action=legacy_action(route)
                         quote=route.get('action_quote')
                         if quote is None:quote=''
                         field=route.get('field')
@@ -2467,7 +2467,7 @@ class Agent:
                             if tool['function']['name'] not in FINANCIAL_TOOLS
                             or tool['function']['name']=='get_invoice' and point_read]
                         self.trace('business_request.legacy_route',{'read_authorization':False,
-                            'turn_action':action,'source_quote':quote,'field':field,'field_quote':field_quote,
+                            'turn_action':action,'action_reason':route.get('action_reason'),'source_quote':quote,'field':field,'field_quote':field_quote,
                             'formal_semantic_proof':False})
                         if action=='stop':
                             self.cancel_update()

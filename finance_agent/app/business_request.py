@@ -269,7 +269,8 @@ DEFINITION = {
    'entry_routes':{
       'selection':'先判断本轮要取得事实还是办理变更，再决定是否继承前文读取要求。前文有查询不表示本轮仍是查询。',
       'read':{'output':'原read结构','use':'取得当前业务事实；unresolved只承载读取要求的未决项，不承载待写入内容。'},
-      'legacy':{'output':{'kind':'legacy','turn_action':'continue|pause|stop','action_quote':'pause/stop须引用当前原话，continue可省略',
+      'legacy':{'output':{'kind':'legacy','turn_action':'continue|pause|stop','action_quote':'pause/stop须引用主动处置整个事项的当前原话，continue可省略',
+          'action_reason':'await_selection等待补选、await_value等待补值、continue_matter继续办理均对应continue；defer_matter主动暂缓整个事项才对应pause，cancel_matter才对应stop；pause/stop必须提供。等待输入和是否允许提交不是生命周期变更',
           'field':'仅单票办理当前明确的新字段purpose|remark；未改或未知省略','field_quote':'给field时须引用当前字段要求原话',
           'value_relation':'已有单票待补时独立判断 keep保留、replace新内容替换（可尚缺值）、clear明确清空、withdraw撤回旧内容待补、unclear关系未明；不是执行模型的relation参数',
           'value_quote':'给value_relation时必须引用当前原话；只补票号可据当前补充表达keep，但continue本身不能证明值保留',
@@ -382,6 +383,20 @@ def native_pending_context(pending, *, actor=None, book=None):
     except (ValueError,TypeError,PermissionError,OSError,sqlite3.Error):
         return None
 
+def legacy_action(route):
+    """Normalize model relation evidence, never infer lifecycle from user keywords."""
+    reasons={'await_selection':'continue','await_value':'continue','continue_matter':'continue',
+             'defer_matter':'pause','cancel_matter':'stop'}
+    action=route.get('turn_action') or 'continue'
+    reason=route.get('action_reason')
+    if (type(action) is not str or action not in {'continue','pause','stop'}
+            or reason is not None and (type(reason) is not str or reason not in reasons)
+            or reason is not None and reasons[reason]!=action
+            or action in {'pause','stop'} and reason is None):
+        raise BusinessRequestError('等待输入不等于暂缓事项；动作须与独立说明的事项关系一致。','INVALID_ARGUMENTS')
+    return action
+
+
 def messages(request,current_catalog,*,trusted_scope=None,previous_request=None,context_transition='continue',
              native_pending=None,actor=None,book=None,active_skills=(),trusted_references=None):
     _validate_context_transition(context_transition)
@@ -422,7 +437,7 @@ def messages(request,current_catalog,*,trusted_scope=None,previous_request=None,
         '默认relation=update保留旧筛选，显式update无quote或空quote与省略同义、不增加权限；用户明确新查询或替换要求时可relation=replace，但须relation_quote当前原话并指明previous_target_id；不清则clarify。'
         '问候或一般知识可直接{"kind":"general","text":"回答"}；修改/管理走{"kind":"legacy"}，'
         'legacy可带turn_action=continue|pause|stop；省略即continue，缺内容或要求不提交不等于暂缓。'
-        '明确暂缓或取消单票时分别用pause/stop，并用action_quote引用当前原话；后续执行提案不能扩大本轮动作。'
+        'action_reason独立表达阻塞原因或事项处置：await_selection/await_value/continue_matter对应continue，defer_matter对应pause，cancel_matter对应stop；pause/stop必须给action_reason。等用户选票或补值是当前活动办理等待输入，不是主动移出办理；不允许保存只限制执行，不改变生命周期。action_quote须支持主动处置整个事项；后续执行提案不能扩大动作。'
         '单票办理已明确要改用途或备注时，用field=purpose|remark及field_quote保留当前字段要求；字段未知或本轮未更正时省略，由原owner继承有效待补。'
         '有原单票待补时，独立给value_relation及当前value_quote，分别判断保留、替换、明确清空、撤回待补或关系未明；不能用continue代替值修订判断，也不看执行提案的replace。'
         '另用matter_relation/matter_quote判断事项归属；不能按票号是否命中旧集合代替判断。新事项遇旧待补先询问处置，不并行或静默覆盖。'
