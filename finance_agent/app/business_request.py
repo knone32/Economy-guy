@@ -277,7 +277,8 @@ DEFINITION = {
           'matter_relation':'先独立判断 continue旧事项、new明确新事项、unclear归属不明；值replace不表示新事项',
           'matter_quote':'须引用当前原话；新事项遇有效旧待补先询问旧事项暂缓或取消，处置前不覆盖旧事项',
           'reference_relation':'displayed当前明确引用已展示对象或集合；none明确独立对象；unclear关系不明。新办理也可引用先前只读展示，不能把matter=new等同于放弃引用',
-          'reference_quote':'给reference_relation时须引用当前原话；候选联合身份与集合由Runtime从真实展示绑定，不从正文取得'},
+          'reference_quote':'给reference_relation时须引用当前原话；候选联合身份与集合由Runtime从真实展示绑定，不从正文取得',
+          'pending_change':'当前已明确新内容时必须提供{field,new_value,source:{kind:current,quote:当前连续原话}}；与最终澄清使用同一候选结构，未知不造值；不提供身份、状态或授权'},
           'use':'发起、补充、更正、替换、暂缓、恢复或取消修改/管理事项，包括新内容尚未给全的变更。交原办理owner保留待补、核对身份与权限、生成预览和确认；不在读取target中继承旧指标或登记待写值。此route本身不授权任何读写。',
           'turn_action':'省略/null同continue，表示正常办理，缺内容时等待补值；要求不提交也用continue，不能据此推断暂停或取消。可选quote省略/null同空串，但pause/stop及已给field仍须非空当前原话来源。仅明确暂缓本次单票事项才pause；明确取消才stop。pause/stop是本轮业务关系解释，不是授权；管理待办仍走原管理工具。新办理须先由原owner核实并建立候选，再执行明确暂缓。'},
       'general':{'output':{'kind':'general','text':'回答'},'use':'一般对话或知识说明，不提供当前账簿事实或操作回执。'}},
@@ -441,7 +442,7 @@ def messages(request,current_catalog,*,trusted_scope=None,previous_request=None,
         '问候或一般知识可直接{"kind":"general","text":"回答"}；修改/管理走{"kind":"legacy"}，'
         'legacy可带turn_action=continue|pause|stop；省略即continue，缺内容或要求不提交不等于暂缓。'
         'action_reason独立表达阻塞原因或事项处置：await_selection/await_value/continue_matter对应continue，defer_matter对应pause，cancel_matter对应stop；pause/stop必须给action_reason。等用户选票或补值是当前活动办理等待输入，不是主动移出办理；不允许保存只限制执行，不改变生命周期。action_quote须支持主动处置整个事项；后续执行提案不能扩大动作。'
-        '单票办理已明确要改用途或备注时，用field=purpose|remark及field_quote保留当前字段要求；字段未知或本轮未更正时省略，由原owner继承有效待补。'
+        '单票办理已明确要改用途或备注时，用field=purpose|remark及field_quote保留当前字段要求；当前新值已给时必须用pending_change={field,new_value,source:{kind:current,quote:当前原话片段}}保留确切值；未知不传。它与最终澄清共用同一候选结构，后续执行不能静默丢弃或改写它；原owner核来源和权限。字段未知或本轮未更正时省略，由原owner继承有效待补。'
         '有原单票待补时，独立给value_relation及当前value_quote，分别判断保留、替换、明确清空、撤回待补或关系未明；不能用continue代替值修订判断，也不看执行提案的replace。'
         '另用matter_relation/matter_quote判断事项归属；不能按票号是否命中旧集合代替判断。新事项遇旧待补先询问处置，不并行或静默覆盖。'
         '另用reference_relation=displayed|none|unclear及reference_quote表达目标与前文展示的关系；新发起修改也可从刚才展示集合里选择，事项新旧与引用关系分别判断。候选由Runtime核实，不在语义输出中代选。'

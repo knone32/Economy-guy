@@ -2409,7 +2409,7 @@ class Agent:
                     if type(route) is not dict:raise BusinessRequestError('读取要求结构无效。')
                     if (business_format_repair_used or business_read_reentry) and route.get('kind') != 'read':
                         raise BusinessRequestError('读取要求结构补正不能切换为其他业务路径。','INVALID_ARGUMENTS')
-                    if route.get('kind')=='legacy' and set(route)<={'kind','turn_action','action_reason','action_quote','field','field_quote','value_relation','value_quote','matter_relation','matter_quote','reference_relation','reference_quote'}:
+                    if route.get('kind')=='legacy' and set(route)<={'kind','turn_action','action_reason','action_quote','field','field_quote','value_relation','value_quote','matter_relation','matter_quote','reference_relation','reference_quote','pending_change'}:
                         from .business_request import legacy_action
                         action=legacy_action(route)
                         quote=route.get('action_quote')
@@ -2444,13 +2444,19 @@ class Agent:
                                     or not field_quote.strip() or field_quote not in current_request)
                                 or field is None and field_quote):
                             raise BusinessRequestError('办理动作及当前原话来源无效。','INVALID_ARGUMENTS')
+                        change=route.get('pending_change')
+                        if change is not None:
+                            from .business_sources import checked_change
+                            try:checked_change(change,current_request)
+                            except PendingTransitionError as error:
+                                raise BusinessRequestError(str(error),'INVALID_ARGUMENTS') from error
                         business_phase=False
                         business_action_route=True
                         business_turn_action=action
                         business_turn_field=field
                         from .intent_contract import BoundIntent
                         business_revision_origin=BoundIntent('amend',actor,str(self.db_path),self.trace_id,current_request,
-                            {'field':field,'value_relation':value_relation,'matter_relation':matter_relation,'reference_relation':reference_relation},
+                            {'field':field,'value_relation':value_relation,'matter_relation':matter_relation,'reference_relation':reference_relation,'pending_change':change},
                             {'source':'independent_business_entry','field_quote':field_quote,'value_quote':value_quote,'matter_quote':matter_quote,'reference_quote':reference_quote})
                         self.messages.append({'role':'user','name':'harness_business_action',
                             'content':json.dumps({'turn_action':action,'source_quote':quote,
@@ -2458,6 +2464,7 @@ class Agent:
                                 'value_relation':value_relation,'value_quote':value_quote,
                                 'matter_relation':matter_relation,'matter_quote':matter_quote,
                                 'reference_relation':reference_relation,'reference_quote':reference_quote,
+                                'pending_change':change,
                                 'interpretation':'independent_model_business_relation',
                                 'business_authorization':False},ensure_ascii=False)})
                         # Advertise only reachable capabilities for this owner.
@@ -2742,7 +2749,9 @@ class Agent:
                     fields=natural.get('missing_fields',())
                     native=active_pending and active_pending.get('business_action')=='single_invoice'
                     if (action=='pause' or business_action_route and
-                            (business_turn_field is not None or proposed_action in {'pause','stop'} or natural['kind']=='clarification'
+                            (business_turn_field is not None
+                             or business_revision_origin is not None and business_revision_origin.target.get('pending_change') is not None
+                             or proposed_action in {'pause','stop'} or natural['kind']=='clarification'
                              and (native or natural.get('pending_change') is not None or set(fields)&{'purpose','remark'}))):
                         if self.user_id!=actor:
                             execution.stop('DENIED')

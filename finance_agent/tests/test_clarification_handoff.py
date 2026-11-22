@@ -124,6 +124,27 @@ class ClarificationOwnerTests(unittest.TestCase):
         self.assertEqual(view['business_status'],'PAUSED')
         self.assertEqual(view['pending']['known']['new_value'],'附件另存待核')
 
+    def test_independent_sourced_value_survives_executor_omission(self):
+        for path in ('direct','tool'):
+            with self.subTest(path=path):
+                self.seed_set()
+                text='从刚才两张里选一张，备注改成“资料复核后整理”，等我选。'
+                change={'field':'remark','new_value':'资料复核后整理',
+                    'source':{'kind':'current','quote':'备注改成“资料复核后整理”'}}
+                semantic={'kind':'legacy','action_reason':'await_selection',
+                    'matter_relation':'new','matter_quote':'选一张，备注改成',
+                    'reference_relation':'displayed','reference_quote':'刚才两张','pending_change':change}
+                replies=iter([envelope(semantic),envelope({'kind':'clarification','text':'等待选择。',
+                    'missing_fields':['invoice_no']}) if path=='direct' else tool({'field':'remark'})])
+                self.agent.model=lambda *_:next(replies)
+                with patch('app.invoice_action.get_invoice',side_effect=AssertionError('No guessed single target')):
+                    self.agent.ask(text)
+                state=self.agent.pending_intent
+                self.assertIsNotNone(state,self.agent.last_response)
+                self.assertEqual(state['change']['new_value'],['资料复核后整理'])
+                self.assertIn('reference_collection',state)
+                self.assertFalse(self.agent.last_response.get('invoice_change'))
+
 
 class IndependentActionTests(unittest.TestCase):
     def test_waiting_is_not_matter_deferral(self):

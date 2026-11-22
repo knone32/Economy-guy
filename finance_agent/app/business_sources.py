@@ -29,6 +29,20 @@ def _origin(message, message_id, kind, value=None):
     return result
 
 
+def checked_change(change, request):
+    """A typed current-message candidate, never text extracted from an answer."""
+    if (type(change) is not dict or set(change)!={'field','new_value','source'}
+            or type(change['field']) is not str or change['field'] not in {'purpose','remark'}
+            or type(change['new_value']) is not str):
+        raise PendingRequestError('新值须带完整的结构化字段和当前来源。','DENIED')
+    source=change['source']
+    if (type(source) is not dict or set(source)!={'kind','quote'} or source.get('kind')!='current'
+            or type(source.get('quote')) is not str or not source['quote'].strip()
+            or source['quote'] not in request or change['new_value'] not in source['quote']):
+        raise PendingRequestError('新值候选没有一致的当前原话来源。','DENIED')
+    return {'field':change['field'],'new_value':change['new_value']}
+
+
 def checked_revision(origin, *, actor, book, current_id, current_request):
     from .intent_contract import BoundIntent
     if origin is None:return {}
@@ -44,6 +58,10 @@ def checked_revision(origin, *, actor, book, current_id, current_request):
             quote=origin.sources.get({'field':'field_quote','value_relation':'value_quote','matter_relation':'matter_quote','reference_relation':'reference_quote'}[key])
             if type(value) is not str or value not in allowed or type(quote) is not str or not quote.strip() or quote not in current_request:
                 raise PendingRequestError('修订关系的原话来源不属于本轮。','DENIED')
+    if origin.target.get('pending_change') is not None:
+        change=checked_change(origin.target['pending_change'],current_request)
+        if origin.target.get('field',change['field']) not in (None,change['field']):
+            raise PendingRequestError('独立候选字段与本轮字段关系冲突。','DENIED')
     return origin.target
 
 

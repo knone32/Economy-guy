@@ -35,13 +35,14 @@ def bind_clarification(agent, fields, previous, request, *, field=None, change=N
     args=({'field':field} if field is not None else
           {'field':next(iter(editable))} if len(editable)==1 else {})
     if change is not None:
-        source=change.get('source',{})
-        if (type(source) is not dict or set(source)!={'kind','quote'} or source.get('kind')!='current'
-                or type(source.get('quote')) is not str or not source['quote'].strip()
-                or source['quote'] not in request or change['new_value'] not in source['quote']
-                or args.get('field',change['field'])!=change['field']):
+        from .business_sources import checked_change
+        try:
+            patch=checked_change(change,request)
+        except PendingTransitionError as error:
+            return tool_result('DENIED',error=str(error)),previous,None,[]
+        if args.get('field',patch['field'])!=patch['field']:
             return tool_result('DENIED',error='待补新值缺少一致的本轮结构化来源；未采用正文中的内容。'),previous,None,[]
-        args.update(field=change['field'],new_value=change['new_value'])
+        args.update(patch)
         if not change['new_value']:
             args['value_ref']='clear'
     if not previous or previous.get('business_action')!='single_invoice':previous=None
@@ -55,6 +56,15 @@ def change_invoice(agent, args, previous, request, *, defer_preview=False,revisi
     try:
         from .business_sources import checked_revision
         revision=checked_revision(revision_origin,actor=agent.user_id,book=agent.db_path,current_id=agent.trace_id,current_request=request)
+        # The independent stage owns its typed candidate until this original
+        # owner binds it. A later proposal can omit it, never silently change it.
+        if revision.get('pending_change') is not None:
+            from .business_sources import checked_change
+            patch=checked_change(revision['pending_change'],request)
+            if any(key in args and args[key]!=value for key,value in patch.items()):
+                return tool_result('DENIED',error='执行候选与独立阶段的当前新值或字段冲突。'),previous,None,[]
+            args={**patch,**args}
+            if not patch['new_value']:args['value_ref']='clear'
         matter=revision.get('matter_relation')
         if previous and (matter=='new' or previous.get('reference_collection') and matter!='continue'):
             message=('请先明确旧待选事项是保留暂缓还是取消；处置后才能独立办理新事项。' if matter=='new' else
@@ -142,7 +152,7 @@ def change_invoice(agent, args, previous, request, *, defer_preview=False,revisi
         question = ('请明确要修改的字段和对应内容，或确认是否替换上一要求；原要求暂不继续。'
                     if candidate.get('blocked_reason') == 'ambiguous_business_choice' else None)
         if collection and 'invoice_no' not in known:
-            question='修改内容与原展示候选已保留，尚未保存。请选择候选中的企业和票号；未选定前不读取单票或生成预览。'
+            question=('修改内容与原展示候选已保留' if 'new_value' in known else '修改字段与原展示候选已保留，修改内容尚待补充')+'，尚未保存。请选择候选中的企业和票号；未选定前不读取单票或生成预览。'
         return tool_result('WAITING_USER', data=public_state(candidate), evidence={
             'source':'harness_business_action', 'missing_fields':list(candidate['missing_fields']),
             'user_message':question,'new_matter_accepted':previous is None and matter=='new', 'business_authorization':False}), candidate, None, list(reads)

@@ -4,6 +4,8 @@
 
 67dfc8a 的授权 Live 已首错停止：第一轮查询完成；第二轮将等待补选解释为 pause，澄清正文的新值未进入 owner，集合引用亦未保留。5次请求、43439 tokens；发票和审计零变化，后续未执行。原失败记录不变。
 
+1fa501d 的首次修复 Live 回归仍失败：动作与集合已正确，但执行澄清漏带结构化新值。原始失败保留。后续复用同一带来源候选贯通独立阶段与原 owner，不靠末答搬运；仅补这一已证实机制，后续同范围回归见 clarification-live-followup 的包外原始回执。
+
 两项修复与有限程序证据见 [澄清交接记录](CLARIFICATION-HANDOFF.md)。动作契约与直接候选、展示集合均回原 change_invoice；保留权限、来源、fresh 读取与人工批准。冻结后只回归受影响三步；同 SHA Live 结果以本地 evidence-root/pending-relationships-20261122/clarification-live 的原始回执为准。程序通过不代表 Live 或真人 GUI 通过，旧 ZIP 仍属于67dfc8a，未更新、未发布。
 
 以下为此前各阶段历史记录，历史“无新 Live/待授权”不代表当前状态。

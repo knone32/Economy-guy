@@ -23,3 +23,11 @@ CLARIFICATION-01.log 的暂缓断言错误读取被退役为历史的 result；�
 ## 冻结后的必要 Live
 
 只回归原失败的“真实查询→等待补选→集合内选择→原预览并取消”。用于区分独立动作是否仍误判，以及带来源候选/集合在真实模型路径中是否保留；首错后停止，不加同类矩阵。程序双路径不冒充真实模型选用两种协议。结果及实际消耗按同一冻结源码写本地包外回执 clarification-live/RESULT.public.json 或 FIRST-FAILURE.public.json；原累计账不清零、不另开预算。没有真人GUI验收，不推送、发布或替换旧包。
+
+## 1fa501d 的新首错及后续修复
+
+第一次有限 Live 回归新增5次请求/43147 tokens（共享累计284次/2327038 tokens）。动作正确变为 continue/await_selection，展示集合也保留；但执行回复仍只有正文、无 pending_change，原 owner 因此无可接受的新值来源。首错后未走选择、预览、取消，原 FIRST-FAILURE.public.json 保持。不能把这个结果计为通过。
+
+针对这份新证据，同一 pending_change 候选也在独立阶段表达当前已给新值。它按当前来源校验，临时绑定在原 BoundIntent（不新增持久状态）；原 change_invoice 将它合并到待补，执行方可以省略，冲突则拒绝。最终直接澄清也用同一 checked_change 来源检查；不依赖正文搬运或新模型调用。未给值时明确显示“修改内容尚待补充”，不能显示内容已保留。
+
+CLARIFICATION-CARRIER-BEFORE.log 保留实现前反例，CLARIFICATION-CARRIER-AFTER.log 及 CLARIFICATION-CARRIER-PROTECTION.log 证明同一个候选在执行方省略时，两条路径均保留，集合内 fresh 预览、集合外拒绝和真实 PAUSED 不退化。后续只对这一新增机制继续同范围原题回归，不追加场景；结果另存 clarification-live-followup，不覆盖1fa501d失败或67dfc8a原失败。自然语言泛化及真人GUI仍未签收。
