@@ -1,5 +1,6 @@
 """唯一Agent Loop与兼容Facade；业务/工具/Trace/写入协调各有所有者。"""
 import json
+from copy import deepcopy
 import re
 from pathlib import Path
 from contextlib import ExitStack, closing
@@ -2064,6 +2065,7 @@ class Agent:
         business_action_route = False
         business_turn_action = None
         business_turn_field = None
+        business_revision_origin = None
         business_references = None
         business_trusted = {key:list(values) for key,values in self.context.proof().values.items()
                             if self.context.proof().sources.get(key) in READ_SOURCES}
@@ -2257,7 +2259,7 @@ class Agent:
             if business_repair_source is not None:
                 request_tools = [t for t in request_tools if t['function']['name'] == 'change_invoice']
                 context.append({'role':'system','content':
-                    '上一次 change_invoice 把历史内容当作本轮新值，未生成预览。只可重新决定一次该办理。'
+                    '上一次 change_invoice 未通过来源或修订核对，未生成预览；补正基线是提案前有效待补。只可补正一次。'
                     '重新判断本轮用户原话：仅在用户仍要使用上一有效内容时明确传 value_ref=previous，并省略 new_value；'
                     '若用户更正内容，传本轮原文的新值；若不明确，追问或 relation=clarify。'
                     '本轮给出的目标编号仍需提供，不新增查询或其他写操作。'})
@@ -2400,7 +2402,7 @@ class Agent:
                     if type(route) is not dict:raise BusinessRequestError('读取要求结构无效。')
                     if (business_format_repair_used or business_read_reentry) and route.get('kind') != 'read':
                         raise BusinessRequestError('读取要求结构补正不能切换为其他业务路径。','INVALID_ARGUMENTS')
-                    if route.get('kind')=='legacy' and set(route)<={'kind','turn_action','action_quote','field','field_quote'}:
+                    if route.get('kind')=='legacy' and set(route)<={'kind','turn_action','action_quote','field','field_quote','value_relation','value_quote'}:
                         action=route.get('turn_action')
                         if action is None:action='continue'
                         quote=route.get('action_quote')
@@ -2408,6 +2410,13 @@ class Agent:
                         field=route.get('field')
                         field_quote=route.get('field_quote')
                         if field_quote is None:field_quote=''
+                        value_relation=route.get('value_relation')
+                        value_quote=route.get('value_quote') or ''
+                        if (value_relation is not None and (type(value_relation) is not str or value_relation not in {'keep','replace','clear','withdraw','unclear'})
+                                or type(value_quote) is not str or value_quote and value_quote not in current_request
+                                or value_relation is not None and not value_quote.strip()
+                                or value_relation is None and value_quote):
+                            raise BusinessRequestError('值修订关系须有当前原话的独立来源。','INVALID_ARGUMENTS')
                         if (type(action) is not str or action not in {'continue','pause','stop'} or type(quote) is not str
                                 or quote and quote not in current_request
                                 or action in {'pause','stop'} and not quote.strip()
@@ -2420,9 +2429,14 @@ class Agent:
                         business_action_route=True
                         business_turn_action=action
                         business_turn_field=field
+                        from .intent_contract import BoundIntent
+                        business_revision_origin=BoundIntent('amend',actor,str(self.db_path),self.trace_id,current_request,
+                            {'field':field,'value_relation':value_relation},
+                            {'source':'independent_business_entry','field_quote':field_quote,'value_quote':value_quote})
                         self.messages.append({'role':'user','name':'harness_business_action',
                             'content':json.dumps({'turn_action':action,'source_quote':quote,
                                 **({'field':field,'field_source_quote':field_quote} if field is not None else {}),
+                                'value_relation':value_relation,'value_quote':value_quote,
                                 'interpretation':'independent_model_business_relation',
                                 'business_authorization':False},ensure_ascii=False)})
                         # Advertise only reachable capabilities for this owner.
@@ -2713,7 +2727,8 @@ class Agent:
                             execution.stop('DENIED')
                             return finish('本轮身份已变化，未执行业务动作。',store=False)
                         result,next_pending,planned,runtime_reads=bind_invoice_clarification(
-                            self,fields,active_pending,current_request,field=business_turn_field,defer_preview=action=='pause')
+                            self,fields,active_pending,current_request,field=business_turn_field,defer_preview=action=='pause',
+                            revision_origin=business_revision_origin)
                         result=accept_invoice_transition(result,next_pending,planned,runtime_reads,action)
                         execution.stop(result['status'])
                         missing=result.get('evidence',{}).get('missing_fields',())
@@ -3215,19 +3230,18 @@ class Agent:
                                     result = tool_result('DENIED', error='本轮身份已变化，未执行业务动作。')
                                 if result is None:
                                     before = active_pending
-                                    if (business_repair_source is not None
-                                            and business_args.get('value_ref') == 'previous'):
+                                    if business_repair_source is not None:
                                         before = business_repair_source
                                     result, next_pending, planned, runtime_reads = execute_invoice_action(
                                         self, business_args, before, current_request,
-                                        defer_preview=business_turn_action=='pause')
+                                        defer_preview=business_turn_action=='pause',revision_origin=business_revision_origin)
                                     if (business_repair_source is None and before and len(calls) == 1
                                             and result.get('evidence',{}).get('needs_value_reference_decision')
                                             and execution.model_requests < min(execution.block_limit,self.max_requests)
                                             and execution.actual_tools < self.max_tools):
                                         # The persisted state is still retired below. Carry the
                                         # previous source only for this one explicit same-turn choice.
-                                        business_repair_source = before
+                                        business_repair_source = deepcopy(before)
                                         business_repair_notice = result['evidence']['user_message']
                                         repair_scope = True
                                         self.trace('business.value_reference_repair', {'retry':1,'physical_write':False})
@@ -3241,6 +3255,9 @@ class Agent:
                                         # failed proposal remains rejected and paired; its
                                         # replacement must re-enter the same source owner.
                                         scope_repair_used=repair_scope=True
+                                        if business_repair_source is None:
+                                            business_repair_source=deepcopy(before)
+                                            business_repair_notice=result['evidence'].get('user_message')
                                         self.trace('business.source_slot_repair',{'retry':1,
                                             'conflicting_slots':result['evidence']['conflicting_slots'],'physical_write':False})
                             except (TypeError,ValueError):

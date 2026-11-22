@@ -101,7 +101,7 @@ def suspend(previous, request, current_id, *, actor, book, reason):
     return state
 
 
-def bind_request(args, previous, *, actor, book, current_id, current_request, target_origin=None):
+def bind_request(args, previous, *, actor, book, current_id, current_request, target_origin=None, revision_origin=None):
     from .intent_contract import BoundIntent
     reference_scope = {}
     if target_origin is not None:
@@ -118,15 +118,27 @@ def bind_request(args, previous, *, actor, book, current_id, current_request, ta
     # A read clarification or arbitrary model pending is not a change source.
     if previous and previous.get('business_action') != 'single_invoice':
         previous = None
+    revision={}
+    if revision_origin is not None:
+        if (not isinstance(revision_origin,BoundIntent) or revision_origin.action!='amend'
+                or (revision_origin.actor,revision_origin.workbook,revision_origin.turn_id,revision_origin.request)
+                   !=(actor,str(book),current_id,current_request)
+                or revision_origin.sources.get('source')!='independent_business_entry'):
+            raise PendingRequestError('修订关系缺少本轮独立业务来源。','DENIED')
+        revision=revision_origin.target
+        for key in ('field','value_relation'):
+            if revision.get(key) is not None:
+                quote=revision_origin.sources.get('field_quote' if key=='field' else 'value_quote')
+                if type(quote) is not str or not quote.strip() or quote not in current_request:
+                    raise PendingRequestError('修订关系的原话来源不属于本轮。','DENIED')
+    value_relation=revision.get('value_relation')
     prior_scope = deepcopy((previous or {}).get('scope',{}))
     old_change = deepcopy((previous or {}).get('change',{}))
     relation = args.get('relation','update')
-    field = args.get('field', None if relation == 'replace' else _one(old_change,'field'))
+    field = revision.get('field') or (_one(old_change,'field') if previous else args.get('field'))
     old_value = _one(old_change,'new_value')
-    replacement = bool(previous and (relation == 'replace'
-        or ('field' in args and args['field'] != _one(old_change,'field'))
-        or ('new_value' in args and args['new_value'] != old_value)
-        or args.get('value_ref') == 'clear'))
+    replacement = bool(previous and (value_relation in {'replace','clear','withdraw'}
+        or revision.get('field') is not None and revision['field'] != _one(old_change,'field')))
     source = ((previous or {}).get('source_request') or (previous or {}).get('request') or '')
     source = '\n'.join(x for x in (source,current_request) if x)
     state = {'request_id':current_id,'actor':actor,'workbook':str(book),'request':source,
@@ -135,7 +147,8 @@ def bind_request(args, previous, *, actor, book, current_id, current_request, ta
     state['provenance'].pop('new_value',None)
     if field:
         state['change']['field'] = [field]
-        state['provenance']['field'] = (_origin(current_request,current_id,'business_field_intent')
+        state['provenance']['field'] = (_origin(current_request,current_id,'independent_business_field_intent')
+            if revision.get('field') is not None else _origin(current_request,current_id,'business_field_intent')
             if 'field' in args else state['provenance'].get('field',{'kind':'verified_pending'}))
     if replacement:
         state['superseded'] = {'change':old_change,'request_id':previous.get('request_id'),
@@ -181,7 +194,13 @@ def bind_request(args, previous, *, actor, book, current_id, current_request, ta
     scope_verified = False
 
     def fail(message, reason, status='SCOPE_MISMATCH', *, repairable_reference=False):
-        # A rejected replacement cannot resurrect the superseded field/value.
+        # Only an independently checked user revision can retire old content.
+        # An invalid execution proposal cannot acquire cancellation authority.
+        if previous and not replacement:
+            error=PendingRequestError(message+' 原有效待补保持不变，尚未保存。',status)
+            error.pending_state,error.state_updated=deepcopy(previous),False
+            error.reason,error.repairable_reference=reason,repairable_reference
+            raise error
         if previous or relation == 'clarify':
             if not scope_verified:
                 state['scope'] = deepcopy(prior_scope)
@@ -193,7 +212,14 @@ def bind_request(args, previous, *, actor, book, current_id, current_request, ta
                         state['provenance'].pop(key,None)
                 if old_target_conflicts:
                     retire_invoice()
-            state['change'] = {'field':[field]} if field else {}
+            verified=({'field':[field]} if field else {})
+            if value_relation=='clear':
+                verified['new_value']=['']
+                state['provenance']['new_value']=_origin(current_request,current_id,'independent_clear_business_intent')
+            elif replacement and type(args.get('new_value')) is str and args['new_value'] and args['new_value'] in current_request and not ambiguous_literal and value_relation!='withdraw':
+                verified['new_value']=[args['new_value']]
+                state['provenance']['new_value']=_origin(current_request,current_id,'current_literal',args['new_value'])
+            state['change'] = verified
             state['blocked_reason'] = reason
             state['superseded'] = {'change':old_change,
                                    'request_id':(previous or {}).get('request_id'),
@@ -221,14 +247,29 @@ def bind_request(args, previous, *, actor, book, current_id, current_request, ta
         # Explicit user date restrictions are inferred by that binding, never
         # discarded merely because a generated date conflicted with them.
         corrected={key:value for key,value in args.items() if key not in conflicts}
-        partial=bind_request(corrected,previous,actor=actor,book=book,current_id=current_id,
-                             current_request=current_request,target_origin=target_origin)
+        try:
+            partial=bind_request(corrected,previous,actor=actor,book=book,current_id=current_id,
+                current_request=current_request,target_origin=target_origin,revision_origin=revision_origin)
+        except PendingRequestError as inner:
+            partial=getattr(inner,'pending_state',None)
+            if partial is None:raise
         partial['blocked_reason']='source_conflict'
         error=PendingRequestError('部分候选参数没有本轮来源，请补正这些槽位；其余已核实内容保留，未生成预览。','SCOPE_MISMATCH')
         error.pending_state,error.state_updated=partial,True
         error.reason='object_source'
         error.conflicting_slots=conflicts
         raise error
+    if previous:
+        if args.get('field',field)!=field:
+            fail('候选字段与已核实的本轮字段要求不一致。','field_revision','AMBIGUOUS')
+        if relation=='clarify' and value_relation!='unclear':
+            fail('候选澄清关系尚未由当前原话独立核实。','unverified_revision','AMBIGUOUS')
+        if old_value is not None and value_relation is None:
+            fail('请核实本轮是保留、替换还是撤回旧内容。','unverified_revision','AMBIGUOUS',repairable_reference=True)
+        if relation=='replace' and not replacement:
+            fail('替换提案没有独立的本轮替换依据。','unverified_revision','AMBIGUOUS',repairable_reference=True)
+        if value_relation=='keep' and ('new_value' in args and args['new_value']!=old_value or args.get('value_ref')=='clear'):
+            fail('执行提案改变了本轮明确保留的内容。','value_revision','AMBIGUOUS')
     for key, arg in (('company_id','company_id'),('year','target_year'),('month','target_month'),('invoice_no','invoice_no')):
         if arg in args:
             available = current.get(key) or prior_scope.get(key,()) or reference_scope.get(key, ())
@@ -288,18 +329,25 @@ def bind_request(args, previous, *, actor, book, current_id, current_request, ta
             if not all(check_permission(db,actor,company,operation).allowed for operation in ('read','modify')):
                 fail('当前账号没有该企业发票的办理权限。','permission','DENIED')
     scope_verified = True
-    if relation == 'clarify':
+    if value_relation=='withdraw':
+        state['change']={'field':[field]} if field else {}
+        state['missing_fields']=('new_value',)
+        return state
+    if value_relation=='unclear':
+        state['change']=deepcopy(old_change)
         state['on_hold'] = {'change':old_change,'request_id':(previous or {}).get('request_id')}
         state['missing_fields'] = ('change_choice',)
         state['blocked_reason'] = 'ambiguous_business_choice'
         return state
-    if reference == 'clear':
+    if reference=='clear' and value_relation!='clear':
+        fail('清空提案尚未由本轮独立业务要求核实。','unverified_clear','AMBIGUOUS')
+    if value_relation=='clear':
         if args.get('new_value','') != '' or not current_request.strip():
             fail('清空与填写内容不能同时指定，请明确本次内容。','value_ambiguity','AMBIGUOUS')
         value = ''
-        origin = _origin(current_request,current_id,'clear_business_intent')
+        origin = _origin(current_request,current_id,'independent_clear_business_intent')
     elif reference == 'previous':
-        if old_value is None or ('new_value' in args and args['new_value'] != old_value):
+        if value_relation!='keep' or old_value is None or ('new_value' in args and args['new_value'] != old_value):
             fail('没有唯一有效的上一项填写内容可引用，请明确新内容。','value_reference','AMBIGUOUS')
         value = old_value
         origin = {'kind':'explicit_previous_value','request_id':previous['request_id'],
@@ -312,8 +360,7 @@ def bind_request(args, previous, *, actor, book, current_id, current_request, ta
             # A model may have echoed a server-owned value while making a
             # valid patch. Never accept the echo itself as evidence. Only this
             # exact, same-field case can request a fresh semantic decision.
-            repairable = (reference == 'auto' and not replacement and value == old_value
-                          and field is not None and relation == 'update')
+            repairable = (reference == 'auto' and not replacement and value == old_value and field is not None)
             fail('本次新内容缺少可核对的原文或有效待补来源，请明确填写内容。',
                  'new_value_source','AMBIGUOUS',repairable_reference=repairable)
     elif not replacement and field == _one(old_change,'field') and old_value is not None:

@@ -29,7 +29,7 @@ def public_state(pending):
     return {'known': known, 'missing_fields': list(pending.get('missing_fields', ()))}
 
 
-def bind_clarification(agent, fields, previous, request, *, field=None, defer_preview=False):
+def bind_clarification(agent, fields, previous, request, *, field=None, defer_preview=False,revision_origin=None):
     """Use structured field candidates and original display identity, never prose."""
     editable=set(fields)&{'purpose','remark'}
     args=({'field':field} if field is not None else
@@ -48,10 +48,10 @@ def bind_clarification(agent, fields, previous, request, *, field=None, defer_pr
                 error='没有唯一可信的当前单票，请先明确要办理的发票。'),None,None,[]
     # The output envelope cannot override the current business action. Missing
     # values still wait; an explicitly paused action must not create a preview.
-    return change_invoice(agent,args,previous,request,defer_preview=defer_preview)
+    return change_invoice(agent,args,previous,request,defer_preview=defer_preview,revision_origin=revision_origin)
 
 
-def change_invoice(agent, args, previous, request, *, defer_preview=False):
+def change_invoice(agent, args, previous, request, *, defer_preview=False,revision_origin=None):
     """Return result, pending state, candidate and actual runtime read evidence."""
     try:
         target_origin = None
@@ -97,7 +97,7 @@ def change_invoice(agent, args, previous, request, *, defer_preview=False):
         internal_args = {({'year':'target_year','month':'target_month'}.get(k,k)):v for k,v in args.items()}
         candidate = request_change(internal_args, previous, actor=agent.user_id, book=agent.db_path,
             current_id=agent.trace_id, current_request=request, business_continuation=True,
-            target_origin=target_origin)
+            target_origin=target_origin,revision_origin=revision_origin)
     except PendingTransitionError as error:
         partial=getattr(error,'pending_state',None)
         if collection and partial is not None:partial['reference_collection']=collection
