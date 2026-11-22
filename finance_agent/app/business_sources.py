@@ -290,7 +290,17 @@ def bind_request(args, previous, *, actor, book, current_id, current_request, ta
             fail('候选字段与已核实的本轮字段要求不一致。','field_revision','AMBIGUOUS')
         if relation=='clarify' and value_relation!='unclear':
             fail('候选澄清关系尚未由当前原话独立核实。','unverified_revision','AMBIGUOUS')
-        if old_value is not None and value_relation is None:
+        # A bare, sourced choice from the owner's pending collection supplies
+        # identity only. It cannot revise a value, and needs no new value
+        # relation merely to retain the existing verified pending content.
+        identity_supplement = (not prior_scope.get('invoice_no')
+            and previous.get('reference_collection') and not previous.get('on_hold')
+            and not previous.get('blocked_reason') and target_origin is not None
+            and revision.get('matter_relation')=='continue'
+            and revision.get('field') is None and revision.get('pending_change') is None
+            and set(args)=={'invoice_no'} and current_request.strip()==args['invoice_no']
+            and target_origin.target.get('invoice_no')==args['invoice_no'])
+        if old_value is not None and value_relation is None and not identity_supplement:
             fail('请核实本轮是保留、替换还是撤回旧内容。','unverified_revision','AMBIGUOUS',repairable_reference=True)
         if relation=='replace' and not replacement:
             fail('替换提案没有独立的本轮替换依据。','unverified_revision','AMBIGUOUS',repairable_reference=True)

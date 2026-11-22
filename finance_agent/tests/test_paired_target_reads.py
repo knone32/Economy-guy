@@ -58,13 +58,16 @@ class PairedTargetReadTests(unittest.TestCase):
         view=host.send(text);self.assertFalse(view['preview'])
         self.assertEqual(view['pending']['known']['month'],9)
         for number,good in [('F012',False),('F005',True)]:
-            text='选'+number+'，原来的2026年9月限制和备注保留。'
-            self.q.extend([envelope({'kind':'legacy','value_relation':'keep','value_quote':text,
-                'matter_relation':'continue','matter_quote':text,'reference_relation':'displayed','reference_quote':text}),
-                repair.tool({'invoice_no':number})])
+            text=number
+            self.q.extend([envelope({'kind':'legacy',
+                'matter_relation':'continue','matter_quote':text}),
+                repair.tool({'invoice_no':number}) if good else envelope({
+                    'kind':'clarification','text':'请选本次限定账期内的发票。','missing_fields':['invoice_no']})])
             view=host.send(text)
             if not good:
                 self.assertFalse(view['preview']);self.assertEqual(view['pending']['known']['month'],9)
+                self.assertFalse(agent.context.scope.get('invoice_no'))
+                self.assertEqual(agent.last_response['execution']['actual_tool_calls'],0)
                 if view.get('display'):
                     view=host.acknowledge_display(view['display']['trace'],context=view['context'])
             else:

@@ -74,7 +74,8 @@ class ContextBuilder:
         self.personal_detail = "普通"
         self.object_source_metadata = {}
 
-    def begin(self,text,message_index,reset=False,*,independent_read=False,explicit=None,date_sources=None,unresolved_year=False):
+    def begin(self,text,message_index,reset=False,*,independent_read=False,explicit=None,date_sources=None,unresolved_year=False,
+              defer_invoice_selection=False):
         """明确范围更正后弃用旧焦点；不更改长期任务，也不产生提交许可。"""
         literal = explicit_scope(text,include_update_aliases=True)
         if explicit is None:
@@ -115,6 +116,14 @@ class ContextBuilder:
                         explicit.pop(key, None)
         except (OSError, ValueError, sqlite3.Error):
             company_catalog_failed = True
+        if defer_invoice_selection and not reset:
+            # The trusted amendment owner still awaits a choice. A mention is
+            # a candidate, not an accepted focus that may retire its collection.
+            # Keep the current text for owner validation; only omit this focus.
+            explicit.pop('invoice_no', None)
+            object_sources.pop('invoice_no', None)
+            self.scope.pop('invoice_no', None)
+            self.sources.pop('invoice_no', None)
         if reset or (self.annual_focus and scope_mismatch(
                 explicit, dict(zip(("company_id", "year", "month"), self.annual_focus)))):
             self.annual_focus = None
@@ -122,6 +131,8 @@ class ContextBuilder:
         self.sources={key:('session_confirmed' if origin=='user_current' else origin)
                       for key,origin in self.sources.items() if key in self.scope}
         self.diagnostics = []
+        if defer_invoice_selection and not reset:
+            self.diagnostics.append('invoice_selection_deferred_to_owner')
         if company_catalog_failed:
             self.diagnostics.append('company_catalog_unavailable')
         if not previous and not self.references_blocked:

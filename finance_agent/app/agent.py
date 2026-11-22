@@ -1023,9 +1023,17 @@ class Agent:
         if not invoice_action and (not reference or reference["ok"]):
             independent_read = (read_only and hint is None and len(explicit.get("company_id", ())) == 1
                                 and bool(explicit.get("periods")))
+            defer_invoice_selection = bool(active_pending
+                and active_pending.get('business_action')=='single_invoice'
+                and active_pending.get('reference_collection')
+                and 'invoice_no' in active_pending.get('missing_fields',())
+                and not active_pending['scope'].get('invoice_no')
+                and not active_pending.get('on_hold') and not active_pending.get('blocked_reason')
+                and not self.context.references_blocked)
             expected_scope = self.context.begin(query_text, len(self.messages) - 1, reset=management == "task",
                                                 independent_read=independent_read,
                                                 explicit=explicit, date_sources=date_sources,
+                                                defer_invoice_selection=defer_invoice_selection,
                                                 unresolved_year=bool(missing_year_months - inferred.keys()) and not literal_periods)
             if hint is not None and not probe_reference and not recent_semantics:
                 reference = self.context.resolve(query_text, explicit=explicit)
