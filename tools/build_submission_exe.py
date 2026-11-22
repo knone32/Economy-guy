@@ -34,7 +34,7 @@ def main():
     native=stage/'native';native.mkdir()
     for name in ('GuiWindow.exe','Microsoft.Web.WebView2.Core.dll','Microsoft.Web.WebView2.WinForms.dll','WebView2Loader.dll'):
         shutil.copy2(root/'finance_agent/app/webview_host'/name,native/name)
-    command=[sys.executable,'-m','PyInstaller','--noconfirm','--clean','--onefile','--noconsole','--noupx',
+    command=[sys.executable,'-m','PyInstaller','--noconfirm','--clean','--onedir','--noconsole','--noupx',
         '--name','EconomyGuy','--distpath',str(stage/'dist'),'--workpath',str(stage/'work'),
         '--specpath',str(stage),'--paths',str(root/'finance_agent'),
         '--paths',str(root/'finance_agent/vendor/sqlglot-30.33.0-py3-none-any.whl')]
@@ -45,7 +45,7 @@ def main():
     command+=[str(root/'finance_agent/run_gui.py')]
     with (stage/'pyinstaller.log').open('w',encoding='utf-8') as log:
         subprocess.run(command,cwd=root,stdout=log,stderr=subprocess.STDOUT,check=True)
-    output.mkdir(parents=True);shutil.copy2(stage/'dist/EconomyGuy.exe',output/'EconomyGuy.exe')
+    shutil.copytree(stage/'dist/EconomyGuy',output)
     shutil.copytree(config,output/'config')
     (output/'功能说明.txt').write_text('工作台功能\n\n对话：业务查询、追问补充、修改要求、预览确认。\n待办：查看详情、进入办理、新建与更正任务、暂缓恢复和取消。\n业务查询：发票目录与详情、排序分页、月度年度汇总、银行收支、用途缺项、规则版本。\n资料：上传、更新版本、目录与精确原文。\n记录：切换历史对话，查看执行记录。\n设置：账户与账簿、Excel导入、已有账簿选择、模型配置、助手和阅读偏好。\n高级入口：连接诊断、结构诊断、固定脚本检查及原高级控制台。\n',encoding='utf-8-sig')
     sys.path.insert(0,str(root/'finance_agent'))
