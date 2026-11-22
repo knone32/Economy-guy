@@ -1,5 +1,9 @@
 # V3当前状态（总控权威；上海2026-11-22）
 
+## 2026-11-22 最新同版Live：805dab7，A_SUBSET未闭环
+
+两票完整交付与原展示ACK通过；缩至9月后保留备注及原集合；仅F012未预览且状态保留；仅F005时原change_invoice返回NOT_FOUND：“原展示集合已失效”，未到预览和取消。首错停止，无重试、批准或提交，发票及修改审计未变。7个物理请求均有回执、58,507 tokens。业务代码未改；本轮只归档计量未知请求续行适配及[完整记录](A-SUBSET-LIVE-805dab7.md)。旧未知请求和预留上界保留，不冒充实际用量。原失败不改分，真人GUI与CANCELLED未通过。
+
 ## 2026-11-22 当前窄修：已绑定成对target逐项读取
 
 基线6ea84b9，原A_SUBSET首错为SQL证明器unsupported_disjunction；语义和SQL配对关系正确，9月子集修复未被Live覆盖。优先按已绑定精确target分别调用原get_invoice，经原覆盖/事实渲染汇合，不扩OR证明器或摊平成两个IN。[实现与有限回归](PAIRED-TARGET-READS.md)。
