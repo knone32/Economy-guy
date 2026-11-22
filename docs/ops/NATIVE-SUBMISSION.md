@@ -1,3 +1,5 @@
+> 2026-11-23 第二启动首错：用户实际目录782f7bd的两次startup.log均显示HTTP服务已建立，原生WebView2初始化返回0x800700AA，业务未执行。旧C#对所有包、测试和窗口共用LocalAppData/Economy-guy/native-webview2。Microsoft WebView2维护者将该码解释为连接同UDF下正在退出/无响应的浏览器时可能ERROR_BUSY（https://github.com/MicrosoftEdge/WebView2Feedback/issues/2446）。当前进程快照没有该目录下活跃浏览器，不能追回失败瞬间具体占用者。窄修为每次原生窗口独立GUID用户数据目录，并在本机子进程明确绑定该目录；不复用旧浏览器缓存，不改账簿/会话/确认。状态回执增加缓存路径及环境/控制器初始化阶段。待以正常无调试启动和紧接退出重启验证。
+
 > 2026-11-23 已验证启动修复：运行源码782f7bd，onedir清洁包在独立含空格解压路径、TEMP/TMP/TMPDIR均指向普通文件的条件下无参数启动成功，原生导航及UI双就绪、正常退出；原生程序实际运行于包内_internal，而非_MEI解压目录。只验启动，发票/审计/任务行不变，API0；未重跑业务或代点批准。新包SHA256 eed3384af64b4e0a0b0c1e2f6f5063f8fa658079d7896b832b84f9150354ec33，证据 artifacts/native-host-20261122/TEMP-FIX-782f7bd.json。历史旧包已归档。
 
 > 2026-11-23 启动修复：用户报告onefile bootloader “Could not create temporary directory”。当前系统TEMP写入探针成功，C盘33.84GiB/E盘246.03GiB，无法追回截图进程的具体环境。打包改为onedir，运行库随包，不再启动解压；冻结入口把本进程及原生子进程TEMP/TMP指向程序旁data/runtime-temp，不改系统设置。下一验收只检查故意无效TEMP下的解压包原生双就绪，不重跑业务链。

@@ -14,11 +14,14 @@ internal static class Program {
     static bool uiReady;
     static string lastError;
     static string exitAction;
+    static string cache;
+    static string initializationStage;
     static void Record(string phase, string error = null) {
         if (error != null) lastError=error;
         if (String.IsNullOrEmpty(status)) return;
         var item = new Dictionary<string, object> {
             { "phase", phase }, { "ready", ready }, { "ui_ready", uiReady }, { "error", lastError }, {"exit_action",exitAction},
+            { "cache",cache }, { "initialization_stage",initializationStage },
             { "pid", System.Diagnostics.Process.GetCurrentProcess().Id },
             { "time", DateTime.UtcNow.ToString("o") }
         };
@@ -63,11 +66,21 @@ internal static class Program {
             };
             form.Load += async delegate {
                 try {
+                    // Browser cache is not business state. Each window owns a
+                    // fresh profile, so a shutting-down or hung old browser
+                    // cannot capture a later launch through the shared UDF.
+                    string basePath=String.IsNullOrEmpty(status)?Path.Combine(Environment.GetFolderPath(
+                        Environment.SpecialFolder.LocalApplicationData),"Economy-guy"):Path.GetDirectoryName(Path.GetFullPath(status));
+                    cache=Path.Combine(basePath,"webview-cache",Guid.NewGuid().ToString("N"));
+                    Directory.CreateDirectory(cache);
+                    Environment.SetEnvironmentVariable("WEBVIEW2_USER_DATA_FOLDER",cache);
+                    initializationStage="environment";
                     Record("initializing-webview2");
-                    string cache = Path.Combine(Environment.GetFolderPath(
-                        Environment.SpecialFolder.LocalApplicationData),"Economy-guy","native-webview2");
                     var environment = await CoreWebView2Environment.CreateAsync(null,cache,null);
+                    initializationStage="controller";
+                    Record("environment-created");
                     await web.EnsureCoreWebView2Async(environment);
+                    initializationStage="navigation";
                     web.CoreWebView2.Settings.AreDefaultContextMenusEnabled=false;
                     web.CoreWebView2.Settings.IsStatusBarEnabled=false;
                     web.CoreWebView2.Settings.IsPasswordAutosaveEnabled=false;
