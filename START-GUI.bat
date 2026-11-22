@@ -2,6 +2,11 @@
 setlocal DisableDelayedExpansion
 set "PYTHONUTF8=1"
 cd /d "%~dp0finance_agent" || goto failed
+if exist "%CD%\..\_runtime\python.exe" (
+  call :probe "%CD%\..\_runtime\python.exe" ""
+  if errorlevel 1 goto failed
+  goto run
+)
 set "GUI_PY=%ECONOMYGUY_PYTHON%"
 set "GUI_PY_ARGS="
 if defined GUI_PY (
@@ -26,8 +31,14 @@ set "GUI_PY_ARGS=%~2"
 exit /b %errorlevel%
 :run
 "%GUI_PY%" %GUI_PY_ARGS% -X utf8 run_gui.py %*
-if errorlevel 1 goto failed
+if errorlevel 1 goto run_failed
 exit /b 0
+:run_failed
+echo(
+echo GUI stopped. Read the startup error above; Python dependencies passed.
+echo Check the selected Profile, local credentials, workbook path or occupied port.
+pause
+exit /b 2
 :failed
 echo(
 echo GUI not started. Read the message above; no model fallback was selected.

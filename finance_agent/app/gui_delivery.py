@@ -6,6 +6,19 @@ import sqlite3
 import sys
 
 
+def startup_environment(name):
+    """Read a named launch setting even when Explorer inherited an older env."""
+    value=os.environ.get(name)
+    if value or os.name!='nt':return value
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,'Environment') as key:
+            value,kind=winreg.QueryValueEx(key,name)
+        return value if kind in (winreg.REG_SZ,winreg.REG_EXPAND_SZ) and isinstance(value,str) else None
+    except OSError:
+        return None
+
+
 def demo_paths(root=None):
     """Initialize a new official fictional fixture, never reset an existing book."""
     from .cli_workspaces import import_workspace
@@ -34,8 +47,9 @@ def main(argv=None):
             if '--session' not in args and not any(arg.startswith('--session=') for arg in args):
                 args += ['--session', str(sessions)]
         for option, variable in (('--profile','ECONOMYGUY_PROFILE'),('--profiles-local','ECONOMYGUY_PROFILES_LOCAL')):
-            if option not in args and not any(arg.startswith(option+'=') for arg in args) and os.environ.get(variable):
-                args += [option, os.environ[variable]]
+            if option not in args and not any(arg.startswith(option+'=') for arg in args):
+                value=startup_environment(variable)
+                if value:args += [option, value]
         if '--open' not in args:
             args.append('--open')
         print('本机工作台；U001/U002 为比赛模拟身份，不是登录认证。')
