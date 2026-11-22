@@ -47,7 +47,7 @@ def main():
         subprocess.run(command,cwd=root,stdout=log,stderr=subprocess.STDOUT,check=True)
     output.mkdir(parents=True);shutil.copy2(stage/'dist/EconomyGuy.exe',output/'EconomyGuy.exe')
     shutil.copytree(config,output/'config')
-    shutil.copy2(root/'docs/ops/GUI-TUI-COVERAGE.md',output/'GUI功能清单.md')
+    (output/'功能说明.txt').write_text('工作台功能\n\n对话：业务查询、追问补充、修改要求、预览确认。\n待办：查看详情、进入办理、新建与更正任务、暂缓恢复和取消。\n业务查询：发票目录与详情、排序分页、月度年度汇总、银行收支、用途缺项、规则版本。\n资料：上传、更新版本、目录与精确原文。\n记录：切换历史对话，查看执行记录。\n设置：账户与账簿、Excel导入、已有账簿选择、模型配置、助手和阅读偏好。\n高级入口：连接诊断、结构诊断、固定脚本检查及原高级控制台。\n',encoding='utf-8-sig')
     sys.path.insert(0,str(root/'finance_agent'))
     from app.gui_delivery import demo_paths
     book,_=demo_paths(output/'data')
@@ -67,20 +67,7 @@ def main():
              'model_profile':'shared-flash','accounts':accounts,'permissions_reference_only':permissions,
              'authority':'Actual permissions are checked against the workbook; this is not production login.'}
     (output/'config/accounts.json').write_text(json.dumps(account,ensure_ascii=False,indent=2),encoding='utf-8')
-    (output/'使用说明.txt').write_text('''双击 EconomyGuy.exe，等待内嵌工作台出现；不会打开默认浏览器。
-已预制官方虚构账簿 data/demo.sqlite3，初始修改审计为零。程序只使用本包旁的数据和会话库。
-U001可读改C001/C002；U002仅可读C001。默认U001，属于本机受信模拟绑定，不是生产登录认证。
-config/accounts.json选择启动模拟用户；实际权限每次由账簿核验，不由配置声明授予。
-config/model_profiles.toml含既定DeepSeek Flash的公开Profile身份；没有实际API密钥。
-同一Windows用户可复用已有Windows凭据库；新机器需配置自己的DEEPSEEK_API_KEY或原凭据。
-缺少密钥仍可打开设置、浏览账簿；可在设置里新增Profile并将密钥保存在Windows凭据库。
-GUI完整入口映射见GUI功能清单.md：包括任务管理、资料上传/版本原文、Profile新增编辑/连接检查/忘记密钥、账簿选择升级、年度查询与原高级入口。
-需要Windows 10/11 x64、.NET Framework 4.6.2+和WebView2 Runtime。本机已验证已有运行时。
-预览不是保存，必须本人确认当前预览。未知提交只能先核查，不能盲目重复提交。
-关闭窗口会正常停止本机服务。异常请看 logs/startup.log及window状态文件。
-包内没有旧会话、旧批准、用户历史或本机密钥。程序首次启动才创建新的会话库。
-已知业务限制：等待选择已直接绑定，但仅报错月票号后的执行动作仍有未闭环失败；不声明全业务通过。
-''',encoding='utf-8-sig')
+    (output/'使用说明.txt').write_text('Economy-guy 财税工作台\n\n1. 解压整个文件夹，双击 EconomyGuy.exe。\n2. 已备好演示账簿和账户配置，可直接查询发票、银行流水、用途缺项和规则。\n3. 对话、待办、业务查询、记录和设置均在窗口顶部；发票详情可带入对话继续办理。\n4. 修改内容先在预览中核对，再由本人确认保存；暂时不办理时可选择暂缓或取消。\n5. 模型配置在“设置”中管理；本机已有凭据可直接使用，需要时填写自己的API密钥。\n6. 账簿和会话保存在本文件夹的 data 目录，移动程序时请一并保留。\n\n运行环境：Windows 10/11 x64、.NET Framework 4.6.2+、Microsoft WebView2 Runtime。无需安装Python。\n',encoding='utf-8-sig')
     (output/'THIRD-PARTY-NOTICES.txt').write_text('''Native host: Microsoft WebView2 SDK libraries, reused from this workspace.
 WebView2 Runtime: https://developer.microsoft.com/microsoft-edge/webview2/
 Python runtime and third-party packages are embedded by PyInstaller from the build interpreter.
@@ -88,11 +75,12 @@ SQLGlot pinned wheel and its provenance are included inside the executable.
 PyInstaller external-process startup follows its documented Windows DLL-search-path guidance:
 https://pyinstaller.org/en/stable/common-issues-and-pitfalls.html
 ''',encoding='utf-8')
+    (output/'config/app-version.json').write_text(json.dumps({'name':'Economy-guy','source_sha':sha},ensure_ascii=False,indent=2),encoding='utf-8')
     manifest={'source_sha':sha,'source_root':str(root),'interpreter':sys.version,'public_profile':public,
         'preloaded_workbook':{'path':'data/demo.sqlite3','sha256':digest(book),'counts':counts,'invoice_audit':0},
         'files':{p.relative_to(output).as_posix():digest(p) for p in output.rglob('*') if p.is_file()},
         'gui':'native C# WebView2; no default-browser fallback','api_key_included':False,'old_sessions_included':False}
-    (output/'DELIVERY-VERSION.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
+    (stage/'DELIVERY-VERSION.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
     archive=output.with_suffix('.zip')
     with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED,compresslevel=6) as z:
         for p in output.rglob('*'):
