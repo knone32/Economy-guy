@@ -193,7 +193,7 @@ def bind_request(args, previous, *, actor, book, current_id, current_request, ta
             start = source_text.index(literal)
             source_text = source_text[:start] + ' ' * len(literal) + source_text[start + len(literal):]
         if (unreadable_company_mentions(source_text, actor=actor, book=book)
-                or any(current.get(key) and list(current[key]) != reference_scope[key]
+                or any(key in reference_scope and current.get(key) and list(current[key]) != reference_scope[key]
                        for key in ('company_id', 'invoice_no', 'year', 'month', 'periods'))):
             reference_scope = {}
     old_target = prior_scope.get('invoice_no')
@@ -336,6 +336,13 @@ def bind_request(args, previous, *, actor, book, current_id, current_request, ta
             allowed.update(tuple(p) for p in prior_scope.get('periods',()))
             if not prior_scope.get('periods'):
                 allowed.update(reference_scope.get('periods', ()))
+                # A cross-month display can prove one shared year without
+                # prescribing a month. Combine only that unique source slot
+                # with the user's unique current month (and conversely).
+                if len(current.get('month',()))==1 and not current.get('year') and len(reference_scope.get('year',()))==1:
+                    allowed.add((reference_scope['year'][0],current['month'][0]))
+                if len(current.get('year',()))==1 and not current.get('month') and len(reference_scope.get('month',()))==1:
+                    allowed.add((current['year'][0],reference_scope['month'][0]))
             if len(prior_scope.get('periods',())) == 1:
                 prior_year, prior_month = prior_scope['periods'][0]
                 if len(current.get('year',())) == 1 and not current.get('month'):
