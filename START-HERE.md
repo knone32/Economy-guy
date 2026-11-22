@@ -1,3 +1,5 @@
+> 本包为 pending-relationships 独立修复候选，未发布。程序、冷启动和 Live 不混算；同 SHA 冷启动回执随包外附。新模型验收尚待另行授权。修复与接口见 [记录](docs/ops/PENDING-RELATIONSHIP-REPAIR.md)。
+
 # 从这里启动当前 GUI 工作台
 
 Windows、Python **3.11+**。这是本机演示系统，U001/U002 是受信宿主绑定的模拟账号，不是登录认证。发票、规则和银行流水均为官方虚构样例，不用于真实记账。当前入口是根目录 **START-GUI.bat**；旧 START.bat 保留原 Textual 配置／历史演示用途。

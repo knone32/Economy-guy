@@ -1,3 +1,5 @@
+> 本包为 pending-relationships 独立修复候选，未发布。程序、冷启动和 Live 不混算；同 SHA 冷启动回执随包外附。新模型验收尚待另行授权。修复与接口见 [记录](docs/ops/PENDING-RELATIONSHIP-REPAIR.md)。
+
 # 当前 GUI 交付入口
 
 双击 **START-GUI.bat**。先读 [启动说明](START-HERE.md) 与 [最终冻结清单](docs/delivery/FINAL-FREEZE.md)。账号为本机模拟身份；已有 Profile 的密钥不随包分发。下列内容是旧 Textual 入口说明，不能视为当前 GUI 验收成绩。
