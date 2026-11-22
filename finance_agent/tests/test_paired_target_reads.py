@@ -41,6 +41,7 @@ class PairedTargetReadTests(unittest.TestCase):
     def test_both_targets_deliver_and_candidates_keep_september_constraint(self):
         host=self.host();view=self.query(host);agent=host.host.agent
         self.assertTrue(view['current_result']['coverage']['complete'],view)
+        self.assertEqual(agent.last_response['delivery_source'],'runtime_ordered_current_evidence')
         self.assertEqual(len(self.model_calls),1,'No execution model/SQL is needed for bound unique targets')
         results=agent.last_response['tool_results']
         self.assertEqual([name for name,_ in results],['get_invoice','get_invoice'])

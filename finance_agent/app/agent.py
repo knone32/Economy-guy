@@ -2599,6 +2599,7 @@ class Agent:
                             refs=[ref for ref,fact in catalog.items() if fact.get('type')=='result']
                             selected=select_current_answer(refs,catalog) if refs and stable else None
                             if selected is not None and answer_selection_assessment['complete']:
+                                bound_answer=selected
                                 runtime_fact_completion=True
                                 execution.stop('ANSWERED')
                                 return finish(selected,store=False,category='database_query',final_only=True)
