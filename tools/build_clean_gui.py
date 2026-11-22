@@ -35,11 +35,13 @@ def build(source, output, profile_file, profile_name, runtime_archive):
     selected=[]
     files=subprocess.check_output(git+['ls-files','-z']).decode('utf-8').split('\0')
     entries={'START-GUI.bat','finance_agent/run_gui.py','finance_agent/main.py',
-             'finance_agent/requirements.txt','finance_agent/tests/fixtures/example.xlsx'}
+             'finance_agent/requirements.txt','finance_agent/tests/fixtures/example.xlsx',
+             'finance_agent/vendor/sqlglot-30.33.0-py3-none-any.whl',
+             'finance_agent/vendor/README.md','finance_agent/vendor/SQLGLOT-PROVENANCE.txt'}
     for name in files:
         if name in entries or name.startswith(('finance_agent/app/','finance_agent/gui/')):
             path=Path(name)
-            if path.suffix in {'.py','.html','.css','.js','.svg','.png','.ico','.xlsx','.bat','.txt'}:
+            if path.suffix in {'.py','.html','.css','.js','.svg','.png','.ico','.xlsx','.bat','.txt','.md','.whl'}:
                 target=output/path;target.parent.mkdir(parents=True,exist_ok=True)
                 shutil.copyfile(source/path,target);selected.append(name)
     config=output/'finance_agent/config';config.mkdir(parents=True)
