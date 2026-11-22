@@ -16,13 +16,15 @@ import zipfile
 def sha(path):return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def build(source, output, profile_file, profile_name):
+def build(source, output, profile_file, profile_name, runtime_archive):
     source=source.resolve();output=output.resolve()
     git=['git','-c','safe.directory='+source.as_posix(),'-C',str(source)]
     revision=subprocess.check_output(git+['rev-parse','HEAD'],text=True).strip()
     if subprocess.check_output(git+['status','--porcelain'],text=True).strip():
         raise ValueError('Freeze and commit the source first')
     if output.exists() or output.with_suffix('.zip').exists():raise FileExistsError(output)
+    expected_runtime='4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3'
+    if sha(runtime_archive)!=expected_runtime:raise ValueError('Official Python 3.12.10 embed archive hash mismatch')
     profiles=json.loads(profile_file.read_text(encoding='utf-8-sig'))['profiles']
     choices=[p for p in profiles if p.get('profile_name')==profile_name]
     if len(choices)!=1:raise ValueError('Select one existing profile identity')
@@ -45,21 +47,15 @@ def build(source, output, profile_file, profile_name):
     template+=''.join(key+' = '+json.dumps(value,ensure_ascii=False)+'\n' for key,value in public.items())
     (config/'model_profiles.toml').write_text(template,encoding='utf-8')
     runtime=output/'_runtime';runtime.mkdir()
-    base=Path(sys.base_prefix)
-    for name in ('python.exe','pythonw.exe','python3.dll','python312.dll',
-                 'vcruntime140.dll','vcruntime140_1.dll','LICENSE.txt'):
-        shutil.copyfile(base/name,runtime/name)
-    ignored=shutil.ignore_patterns('__pycache__','*.pyc','*.pyo','test','tests',
-                                  'idlelib','turtledemo','ensurepip')
-    shutil.copytree(base/'DLLs',runtime/'DLLs',ignore=ignored)
-    # The base stdlib can have unrelated packages; only use this venv's deps.
-    shutil.copytree(base/'Lib',runtime/'Lib',ignore=lambda p,n:
-        set(ignored(p,n)) | ({'site-packages'} if Path(p)==base/'Lib' else set()))
+    with zipfile.ZipFile(runtime_archive) as embed:
+        if any(Path(i.filename).is_absolute() or '..' in Path(i.filename).parts for i in embed.infolist()):
+            raise ValueError('Invalid runtime archive member')
+        embed.extractall(runtime)
     site=Path(sys.prefix)/'Lib/site-packages'
     if sys.prefix==sys.base_prefix or not site.is_dir():raise ValueError('Run with the prepared 3.12 venv')
     shutil.copytree(site,runtime/'Lib/site-packages',ignore=shutil.ignore_patterns(
         '__pycache__','*.pyc','*.pyo','pip','pip-*.dist-info'))
-    (runtime/'python312._pth').write_text('Lib\nDLLs\nLib/site-packages\n../finance_agent\nimport site\n',encoding='ascii')
+    (runtime/'python312._pth').write_text('python312.zip\n.\nLib/site-packages\n../finance_agent\nimport site\n',encoding='ascii')
     launcher=r'''@echo off
 setlocal DisableDelayedExpansion
 set "PYTHONUTF8=1"
@@ -77,14 +73,16 @@ call "%~dp0START-GUI.bat" --profile "PROFILE" --profiles-file "%~dp0finance_agen
 原工作区数据完全保留。请不要删除需要保留的原账簿。
 当前业务已知限制及真实验收版本见DELIVERY-VERSION.json；本包启动正常不代表所有业务链通过。
 ''',encoding='utf-8-sig')
-    manifest={'source_sha':revision,'python':sys.version.split()[0],'platform':'Windows x64',
+    manifest={'source_sha':revision,'python':'3.12.10','runtime_archive_sha256':expected_runtime,'platform':'Windows x64',
               'public_profile':public,'source_files':selected,
               'known_business_limit':'A_SUBSET待选直达已通过Live，后续仅报错月票号的执行动作仍有未闭环失败；未宣称整链通过。',
               'excludes':['credentials','databases','session history','approval','traces','venv','development artifacts'],
               'files':{p.relative_to(output).as_posix():sha(p) for p in output.rglob('*') if p.is_file()}}
     (output/'DELIVERY-VERSION.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8')
     for p in output.rglob('*'):
-        if p.is_file() and (p.suffix.lower() in {'.db','.sqlite','.sqlite3','.jsonl','.log','.key','.pem'}
+        public_ca=p.relative_to(output).as_posix()=='_runtime/Lib/site-packages/certifi/cacert.pem'
+        if p.is_file() and (p.suffix.lower() in {'.db','.sqlite','.sqlite3','.jsonl','.log','.key'}
+                           or p.suffix.lower()=='.pem' and not public_ca
                            or p.name in {'.env','model_profiles.local.json','pyvenv.cfg'}):
             raise ValueError('Unexpected private/state file: '+str(p.relative_to(output)))
     archive=output.with_suffix('.zip')
@@ -99,6 +97,7 @@ if __name__=='__main__':
     parser=argparse.ArgumentParser()
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--profile-source',type=Path,required=True)
+    parser.add_argument('--runtime-archive',type=Path,required=True)
     parser.add_argument('--profile',default='shared-flash')
     args=parser.parse_args()
-    build(Path(__file__).resolve().parents[1],args.output,args.profile_source,args.profile)
+    build(Path(__file__).resolve().parents[1],args.output,args.profile_source,args.profile,args.runtime_archive)
