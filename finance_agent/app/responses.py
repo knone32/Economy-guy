@@ -306,9 +306,14 @@ def parse_final(content):
         return None
     if "pending_change" in value:
         change = value["pending_change"]
-        if (value["kind"] not in {"information", "clarification"} or type(change) is not dict or set(change) != {"field", "new_value"}
+        if (value["kind"] not in {"information", "clarification"} or type(change) is not dict or set(change) not in ({"field", "new_value"},{"field", "new_value", "source"})
                 or type(change["field"]) is not str or change["field"] not in {"purpose", "remark"}
                 or type(change["new_value"]) is not str):
+            return None
+    if "pending_change" in value and 'source' in value['pending_change']:
+        source=value['pending_change']['source']
+        if (type(source) is not dict or set(source)!={'kind','quote'} or source['kind']!='current'
+                or type(source['quote']) is not str or not source['quote'].strip()):
             return None
     if "pending" in value:
         pending = value["pending"]

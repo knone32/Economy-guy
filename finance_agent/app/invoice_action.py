@@ -29,25 +29,22 @@ def public_state(pending):
     return {'known': known, 'missing_fields': list(pending.get('missing_fields', ()))}
 
 
-def bind_clarification(agent, fields, previous, request, *, field=None, defer_preview=False,revision_origin=None):
-    """Use structured field candidates and original display identity, never prose."""
+def bind_clarification(agent, fields, previous, request, *, field=None, change=None, defer_preview=False,revision_origin=None):
+    """Send source-bearing structured candidates to the original action owner."""
     editable=set(fields)&{'purpose','remark'}
     args=({'field':field} if field is not None else
           {'field':next(iter(editable))} if len(editable)==1 else {})
-    if not previous or previous.get('business_action')!='single_invoice':
-        previous=None
-        if not agent.context.references_blocked and agent.context.display_ids:
-            reference=resolve_reference(agent.db_path,agent.user_id,None,
-                display_ids=agent.context.display_ids,coalesce_identical_singletons=True)
-            if reference['status']=='SUCCESS':
-                scope=reference['evidence']['scope']
-                args.update(company_id=scope['company_id'],invoice_no=scope['invoice_no'])
-        if not args:
-            return tool_result('WAITING_USER',evidence={'source':'harness_business_action',
-                'missing_fields':['invoice_no'],'business_authorization':False},
-                error='没有唯一可信的当前单票，请先明确要办理的发票。'),None,None,[]
-    # The output envelope cannot override the current business action. Missing
-    # values still wait; an explicitly paused action must not create a preview.
+    if change is not None:
+        source=change.get('source',{})
+        if (type(source) is not dict or set(source)!={'kind','quote'} or source.get('kind')!='current'
+                or type(source.get('quote')) is not str or not source['quote'].strip()
+                or source['quote'] not in request or change['new_value'] not in source['quote']
+                or args.get('field',change['field'])!=change['field']):
+            return tool_result('DENIED',error='待补新值缺少一致的本轮结构化来源；未采用正文中的内容。'),previous,None,[]
+        args.update(field=change['field'],new_value=change['new_value'])
+        if not change['new_value']:
+            args['value_ref']='clear'
+    if not previous or previous.get('business_action')!='single_invoice':previous=None
     return change_invoice(agent,args,previous,request,defer_preview=defer_preview,revision_origin=revision_origin)
 
 
@@ -68,10 +65,17 @@ def change_invoice(agent, args, previous, request, *, defer_preview=False,revisi
         target_origin = None
         displays = agent.context.display_ids
         collection=(previous or {}).get('reference_collection')
-        if collection is None and matter!='new' and not agent.context.references_blocked and displays:
+        reference=revision.get('reference_relation')
+        if reference=='displayed' and agent.context.references_blocked:
+            return tool_result('AMBIGUOUS',error='展示引用已失效，请重新查询候选。'),previous,None,[]
+        if collection is None and reference not in {'none','unclear'} and (matter!='new' or reference=='displayed') and not agent.context.references_blocked and displays:
             available=display_collection(agent.db_path,agent.user_id,displays)
+            if revision.get('reference_relation')=='displayed' and available['status']!='SUCCESS':
+                return available,previous,None,[]
             if available['status']=='SUCCESS' and len({tuple(sorted(e['key'].items())) for e in available['data']})>1:
                 collection=available['evidence']['reference_collection']
+        if revision.get('reference_relation')=='displayed' and not displays and not collection:
+            return tool_result('AMBIGUOUS',error='没有可信的已展示集合，请重新列出候选。'),previous,None,[]
         if collection:
             available=display_collection(agent.db_path,agent.user_id,**collection)
             if available['status']!='SUCCESS':
@@ -91,7 +95,9 @@ def change_invoice(agent, args, previous, request, *, defer_preview=False,revisi
                 if resolved['status']!='SUCCESS':return resolved,previous,None,[]
                 target_origin=BoundIntent('read',agent.user_id,str(agent.db_path),agent.trace_id,request,
                     dict(resolved['evidence']['scope']),{'source':'runtime_display_reference','reference':resolved['evidence']['reference']})
-        if (target_origin is None and previous is None and not collection and not agent.context.references_blocked
+        if (target_origin is None and previous is None and not collection
+                and reference not in {'none','unclear'} and (matter!='new' or reference=='displayed')
+                and not agent.context.references_blocked
                 and isinstance(displays, list) and displays):
             # Both tool proposals and final clarifications may omit keys held
             # by the same unique trusted display. Supplied keys must still agree.
@@ -135,6 +141,8 @@ def change_invoice(agent, args, previous, request, *, defer_preview=False,revisi
     def waiting(reads=()):
         question = ('请明确要修改的字段和对应内容，或确认是否替换上一要求；原要求暂不继续。'
                     if candidate.get('blocked_reason') == 'ambiguous_business_choice' else None)
+        if collection and 'invoice_no' not in known:
+            question='修改内容与原展示候选已保留，尚未保存。请选择候选中的企业和票号；未选定前不读取单票或生成预览。'
         return tool_result('WAITING_USER', data=public_state(candidate), evidence={
             'source':'harness_business_action', 'missing_fields':list(candidate['missing_fields']),
             'user_message':question,'new_matter_accepted':previous is None and matter=='new', 'business_authorization':False}), candidate, None, list(reads)

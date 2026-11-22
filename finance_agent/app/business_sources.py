@@ -37,11 +37,11 @@ def checked_revision(origin, *, actor, book, current_id, current_request):
             or origin.sources.get('source')!='independent_business_entry' or type(origin.target) is not dict):
         raise PendingRequestError('修订关系缺少本轮独立业务来源。','DENIED')
     choices={'field':{'purpose','remark'},'value_relation':{'keep','replace','clear','withdraw','unclear'},
-             'matter_relation':{'continue','new','unclear'}}
+             'matter_relation':{'continue','new','unclear'},'reference_relation':{'displayed','none','unclear'}}
     for key,allowed in choices.items():
         value=origin.target.get(key)
         if value is not None:
-            quote=origin.sources.get({'field':'field_quote','value_relation':'value_quote','matter_relation':'matter_quote'}[key])
+            quote=origin.sources.get({'field':'field_quote','value_relation':'value_quote','matter_relation':'matter_quote','reference_relation':'reference_quote'}[key])
             if type(value) is not str or value not in allowed or type(quote) is not str or not quote.strip() or quote not in current_request:
                 raise PendingRequestError('修订关系的原话来源不属于本轮。','DENIED')
     return origin.target

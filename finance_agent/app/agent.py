@@ -130,7 +130,7 @@ SYSTEM += """
 单张发票修改只用change_invoice表达业务动作及已知参数。对象未知也应主动调用，由系统保存已知信息并明确追问；后续补充或更正仍用相同参数，可只补invoice_no。系统继承可信业务状态、校验权限、fresh读取并组织正式预览，模型不用传selection_id、pending_id、action、mode、确认、生命周期事件，也不需要先查后转述。
 只读查询不建立修改事项。含糊对象不能猜选；业务参数不是授权，只有正式界面可接受用户确认。不能从正文自称保存推导状态。新值精确照录用户原话；缺项省略，不能填猜测值。不能把读取集合变修改集合。
 propose_invoice_changes保留给批量/规则/复杂选集及兼容调用；其selection引用只属于该高级选集接口。单张业务不得在两种接口之间切换。
-当前单票办理的known是系统保存的来源可追溯业务候选，不代表已执行或已授权；missing_fields由系统计算，不是模型要维护的状态机。change_invoice只传本轮明确新增或更正的业务槽位，省略已在known且本轮未改的企业、年月、字段和内容；运行时合并未变槽位。不要在最终JSON另写pending/pending_change或amend意图。缺内容是正常等待；禁止提交不等于暂缓或取消。正常办理省略turn_action或用continue；仅明确暂缓本次事项才pause，明确取消才stop。information与clarification都接受这三种动作，不能据kind改变业务含义；本轮已独立判定的harness_business_action优先，执行提案不得另行暂停或取消。新办理先由change_invoice核实对象并建立待补，再执行明确暂缓；没有可恢复候选不能声称已暂缓。动作均不撤销历史事务，也不提供提交许可。
+当前单票办理的known是系统保存的来源可追溯业务候选，不代表已执行或已授权；missing_fields由系统计算，不是模型要维护的状态机。change_invoice只传本轮明确新增或更正的业务槽位，省略已在known且本轮未改的企业、年月、字段和内容；运行时合并未变槽位。不要另写pending或amend意图；直接澄清可用pending_change={field,new_value,source:{kind:current,quote:本轮原话片段}}表达已给新值；它只是候选，走change_invoice同一owner核来源。正文不能提供值或身份，已绑定对象与集合由Runtime持有。缺内容是正常等待；禁止提交不等于暂缓或取消。正常办理省略turn_action或用continue；仅明确暂缓本次事项才pause，明确取消才stop。information与clarification都接受这三种动作，不能据kind改变业务含义；本轮已独立判定的harness_business_action优先，执行提案不得另行暂停或取消。新办理先由change_invoice核实对象并建立待补，再执行明确暂缓；没有可恢复候选不能声称已暂缓。动作均不撤销历史事务，也不提供提交许可。
 更正关系由你判断：change_invoice默认relation=update补充当前办理；用户撤销旧要求重新定义时用replace，未确定字段和内容的对应关系时用clarify，不代选。field只表示当前要修改的字段，保留不动的字段不传。新内容照录当前原话；沿用上一有效内容可省略new_value，同字段由系统继承；换字段沿用旧内容或显式重传历史值须value_ref=previous。明确清空用value_ref=clear；字段变更不自动串用旧值。系统验证原文/有效待补来源，不以标点、词序判断语义；这些动作均不授予写入许可。
 查询最终JSON使用kind/text/answer，answer只引用本轮有指标/范围/单位的事实或已支持的compare/subtract。未知事实不能声称已验证，未完成不能声称完成。
 其他只读接口的规范化可继续使用intent={action:"read",target:{company_id,year,month,invoice_no?},sources:{各槽:{kind:"current",text:原话}}}，不成为写许可。query_business_sql只接受read_scope补充尚缺的SQL范围，不能用旧intent的model_read_candidate建立SQL快照；已有合法可信范围时仍可只传sql。
@@ -2409,7 +2409,7 @@ class Agent:
                     if type(route) is not dict:raise BusinessRequestError('读取要求结构无效。')
                     if (business_format_repair_used or business_read_reentry) and route.get('kind') != 'read':
                         raise BusinessRequestError('读取要求结构补正不能切换为其他业务路径。','INVALID_ARGUMENTS')
-                    if route.get('kind')=='legacy' and set(route)<={'kind','turn_action','action_reason','action_quote','field','field_quote','value_relation','value_quote','matter_relation','matter_quote'}:
+                    if route.get('kind')=='legacy' and set(route)<={'kind','turn_action','action_reason','action_quote','field','field_quote','value_relation','value_quote','matter_relation','matter_quote','reference_relation','reference_quote'}:
                         from .business_request import legacy_action
                         action=legacy_action(route)
                         quote=route.get('action_quote')
@@ -2421,6 +2421,12 @@ class Agent:
                         value_quote=route.get('value_quote') or ''
                         matter_relation=route.get('matter_relation')
                         matter_quote=route.get('matter_quote') or ''
+                        reference_relation=route.get('reference_relation')
+                        reference_quote=route.get('reference_quote') or ''
+                        if (reference_relation is not None and (type(reference_relation) is not str or reference_relation not in {'displayed','none','unclear'})
+                                or type(reference_quote) is not str or reference_quote and reference_quote not in current_request
+                                or reference_relation is not None and not reference_quote.strip() or reference_relation is None and reference_quote):
+                            raise BusinessRequestError('展示引用关系须有当前原话的独立来源。','INVALID_ARGUMENTS')
                         if (matter_relation is not None and (type(matter_relation) is not str or matter_relation not in {'continue','new','unclear'})
                                 or type(matter_quote) is not str or matter_quote and matter_quote not in current_request
                                 or matter_relation is not None and not matter_quote.strip() or matter_relation is None and matter_quote):
@@ -2444,13 +2450,14 @@ class Agent:
                         business_turn_field=field
                         from .intent_contract import BoundIntent
                         business_revision_origin=BoundIntent('amend',actor,str(self.db_path),self.trace_id,current_request,
-                            {'field':field,'value_relation':value_relation,'matter_relation':matter_relation},
-                            {'source':'independent_business_entry','field_quote':field_quote,'value_quote':value_quote,'matter_quote':matter_quote})
+                            {'field':field,'value_relation':value_relation,'matter_relation':matter_relation,'reference_relation':reference_relation},
+                            {'source':'independent_business_entry','field_quote':field_quote,'value_quote':value_quote,'matter_quote':matter_quote,'reference_quote':reference_quote})
                         self.messages.append({'role':'user','name':'harness_business_action',
                             'content':json.dumps({'turn_action':action,'source_quote':quote,
                                 **({'field':field,'field_source_quote':field_quote} if field is not None else {}),
                                 'value_relation':value_relation,'value_quote':value_quote,
                                 'matter_relation':matter_relation,'matter_quote':matter_quote,
+                                'reference_relation':reference_relation,'reference_quote':reference_quote,
                                 'interpretation':'independent_model_business_relation',
                                 'business_authorization':False},ensure_ascii=False)})
                         # Advertise only reachable capabilities for this owner.
@@ -2736,13 +2743,13 @@ class Agent:
                     native=active_pending and active_pending.get('business_action')=='single_invoice'
                     if (action=='pause' or business_action_route and
                             (business_turn_field is not None or proposed_action in {'pause','stop'} or natural['kind']=='clarification'
-                             and (native or set(fields)&{'purpose','remark'}))):
+                             and (native or natural.get('pending_change') is not None or set(fields)&{'purpose','remark'}))):
                         if self.user_id!=actor:
                             execution.stop('DENIED')
                             return finish('本轮身份已变化，未执行业务动作。',store=False)
                         result,next_pending,planned,runtime_reads=bind_invoice_clarification(
                             self,fields,active_pending,current_request,field=business_turn_field,defer_preview=action=='pause',
-                            revision_origin=business_revision_origin)
+                            revision_origin=business_revision_origin,change=natural.get('pending_change'))
                         result=accept_invoice_transition(result,next_pending,planned,runtime_reads,action)
                         execution.stop(result['status'])
                         missing=result.get('evidence',{}).get('missing_fields',())
