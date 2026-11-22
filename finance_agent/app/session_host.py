@@ -281,10 +281,10 @@ class SessionHost:
         return [list_tasks(self.store.workbook,self.store.actor,row['company_id'])
                 for row in company_access(self.store.workbook,self.store.actor) if row['read']]
 
-    def task_details(self, company_id, task_id):
+    def task_details(self, company_id, task_id, *, include_filled=False):
         self._binding()
         from .tasks import task_details
-        return task_details(self.store.workbook,self.store.actor,company_id,task_id)
+        return task_details(self.store.workbook,self.store.actor,company_id,task_id,include_filled=include_filled)
 
     def open_task(self, company_id, task_id, *, expected):
         with self._command(expected):
@@ -454,6 +454,7 @@ class SessionHost:
         """
         allowed={'list_invoice_directory','get_invoice','list_bank_transactions',
             'get_finance_summary','check_missing_purpose','get_applicable_rules',
+            'get_annual_finance_summary','list_annual_blank_purpose','list_annual_bank_income',
             'list_rule_versions','list_materials','open_material_reference','manage_preference'}
         if name not in allowed or type(arguments) is not dict:
             raise SessionConflict('该入口只允许已登记的只读业务查询。')
@@ -469,8 +470,14 @@ class SessionHost:
             args=validate_arguments(name,json.dumps(arguments,ensure_ascii=False))
             agent=self._agent
             scope={key:[args[key]] for key in ('company_id','year','month','invoice_no') if key in args}
+            if name=='list_invoice_directory':
+                # Zero is the existing explicit year/all selector, not a
+                # literal business date restriction.
+                for key in ('year','month'):
+                    if args.get(key)==0:scope.pop(key,None)
             if args.get('year') and args.get('month'):scope['periods']=[(args['year'],args['month'])]
             labels={'list_invoice_directory':'发票目录','get_invoice':'发票详情','list_bank_transactions':'银行流水',
+                'get_annual_finance_summary':'年度综合汇总','list_annual_blank_purpose':'年度用途为空发票','list_annual_bank_income':'年度银行收入流水',
                 'get_finance_summary':'综合汇总','check_missing_purpose':'用途缺项','get_applicable_rules':'适用规则',
                 'list_rule_versions':'规则版本','list_materials':'业务资料','open_material_reference':'资料原文','manage_preference':'企业偏好'}
             text='界面只读查询：'+labels[name]+'；企业 '+str(args.get('company_id',''))
@@ -484,7 +491,10 @@ class SessionHost:
             raw=json.dumps(args,ensure_ascii=False);call_id='ui-'+agent.trace_id
             result=handle_tool(name,raw,self.store.actor,self.store.workbook,
                 allowed_tools=agent.allowed_tools,expected_scope=scope,
-                provenance=ScopeProof(self.store.actor,scope,dict.fromkeys(scope,'user_current')))
+                provenance=ScopeProof(self.store.actor,scope,dict.fromkeys(scope,'user_current'),
+                    annual_year=args.get('year') if name in {'get_annual_finance_summary','list_annual_blank_purpose','list_annual_bank_income'} else None,
+                    directory_scope=(args['company_id'],args['year'],args['month']) if name=='list_invoice_directory' else None,
+                    directory_sort=(args.get('sort_by','date'),args.get('sort_order','asc')) if name=='list_invoice_directory' else None))
             output=render_information([(name,result)]) if result['ok'] else render_tool_failure(result['status'],name,result)
             agent.messages.extend([{'role':'user','content':text},
                 {'role':'assistant','content':None,'tool_calls':[{'id':call_id,'type':'function',

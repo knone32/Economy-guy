@@ -13,11 +13,12 @@ internal static class Program {
     static bool ready;
     static bool uiReady;
     static string lastError;
+    static string exitAction;
     static void Record(string phase, string error = null) {
         if (error != null) lastError=error;
         if (String.IsNullOrEmpty(status)) return;
         var item = new Dictionary<string, object> {
-            { "phase", phase }, { "ready", ready }, { "ui_ready", uiReady }, { "error", lastError },
+            { "phase", phase }, { "ready", ready }, { "ui_ready", uiReady }, { "error", lastError }, {"exit_action",exitAction},
             { "pid", System.Diagnostics.Process.GetCurrentProcess().Id },
             { "time", DateTime.UtcNow.ToString("o") }
         };
@@ -56,6 +57,7 @@ internal static class Program {
                     }
                     closing=true;form.Close();
                 } catch(Exception) {
+                    exitAction=null;
                     MessageBox.Show("请先处理运行中的请求、预览、待补或未知提交；可在页面暂缓或取消后再关闭。", "当前事项尚未收口");
                 } finally { checkingClose=false; }
             };
@@ -70,14 +72,37 @@ internal static class Program {
                     web.CoreWebView2.Settings.IsStatusBarEnabled=false;
                     web.CoreWebView2.Settings.IsPasswordAutosaveEnabled=false;
                     web.CoreWebView2.Settings.IsGeneralAutofillEnabled=false;
-                    web.CoreWebView2.WebMessageReceived += delegate(object sender, CoreWebView2WebMessageReceivedEventArgs e) {
+                    web.CoreWebView2.WebMessageReceived += async delegate(object sender, CoreWebView2WebMessageReceivedEventArgs e) {
                         try {
                             var message=new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(e.WebMessageAsJson);
                             if (new Uri(e.Source).GetLeftPart(UriPartial.Authority)==new Uri(args[0]).GetLeftPart(UriPartial.Authority)
                                     && message.ContainsKey("kind") && (string)message["kind"]=="ui-ready") {
                                 uiReady=true; Record("ui-ready");
                             }
-                        } catch {}
+                            if(new Uri(e.Source).GetLeftPart(UriPartial.Authority)!=new Uri(args[0]).GetLeftPart(UriPartial.Authority))return;
+                            string kind=message.ContainsKey("kind")?(string)message["kind"]:"";
+                            if(kind=="pick-workbook") {
+                                using(var picker=new OpenFileDialog()) {
+                                    picker.Title="选择已有本机账簿（不改变当前绑定）";
+                                    picker.Filter="SQLite账簿|*.sqlite3;*.sqlite;*.db|所有文件|*.*";
+                                    if(picker.ShowDialog(form)==DialogResult.OK) {
+                                        using(var client=new WebClient()) {
+                                            client.Encoding=Encoding.UTF8;client.Headers["X-Native-Token"]=args[3];
+                                            client.Headers["Content-Type"]="application/json";
+                                            var payload=new Dictionary<string,object>{{"path",picker.FileName},{"context",message["context"]}};
+                                            await client.UploadStringTaskAsync(new Uri(new Uri(args[0]),"/api/native_workbook"),"POST",new JavaScriptSerializer().Serialize(payload));
+                                        }
+                                        await web.CoreWebView2.ExecuteScriptAsync("refresh()");
+                                    }
+                                }
+                            }
+                            if(kind=="advanced") {
+                                if(MessageBox.Show("将关闭当前GUI并进入原高级控制台。当前待补、预览或未知提交必须先处理。继续？","原高级入口",MessageBoxButtons.OKCancel)==DialogResult.OK) {
+                                    exitAction="advanced";form.Close();
+                                }
+                            }
+                            if(kind=="sign-out")form.Close();
+                        } catch(Exception error) { MessageBox.Show(error.Message,"本机操作未完成"); }
                     };
                     web.CoreWebView2.NavigationCompleted += delegate(object sender, CoreWebView2NavigationCompletedEventArgs e) {
                         if (e.IsSuccess) { ready=true; Record("ready"); }

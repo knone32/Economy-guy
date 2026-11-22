@@ -31,19 +31,23 @@ def main():
     text='[settings]\ndefault_profile = "shared-flash"\n\n[[profiles]]\n'
     text+=''.join(k+' = '+json.dumps(v,ensure_ascii=False)+'\n' for k,v in public.items())
     (config/'model_profiles.toml').write_text(text,encoding='utf-8')
+    native=stage/'native';native.mkdir()
+    for name in ('GuiWindow.exe','Microsoft.Web.WebView2.Core.dll','Microsoft.Web.WebView2.WinForms.dll','WebView2Loader.dll'):
+        shutil.copy2(root/'finance_agent/app/webview_host'/name,native/name)
     command=[sys.executable,'-m','PyInstaller','--noconfirm','--clean','--onefile','--noconsole','--noupx',
         '--name','EconomyGuy','--distpath',str(stage/'dist'),'--workpath',str(stage/'work'),
         '--specpath',str(stage),'--paths',str(root/'finance_agent'),
         '--paths',str(root/'finance_agent/vendor/sqlglot-30.33.0-py3-none-any.whl')]
     for source,target in ((root/'finance_agent/gui','gui'),(config,'config'),
             (root/'finance_agent/tests/fixtures/example.xlsx','tests/fixtures'),
-            (root/'finance_agent/vendor','vendor'),(root/'finance_agent/app/webview_host','webview_host')):
+            (root/'finance_agent/vendor','vendor'),(native,'webview_host')):
         command+=['--add-data',str(source)+os.pathsep+target]
     command+=[str(root/'finance_agent/run_gui.py')]
     with (stage/'pyinstaller.log').open('w',encoding='utf-8') as log:
         subprocess.run(command,cwd=root,stdout=log,stderr=subprocess.STDOUT,check=True)
     output.mkdir(parents=True);shutil.copy2(stage/'dist/EconomyGuy.exe',output/'EconomyGuy.exe')
     shutil.copytree(config,output/'config')
+    shutil.copy2(root/'docs/ops/GUI-TUI-COVERAGE.md',output/'GUI功能清单.md')
     sys.path.insert(0,str(root/'finance_agent'))
     from app.gui_delivery import demo_paths
     book,_=demo_paths(output/'data')
@@ -70,7 +74,7 @@ config/accounts.json选择启动模拟用户；实际权限每次由账簿核验
 config/model_profiles.toml含既定DeepSeek Flash的公开Profile身份；没有实际API密钥。
 同一Windows用户可复用已有Windows凭据库；新机器需配置自己的DEEPSEEK_API_KEY或原凭据。
 缺少密钥仍可打开设置、浏览账簿；可在设置里新增Profile并将密钥保存在Windows凭据库。
-GUI含发票分页/详情、银行流水/方向、综合汇总、用途缺项、规则版本、资料、会话记录、助手/偏好、模拟绑定切换与xlsx导入。
+GUI完整入口映射见GUI功能清单.md：包括任务管理、资料上传/版本原文、Profile新增编辑/连接检查/忘记密钥、账簿选择升级、年度查询与原高级入口。
 需要Windows 10/11 x64、.NET Framework 4.6.2+和WebView2 Runtime。本机已验证已有运行时。
 预览不是保存，必须本人确认当前预览。未知提交只能先核查，不能盲目重复提交。
 关闭窗口会正常停止本机服务。异常请看 logs/startup.log及window状态文件。

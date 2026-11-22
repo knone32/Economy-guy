@@ -347,12 +347,12 @@
       <label>业务<select id="browse-kind">
         <option value="list_invoice_directory">发票目录</option><option value="get_invoice">指定发票详情</option>
         <option value="list_bank_transactions">银行流水</option><option value="get_finance_summary">综合财务汇总</option>
-        <option value="check_missing_purpose">用途缺项检查</option><option value="get_applicable_rules">当前适用规则</option>
+        <option value="get_annual_finance_summary">年度综合汇总</option><option value="list_annual_blank_purpose">年度用途为空发票</option><option value="list_annual_bank_income">年度银行收入流水</option><option value="check_missing_purpose">用途缺项检查</option><option value="get_applicable_rules">当前适用规则</option>
         <option value="list_rule_versions">规则版本</option><option value="list_materials">业务资料目录</option>
       </select></label>
       <label>票号 / 规则编号<input id="browse-reference" placeholder="例如 F005 / R002"></label>
       <label>银行方向<select id="browse-direction"><option value="">全部收支</option><option>收入</option><option>支出</option></select></label>
-      <label>排序<select id="browse-sort"><option value="date">日期</option><option value="amount">金额</option><option value="invoice_no">票号</option></select></label>
+      <label>目录范围<select id="browse-scope"><option value="month">当月</option><option value="year">当年</option><option value="all">全部账期</option></select></label><label>排序方向<select id="browse-order"><option value="asc">升序</option><option value="desc">降序</option></select></label><label>排序<select id="browse-sort"><option value="date">日期</option><option value="amount">金额</option><option value="invoice_no">票号</option></select></label>
       <button class="btn primary" id="browse-run">查询</button>
       <button class="btn small" id="browse-prev">上一页</button><button class="btn small" id="browse-next">下一页</button>
     </div><div class="hint" id="browse-status"></div>
@@ -792,7 +792,7 @@ function renderTaskEntries(box) {
     const details = el('div', 'hint');
     actions.append(todoActionButton('详情', async () => {
       try {
-        const data = await api('/api/task_details', {company_id:task.company_id, task_id:task.task_id});
+        const data = await api('/api/task_details', {company_id:task.company_id, task_id:task.task_id,include_filled:true});
         const outcome = data.snapshot.task_details || {};
         const value = outcome.data || {};
         details.textContent = outcome.ok
@@ -801,6 +801,7 @@ function renderTaskEntries(box) {
              '用途缺项：' + ((value.check || {}).count ?? '未核实') + ' 张',
              value.can_execute ? '可进入办理；尚未修改发票。' : (value.problem || '当前不可办理，请核对权限、状态或规则。')].join('\n')
           : (outcome.error || outcome.status || '详情读取失败');
+        if(outcome.ok){const table=el('table','business-table');const head=el('tr');for(const label of ['票号','开票日期','金额（元）','用途','备注'])head.append(el('th','',label));table.append(head);for(const row of value.invoices||[]){const tr=el('tr');for(const item of [row.invoice_no,row.invoice_date,row.amount??(Number(row.amount_cents)/100).toFixed(2),row.purpose||'未填写',row.remark||'未填写'])tr.append(el('td','',String(item)));table.append(tr);}details.append(table);}
       } catch (error) { toast(error.message, true); }
     }));
     actions.append(todoActionButton('进入办理', async () => {
@@ -901,7 +902,7 @@ $("send").addEventListener("click", async () => {
   setBusy(true);
   try {
     await acknowledgeDisplay();
-    const data = await api("/api/message", { text: value });
+    const data = await api("/api/message", { text: value, diagnose: $("diagnose-next")?.checked===true });
     S = data.snapshot;
     $("message").value = "";
     render();

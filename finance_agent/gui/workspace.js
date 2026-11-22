@@ -14,12 +14,17 @@ function updatePeriods() {
 }
 function renderWorkspace() {
   if (!S) return;
+  if($('workspace-notice'))$('workspace-notice').textContent=S.notice||S.error||'';
+  if($('settings-notice'))$('settings-notice').textContent=S.notice||S.error||'';
+  if($('task-company')){fillOptions($('task-company'),(S.settings?.companies||[]).map(c=>({id:c.company_id,label:c.name||c.company_name||c.company_id})),$('task-company').value);if(!$('task-period').value)$('task-period').value=$('browse-period').value;}
+  if($('task-selector'))fillOptions($('task-selector'),(S.tasks||[]).map(t=>({id:t.task_id,label:t.company_id+' · '+t.year+'-'+t.month+' · '+t.status})), $('task-selector').value);
   const settings=S.settings||{}, generation=(S.context||{}).generation+'|'+(S.session||{}).user+'|'+(S.session||{}).workbook;
   const changed=generation!==workspaceGeneration;
   const oldCompany=changed?'':$('browse-company').value;
   if(changed){$('browse-period').value='';$('browse-reference').value='';}
   fillOptions($('browse-company'),(settings.companies||[]).map(c=>({id:c.company_id,label:(c.name||c.company_name||c.company_id)+' · '+c.company_id})),oldCompany);
   updatePeriods();
+  if($("task-period")&&!$("task-period").value)$("task-period").value=$("browse-period").value;
   fillOptions($('binding-select'),(settings.bindings||[]).map(b=>({id:b.id,label:b.label+(b.current?'（当前）':'')})),
     (settings.bindings||[]).find(b=>b.current)?.id);
   fillOptions($('assistant-select'),(settings.assistants||[]).map(a=>({id:a.id,label:a.name})),settings.assistant_id);
@@ -38,7 +43,7 @@ function renderWorkspace() {
     if (rows?.length) {
       const names={company_id:'企业',invoice_no:'发票号码',invoice_date:'开票日期',seller_name:'销售方',item_name:'项目',
         amount:'金额（元）',purpose:'用途',remark:'备注',has_purpose:'用途状态',transaction_no:'流水编号',
-        transaction_date:'交易日期',direction:'方向',counterparty_name:'交易对方',rule_id:'规则',version:'版本',name:'名称',preference_key:'偏好',value:'内容'};
+        material_id:'资料编号',version:'版本',paragraph_count:'来源单元数',transaction_date:'交易日期',direction:'方向',counterparty_name:'交易对方',rule_id:'规则',version:'版本',name:'名称',preference_key:'偏好',value:'内容'};
       const keys=Object.keys(rows[0]).filter(k=>names[k]);
       if (keys.length) {
         const table=el('table','business-table'), head=el('tr');
@@ -74,7 +79,8 @@ async function browse(page=1) {
   if(!company_id){toast('请选择可读取的企业。',true);return;}
   if(!['get_invoice','list_rule_versions','list_materials'].includes(name)&&(!year||!month)){toast('请选择明确账期。',true);return;}
   let args={company_id,year,month};
-  if(name==='list_invoice_directory')args={...args,page,sort_by:$('browse-sort').value,sort_order:'asc'};
+  if(name==='list_invoice_directory'){args={...args,page,sort_by:$('browse-sort').value,sort_order:$('browse-order').value};if($('browse-scope').value==='all'){args.year=0;args.month=0;}else if($('browse-scope').value==='year')args.month=0;}
+  if(['get_annual_finance_summary','list_annual_blank_purpose','list_annual_bank_income'].includes(name))args={company_id,year,...(name==='get_annual_finance_summary'?{}:{page})};
   if(name==='get_invoice')args={company_id,invoice_no:reference};
   if(name==='list_bank_transactions'&&$('browse-direction').value)args.direction=$('browse-direction').value;
   if(name==='get_applicable_rules')args={company_id,rule_type:reference==='R001'?'amount':reference==='R004'?'bank':'purpose',business_date:year+'-'+String(month).padStart(2,'0')+'-01'};
@@ -106,4 +112,45 @@ $('apply-assistant').onclick=()=>act('/api/assistant',{identifier:$('assistant-s
 $('prepare-preference').onclick=()=>act('/api/preference',{company_id:$('browse-company').value,action:$('preference-action').value,key:$('preference-key').value.trim(),value:$('preference-value').value.trim()});
 $('save-personal').onclick=()=>act('/api/preference',{scope:'personal',action:$('personal-detail').value==='普通'?'delete':'set',key:'阅读习惯',value:$('personal-detail').value==='普通'?'':$('personal-detail').value});
 $('ask-material').onclick=()=>prepareRequest('请列出企业 '+$('browse-company').value+' 的可读业务资料，并让我选择原文来源。');
+
+
+// These are explicit controls for original TUI actions, not natural-language routes.
+const extra=el('section','settings-card');
+extra.innerHTML=`<h2>连接诊断与原高级入口</h2><p class="sub">连接检查仅在点击后发送最多两个合成请求；不修改账簿。固定脚本诊断不是自然语言验收。</p>
+<div class="buttons"><button class="btn small" id="probe-profile">检查所选Profile连接</button><button class="btn small" id="forget-profile">忘记所选Profile密钥（先确认）</button>
+<button class="btn small" id="mock-mode">固定脚本诊断</button><button class="btn small" id="live-mode">切回真实模型</button></div>
+<div class="buttons"><button class="btn small" id="pick-book">打开已有本机SQLite账簿</button><button class="btn small" id="advanced-entry">规则与高级控制台</button><button class="btn small" id="sign-out">退出当前本机工作台</button></div>
+<p class="hint">本机文件通过原生选择器登记，浏览器不能自报身份。旧库按需经真人确认后备份升级。高级控制台复用TUI原入口（将退出当前GUI）；不是新的业务实现。</p>
+<label><input type="checkbox" id="diagnose-next">只记录下一轮模型请求的结构诊断（不记录密钥）</label>`;
+$('settings-view').append(extra);
+const materials=el('section','settings-card');
+materials.innerHTML=`<h2>业务资料 · 上传、版本与原文</h2><p class="sub">作用于上方所选企业；资料内容是证据，上传不等于发布规则。单文件不超过10MB。</p>
+<div class="workspace-controls"><input type="file" id="material-file" accept=".docx,.xlsx,.pdf"><label>更新已有资料编号（留空为新增）<input id="material-id"></label><button class="btn small" id="upload-material">上传 / 更新版本</button></div>
+<div class="workspace-controls"><label>版本<input id="material-version" type="number" min="1" value="1"></label><label>来源单元编号<input id="material-paragraph" type="number" min="1" value="1"></label><button class="btn small" id="open-source">查看精确原文</button></div>`;
+$('workspace-view').append(materials);
+const taskForm=el('section','settings-card');
+taskForm.innerHTML=`<h2>任务管理</h2><p class="sub">新建或更改持久任务；管理更改复用原确认渠道，完成仍由用途检查事实判定。企业和账期在下方明确选择。</p>
+<div class="workspace-controls"><label>企业<select id="task-company"></select></label><label>账期<input id="task-period" type="month"></label><label>已有任务<select id="task-selector"></select></label><label>操作<select id="task-action"><option value="create">新建缺用途任务</option><option value="update">补充说明</option><option value="correct">更正账期与说明</option><option value="wait">等待补充</option><option value="pause">暂缓</option><option value="resume">恢复</option><option value="complete">核验并完成</option><option value="cancel">取消</option></select></label><label>任务说明<input id="task-note" maxlength="500"></label><button class="btn small" id="change-task">核对任务更改</button></div>`;
+$('todo-tasks').parentElement.after(taskForm);
+const notices=el('section','settings-card');notices.innerHTML='<h2>本轮直接操作回执 / 资料原文</h2><pre id="workspace-notice" aria-live="polite"></pre>';
+$('workspace-view').append(notices);
+const settingsNotices=el('pre','workspace-facts');settingsNotices.id='settings-notice';extra.append(settingsNotices);
+function nativeAction(kind){if(!window.chrome?.webview){toast('此功能请从提交版EXE原生窗口使用。',true);return;}window.chrome.webview.postMessage({kind,context:S.context});}
+$('pick-book').onclick=()=>nativeAction('pick-workbook');
+$('advanced-entry').onclick=()=>nativeAction('advanced');
+$('sign-out').onclick=()=>nativeAction('sign-out');
+$('probe-profile').onclick=()=>act('/api/profile_action',{action:'probe',profile_name:$('profile-select').value});
+$('forget-profile').onclick=()=>act('/api/profile_action',{action:'forget',profile_name:$('profile-select').value});
+$('mock-mode').onclick=()=>act('/api/local_mode',{action:'mock'});
+$('live-mode').onclick=()=>act('/api/local_mode',{action:'live'});
+$('change-task').onclick=()=>{
+  const [year,month]=$('task-period').value.split('-').map(Number);
+  act('/api/task_change',{action:$('task-action').value,task_id:$('task-selector').value,company_id:$('task-company').value,year,month,note:$('task-note').value});
+};
+$('upload-material').onclick=()=>{
+ const file=$('material-file').files[0];if(!file||file.size>10000000){toast('请选择10MB以内的业务资料。',true);return;}
+ const reader=new FileReader();reader.onload=()=>act('/api/material_upload',{name:file.name,content:String(reader.result).split(',')[1],company_id:$('browse-company').value,material_id:$('material-id').value.trim()});reader.readAsDataURL(file);
+};
+$('open-source').onclick=()=>act('/api/material_source',{material_id:$('material-id').value.trim(),version:Number($('material-version').value),paragraph_id:Number($('material-paragraph').value)});
+$('task-selector').onchange=()=>{const task=(S.tasks||[]).find(t=>t.task_id===$('task-selector').value);if(task){$('task-company').value=task.company_id;$('task-period').value=task.year+'-'+String(task.month).padStart(2,'0');}};
 if(S)renderWorkspace();

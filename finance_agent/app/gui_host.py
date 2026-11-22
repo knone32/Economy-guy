@@ -29,6 +29,7 @@ from .session_profiles import ExistingProfiles
 from .session_store import SessionStore
 from .tasks import list_tasks
 from .tui_local import session_path as default_session_path
+from .gui_workspace_actions import WorkspaceActions
 
 
 class GuiError(ValueError):
@@ -47,7 +48,7 @@ def _field_label(field):
     return {"purpose": "用途", "remark": "备注"}.get(field, str(field))
 
 
-class GuiHost:
+class GuiHost(WorkspaceActions):
     """HTTP-facing adapter; ``SessionHost`` is the only command/business owner."""
 
     # A callback handle is ephemeral. On expiry the browser dialog is closed;
@@ -248,11 +249,18 @@ class GuiHost:
     def select_binding(self, selector, context=None):
         choice=self._bindings.get(selector)
         if choice is None:raise GuiError('该账号或账簿未由宿主登记，请刷新。')
+        if choice['book']==self.db_path and choice['actor']==self.user_id:
+            return self._command(lambda expected:self._same_binding(expected),context)
         def factory():
             book=choice['book'];actor=choice['actor']
             session=self.session_path if book==self.db_path else book.parent/'sessions.sqlite3'
             return SessionStore(session,book,actor),self._factory,self.profiles
         return self.rebind_from_host(factory,context=context)
+
+    def _same_binding(self, expected):
+        with self.host._command(expected):
+            self.host._transition_ready()
+        return self.host.snapshot()
 
     def import_workbook(self, name, content, context=None):
         import base64
@@ -271,7 +279,7 @@ class GuiHost:
         return self.snapshot(notice='已导入为独立账簿，请在设置中选择新绑定；原账簿未覆盖。')
 
     def save_profile(self, value, context=None):
-        from .model_config import add_profile,resolve_connection
+        from .model_config import add_profile,resolve_connection,update_user_profile
         from .win_vault import WindowsVault,profile_target
         from dataclasses import asdict
         with self.host._command(context or self._last_context):
@@ -281,7 +289,11 @@ class GuiHost:
             if existing:
                 profile=resolve_connection(self.user_id,name,require_key=False,**self.profiles.options).profile
                 if any(value.get(k) and value[k]!=getattr(profile,k) for k in ('provider','model','base_url')):
-                    raise GuiError('修改连接身份请另建Profile名称，原配置保持不变。')
+                    public=asdict(profile)
+                    public.update({k:value[k] for k in ('provider','model','base_url') if value.get(k)})
+                    public['api_key_env']='ECONOMYGUY_'+uuid.uuid4().hex.upper()
+                    update_user_profile(profile,public,self.user_id,**self.profiles.options)
+                    profile=resolve_connection(self.user_id,name,require_key=False,**self.profiles.options).profile
             else:
                 public={'profile_name':name,'scope':'user','owner_user_id':self.user_id,
                     'provider':value.get('provider'),'model':value.get('model'),'base_url':value.get('base_url'),
@@ -292,16 +304,18 @@ class GuiHost:
             if secret:
                 if type(secret) is not str:raise GuiError('密钥格式无效。')
                 WindowsVault().write(profile_target(profile,self.user_id),secret)
+            if self.mode=='live' and self.profile==name:self._refresh_model()
         return self.snapshot(notice='配置已保存；密钥仅保存在本机Windows凭据库。请选择该Profile并使用。')
 
     def launch_description(self):
         """Only non-secret, host-bound arguments; never reconstruct identity in JS."""
-        argv=[sys.executable,str(Path(__file__).resolve().parents[1]/'run_gui.py'),
+        argv=[sys.executable]+([] if getattr(sys,'frozen',False) else [str(Path(__file__).resolve().parents[1]/'run_gui.py')])+[
             '--db',str(self.db_path.resolve()),'--session',str(self.store.path.resolve()),'--user',self.user_id,
             '--profiles-file',str(Path(self.profiles.options['template']).resolve()),
             '--profiles-local',str(Path(self.profiles.options['local']).resolve())]
         if self.profile:argv += ['--profile',self.profile]
-        if getattr(self,'launch_port',None):argv += ['--port',str(self.launch_port)]
+        # A copied launch starts a new instance, not a collision on the old port.
+        argv += ['--port','0','--embedded']
         return {'shell':'PowerShell','argv':argv,'command':"& "+' '.join("'"+arg.replace("'","''")+"'" for arg in argv)}
 
     # ------------------------------------------------------------------ confirmation bridge
@@ -422,7 +436,7 @@ class GuiHost:
                 self._done.set()
                 self._cond.notify_all()
 
-    def send(self, text, context=None):
+    def send(self, text, context=None, diagnose=False):
         if self._closing:raise GuiError('工作台正在关闭，请重新启动。')
         if self.mode=='live' and not self._connection_info.get('connected'):
             raise GuiError('请先在设置中保存模型密钥并选用Profile；本轮未发送API请求。')
@@ -431,10 +445,19 @@ class GuiHost:
             raise GuiError("消息不能为空。")
         if len(text) > 4000:
             raise GuiError("本轮消息过长，请缩小范围。")
+        if diagnose:
+            def send_diagnostic(expected):
+                transport=self.host.agent.transport
+                if transport is None:raise GuiError('当前没有真实模型传输，无法记录请求结构。')
+                transport.diagnose_next_request=True
+                try:return self.host.send_message(text,expected=expected)
+                finally:transport.diagnose_next_request=False
+            return self._start_action(send_diagnostic,context)
         return self._start_action(text,context)
 
     def _start_action(self, text, context=None):
         """Reuse the original worker/confirmation bridge for a trusted command."""
+        if self._closing:raise GuiError('工作台正在关闭，请重新启动。')
         with self._cond:
             if self._busy or self._confirmation:
                 raise GuiError("当前受理尚未结束，请先完成预览、暂缓或取消。")
@@ -442,6 +465,7 @@ class GuiHost:
             if not isinstance(expected, dict):
                 raise GuiError("缺少当前会话上下文，请刷新页面。")
             self._error = None
+            self._workspace_notice=None
             self._busy = True
             self._done.clear()
             self._confirmation = None
@@ -702,12 +726,13 @@ class GuiHost:
             "workspace": raw.get('workspace'),
             "busy": bool(self._busy),
             "business_status": status,
-            "notice": None,
+            "notice": getattr(self,'_workspace_notice',None),
             "error": error,
         }
 
     def snapshot(self, *, notice=None, error=None):
         with self._cond:
+            if notice is not None:self._workspace_notice=notice
             if self._confirmation is not None:
                 raw = (self._confirmation.get("payload") or {}).get("snapshot") or self._last
             elif self._busy:
@@ -732,6 +757,7 @@ class GuiHost:
             raise GuiError("缺少当前会话上下文，请刷新页面。")
         with self._cond:
             self._error = None
+            self._workspace_notice=None
         try:
             raw = action(expected)
             with self._cond:
@@ -778,11 +804,11 @@ class GuiHost:
         return self._command(
             lambda expected: self.host.acknowledge_display(str(trace), expected=expected), context)
 
-    def task_details(self, company_id, task_id, context=None):
+    def task_details(self, company_id, task_id, context=None, include_filled=False):
         if context != self.host.snapshot()['context']:
             raise GuiError('待办详情所属会话已变化，请刷新。')
         view = self.snapshot()
-        view['task_details'] = self.host.task_details(company_id,task_id)
+        view['task_details'] = self.host.task_details(company_id,task_id,include_filled=include_filled)
         return view
 
     def open_task(self, company_id, task_id, context=None):
@@ -792,8 +818,9 @@ class GuiHost:
         view = self._command(lambda expected:self.host.switch_profile(name,expected=expected),context)
         if not view.get('error'):
             connection = self.host.agent.connection
+            self.mode='live'
             self.profile = connection.profile.profile_name
-            self._connection_info.update(profile=self.profile,model=connection.profile.model,
+            self._connection_info.update(mode='live',profile=self.profile,model=connection.profile.model,
                 provider=connection.profile.provider,base_url=safe_url(connection.profile.base_url),connected=True)
             view = self._project(self._last)
         return view
@@ -823,6 +850,7 @@ class GuiHost:
                 'base_url':safe_url(connection.profile.base_url) if connection else None}
             self._error = None
             self._confirmation_expired = False
+            self._workspace_notice=None
             self._last = replacement.snapshot()
             self._last_context = self._last['context']
             return self._project(self._last)

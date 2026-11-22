@@ -9,7 +9,7 @@ import time
 import uuid
 
 
-def start_window(url, token):
+def start_window(url, token, native_token=''):
     root=Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent))
     host=root/'webview_host'
     if not (host/'GuiWindow.exe').is_file():
@@ -30,7 +30,7 @@ def start_window(url, token):
             if not part.lower().startswith(str(root).lower()+os.sep))
         kernel.SetDllDirectoryW(None)
     try:
-        process=subprocess.Popen([str(host/'GuiWindow.exe'),url,str(status),token],cwd=host,env=env,
+        process=subprocess.Popen([str(host/'GuiWindow.exe'),url,str(status),token,native_token],cwd=host,env=env,
             stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,close_fds=True)
     finally:
         if kernel is not None:kernel.SetDllDirectoryW(old_directory)
@@ -53,3 +53,4 @@ def start_window(url, token):
         except (OSError,ValueError):pass
     if process.returncode!=0 or not ready:
         raise RuntimeError('内嵌窗口未正常显示或异常退出，代码%s；日志：%s'%(process.returncode,status))
+    return json.loads(status.read_text(encoding='utf-8-sig')).get('exit_action')

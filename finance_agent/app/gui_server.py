@@ -23,6 +23,7 @@ class GuiServer(ThreadingHTTPServer):
     def __init__(self, address, host, token, html):
         self.host = host
         self.token = token
+        self.native_token = secrets.token_urlsafe(32)
         self.html = html
         super().__init__(address, Handler)
         host.launch_port = self.server_address[1]
@@ -58,7 +59,7 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             length = 0
-        if length <= 0 or length > (7_000_000 if self.path=='/api/import_workbook' else 200_000):
+        if length <= 0 or length > (14_000_000 if self.path=='/api/material_upload' else 7_000_000 if self.path=='/api/import_workbook' else 200_000):
             raise GuiError("请求体为空或过大。")
         raw = self.rfile.read(length)
         try:
@@ -75,7 +76,7 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(value.get('context'), dict):
                 raise GuiError('缺少当前会话修订，请刷新页面。')
             if name == "message":
-                return host.send(value.get("text", ""), context=value.get("context"))
+                return host.send(value.get("text", ""), context=value.get("context"),diagnose=value.get('diagnose') is True)
             if name == "switch":
                 return host.switch(str(value.get("chat_id", "")), context=value.get("context"))
             if name == "new":
@@ -97,7 +98,7 @@ class Handler(BaseHTTPRequestHandler):
                 return host.acknowledge_display(str(value.get("trace", "")),
                                                 context=value.get("context"))
             if name == 'task_details':
-                return host.task_details(str(value.get('company_id','')),str(value.get('task_id','')),context=value.get('context'))
+                return host.task_details(str(value.get('company_id','')),str(value.get('task_id','')),context=value.get('context'),include_filled=value.get('include_filled') is True)
             if name == 'task_open':
                 return host.open_task(str(value.get('company_id','')),str(value.get('task_id','')),context=value.get('context'))
             if name == 'profile':
@@ -116,6 +117,12 @@ class Handler(BaseHTTPRequestHandler):
                 return host.preference_change(value,context=value['context'])
             if name == 'close':
                 return host.request_close(value['context'])
+            if name == 'task_change':return host.task_change(value,value['context'])
+            if name == 'material_upload':return host.material_upload(value,value['context'])
+            if name == 'material_source':return host.material_source(value,value['context'])
+            if name == 'profile_action':return host.profile_action(value,value['context'])
+            if name == 'local_mode':return host.local_mode(value.get('action'),value['context'])
+            if name == 'native_workbook':return host.native_workbook(value.get('path'),value['context'])
             raise GuiError("未知操作。")
         except GuiError as error:
             self._error(409, str(error), "conflict")
@@ -162,13 +169,15 @@ class Handler(BaseHTTPRequestHandler):
         self._error(404, "未找到。", "not_found")
 
     def do_POST(self):
-        if not self._authorized():
+        native=self.path=='/api/native_workbook'
+        if not (secrets.compare_digest(self.headers.get('X-Native-Token',''),self.server.native_token) if native else self._authorized()):
             self._error(403, "本机界面令牌无效。", "forbidden")
             return
         route = self.path.removeprefix("/api/")
         if route not in {"message", "switch", "new", "preview_confirm", "preview_cancel",
                          "pause", "cancel", "resume", "inspect", "acknowledge", "task_details", "task_open", "profile",
-                         "read_business","binding","import_workbook","profile_save","assistant","preference","close"}:
+                         "read_business","binding","import_workbook","profile_save","assistant","preference","close",
+                         "task_change","material_upload","material_source","profile_action","local_mode","native_workbook"}:
             self._error(404, "未找到。", "not_found")
             return
         try:
@@ -236,13 +245,13 @@ def main(argv=None):
     print("账号/账簿：%s / %s" % (args.user, host.db_path))
     print("本机受信宿主；浏览器不能传 user_id/approved/confirmed。"+
         ("处理完待补、预览或未知提交后关闭内嵌窗口退出。" if args.embedded else "按 Ctrl+C 停止。"))
-    worker=None
+    worker=None;exit_action=None
     try:
         if args.embedded:
             from .embedded_browser import start_window
             worker=threading.Thread(target=server.serve_forever,daemon=True)
             worker.start()
-            start_window(url,token)
+            exit_action=start_window(url,token,server.native_token)
         else:
             if args.open:
                 import webbrowser
@@ -257,6 +266,19 @@ def main(argv=None):
         server.shutdown()
         server.server_close()
         host.close()
+    if exit_action=='advanced':
+        # Identical advanced entry to TUI: retire the original owner first.
+        if getattr(sys,'frozen',False):
+            import ctypes
+            ctypes.windll.kernel32.AllocConsole()
+            sys.stdin=open('CONIN$','r',encoding='utf-8')
+            sys.stdout=open('CONOUT$','w',encoding='utf-8',buffering=1)
+            sys.stderr=sys.stdout
+        from .cli_home import Home
+        home=Home(host.db_path,host.profiles.options['template'],host.profiles.options['local'],
+            Path(__file__).resolve().parents[1]/'tests/fixtures/example.xlsx')
+        home.user=host.user_id;home.profile=host.profile
+        home.run()
     return 0
 
 
