@@ -31,3 +31,11 @@ CLARIFICATION-01.log 的暂缓断言错误读取被退役为历史的 result；�
 针对这份新证据，同一 pending_change 候选也在独立阶段表达当前已给新值。它按当前来源校验，临时绑定在原 BoundIntent（不新增持久状态）；原 change_invoice 将它合并到待补，执行方可以省略，冲突则拒绝。最终直接澄清也用同一 checked_change 来源检查；不依赖正文搬运或新模型调用。未给值时明确显示“修改内容尚待补充”，不能显示内容已保留。
 
 CLARIFICATION-CARRIER-BEFORE.log 保留实现前反例，CLARIFICATION-CARRIER-AFTER.log 及 CLARIFICATION-CARRIER-PROTECTION.log 证明同一个候选在执行方省略时，两条路径均保留，集合内 fresh 预览、集合外拒绝和真实 PAUSED 不退化。后续只对这一新增机制继续同范围原题回归，不追加场景；结果另存 clarification-live-followup，不覆盖1fa501d失败或67dfc8a原失败。自然语言泛化及真人GUI仍未签收。
+
+## 207e283 的共同范围来源阻断
+
+该版 Live 已保住当前值、原可信集合和活动等待关系，但执行方提供集合共有的企业/年月时，被只接受唯一单票来源的绑定器拒绝。原 scope conflict 与后续不可用工具原样留存，不能因待补有值而判通过。验收器漏查 DENIED，额外发送了1条依赖消息（1物理请求/6570 tokens），计入真实消耗；FIRST-DEVIATION-ADJUDICATION.public.json 单独定位较早首错，不改原件。之后停止，不将选票阶段算成功或独立场景。
+
+修复只让原 display_collection 返回所有可信锚点共同的 company/year/month 范围，由原 owner 构造部分 target_origin；共同范围没有 invoice_no，不授予唯一身份，选定后仍逐项 fresh 核验。用户显式限制冲突、集合外或失效集合继续拒绝；未引用集合的新事项不套旧范围。CLARIFICATION-COMMON-BEFORE/AFTER.log 保留正反与原 F009/F008 保护。独立动作说明改为真实枚举结构，解析继续精确校验，不按中文前缀放宽。
+
+下一同范围回归使用 clarification-live-final；验收器要求执行 stop_reason=WAITING_USER 且无 blocked_reason，否则不再发选票消息。所有历史原分、真实消耗、未到预览结果保留；不追加矩阵、不重跑旧提交链。

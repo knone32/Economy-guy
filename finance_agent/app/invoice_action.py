@@ -90,6 +90,10 @@ def change_invoice(agent, args, previous, request, *, defer_preview=False,revisi
             available=display_collection(agent.db_path,agent.user_id,**collection)
             if available['status']!='SUCCESS':
                 return available,previous,None,[]
+            if available['evidence'].get('common_scope'):
+                target_origin=BoundIntent('read',agent.user_id,str(agent.db_path),agent.trace_id,request,
+                    dict(available['evidence']['common_scope']),
+                    {'source':'runtime_display_reference','reference':{'collection':collection}})
             if args.get('invoice_no'):
                 from .business_object_sources import amendment_sources
                 literal,_,_=amendment_sources(request,None,actor=agent.user_id,book=agent.db_path,

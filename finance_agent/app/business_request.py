@@ -270,7 +270,7 @@ DEFINITION = {
       'selection':'先判断本轮要取得事实还是办理变更，再决定是否继承前文读取要求。前文有查询不表示本轮仍是查询。',
       'read':{'output':'原read结构','use':'取得当前业务事实；unresolved只承载读取要求的未决项，不承载待写入内容。'},
       'legacy':{'output':{'kind':'legacy','turn_action':'continue|pause|stop','action_quote':'pause/stop须引用主动处置整个事项的当前原话，continue可省略',
-          'action_reason':'await_selection等待补选、await_value等待补值、continue_matter继续办理均对应continue；defer_matter主动暂缓整个事项才对应pause，cancel_matter才对应stop；pause/stop必须提供。等待输入和是否允许提交不是生命周期变更',
+          'action_reason':{'enum':['await_selection','await_value','continue_matter','defer_matter','cancel_matter'], 'required_for':['pause','stop'],'meaning':'前3项对应continue；主动暂缓整个事项defer_matter才对应pause，取消cancel_matter对应stop。值须为精确枚举，解释留在quote外；等待输入与禁止保存不改变生命周期'},
           'field':'仅单票办理当前明确的新字段purpose|remark；未改或未知省略','field_quote':'给field时须引用当前字段要求原话',
           'value_relation':'已有单票待补时独立判断 keep保留、replace新内容替换（可尚缺值）、clear明确清空、withdraw撤回旧内容待补、unclear关系未明；不是执行模型的relation参数',
           'value_quote':'给value_relation时必须引用当前原话；只补票号可据当前补充表达keep，但continue本身不能证明值保留',

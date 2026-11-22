@@ -145,8 +145,9 @@ def bind_request(args, previous, *, actor, book, current_id, current_request, ta
                 or target_origin.sources.get('source') != 'runtime_display_reference'):
             raise PendingRequestError('展示对象来源不属于本轮可信会话。', 'DENIED')
         reference_scope = {key: [target_origin.target[key]]
-                           for key in ('company_id', 'invoice_no', 'year', 'month')}
-        reference_scope['periods'] = [(target_origin.target['year'], target_origin.target['month'])]
+                           for key in ('company_id', 'invoice_no', 'year', 'month') if key in target_origin.target}
+        if 'year' in target_origin.target and 'month' in target_origin.target:
+            reference_scope['periods'] = [(target_origin.target['year'], target_origin.target['month'])]
     if previous and (previous.get('actor'),previous.get('workbook')) != (actor,str(book)):
         raise PendingRequestError('当前办理不属于这个账号或账簿，请重新发起。','DENIED')
     # A read clarification or arbitrary model pending is not a change source.

@@ -135,13 +135,14 @@ class ClarificationOwnerTests(unittest.TestCase):
                     'matter_relation':'new','matter_quote':'选一张，备注改成',
                     'reference_relation':'displayed','reference_quote':'刚才两张','pending_change':change}
                 replies=iter([envelope(semantic),envelope({'kind':'clarification','text':'等待选择。',
-                    'missing_fields':['invoice_no']}) if path=='direct' else tool({'field':'remark'})])
+                    'missing_fields':['invoice_no']}) if path=='direct' else tool({'company_id':'C001','year':2026,'month':9,'field':'remark'})])
                 self.agent.model=lambda *_:next(replies)
                 with patch('app.invoice_action.get_invoice',side_effect=AssertionError('No guessed single target')):
                     self.agent.ask(text)
                 state=self.agent.pending_intent
                 self.assertIsNotNone(state,self.agent.last_response)
                 self.assertEqual(state['change']['new_value'],['资料复核后整理'])
+                self.assertFalse(state.get('blocked_reason'),self.agent.last_response)
                 self.assertIn('reference_collection',state)
                 self.assertFalse(self.agent.last_response.get('invoice_change'))
 

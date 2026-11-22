@@ -157,8 +157,15 @@ def display_collection(path, user_id, display_ids, anchor_ids=None):
                     return result('DENIED',error='原展示集合没有读取权限。')
                 for index,key in enumerate(json.loads(row['keys_json']),1):
                     entries.append({'key':key,'anchor_id':row['anchor_id'],'ordinal':index})
+            # Shared anchor scope is not a selected invoice or current fact.
+            common={}
+            companies={entry['key']['company_id'] for entry in entries}
+            if len(companies)==1:common['company_id']=next(iter(companies))
+            for field in ('year','month'):
+                values={row[field] for row in rows}
+                if len(values)==1 and None not in values:common[field]=next(iter(values))
             return result('SUCCESS',entries,{'reference_collection':{'display_ids':list(display_ids),
-                'anchor_ids':[row['anchor_id'] for row in rows]}})
+                'anchor_ids':[row['anchor_id'] for row in rows]},'common_scope':common})
     except (OSError,sqlite3.Error,ValueError,TypeError):
         return result('ERROR',error='无法核实原展示集合，请重新查询。')
 

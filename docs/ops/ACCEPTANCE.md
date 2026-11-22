@@ -8,6 +8,8 @@
 
 两项修复与有限程序证据见 [澄清交接记录](CLARIFICATION-HANDOFF.md)。动作契约与直接候选、展示集合均回原 change_invoice；保留权限、来源、fresh 读取与人工批准。冻结后只回归受影响三步；同 SHA Live 结果以本地 evidence-root/pending-relationships-20261122/clarification-live 的原始回执为准。程序通过不代表 Live 或真人 GUI 通过，旧 ZIP 仍属于67dfc8a，未更新、未发布。
 
+207e283 的 Live 保住新值/集合，但共同范围来源仍被误拒；修复与验收器首错停止纠正见同一记录。当前后续同范围回归以 clarification-live-final 包外回执为准，不把此前部分状态保留计作通过。
+
 以下为此前各阶段历史记录，历史“无新 Live/待授权”不代表当前状态。
 
 ## 2026-11-22 独立修复候选：F009 / F008（未发布、无新 Live）
