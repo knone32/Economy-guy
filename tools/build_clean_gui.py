@@ -62,13 +62,13 @@ def build(source, output, profile_file, profile_name, runtime_archive):
 setlocal DisableDelayedExpansion
 set "PYTHONUTF8=1"
 set "PYTHONUNBUFFERED=1"
-call "%~dp0START-GUI.bat" --profile "PROFILE" --profiles-file "%~dp0finance_agent\config\model_profiles.toml" --profiles-local "%~dp0local-config\model_profiles.local.json" %*
+call "%~dp0START-GUI.bat" --port 8770 --profile "PROFILE" --profiles-file "%~dp0finance_agent\config\model_profiles.toml" --profiles-local "%~dp0local-config\model_profiles.local.json" %*
 '''.replace('PROFILE',profile_name)
     (output/'启动工作台.cmd').write_bytes(launcher.replace('\n','\r\n').encode('utf-8'))
     (output/'使用说明.txt').write_text('''双击“启动工作台.cmd”。首次无需安装Python或依赖，不使用系统Python。
 此包为Windows x64本机演示版，使用官方虚构演示账簿。
 首次启动才创建finance_agent/data/gui-demo；此包不包含旧账簿、会话、批准或历史卡片。
-服务默认http://127.0.0.1:8765/。端口被占用时先关闭旧工作台，或给启动脚本加 --port 8770。
+本清洁包默认http://127.0.0.1:8770/，与旧工作台8765分开。端口被占用时先关闭此包的旧窗口，或加 --port 8771。
 启动窗口保持运行；Ctrl+C关闭。预览不是保存，只有本人确认后才提交。
 包内只含公开Profile身份，不含密钥；同一Windows用户复用原Windows凭据库。
 另一台机器或用户需要先配置自己的凭据；缺凭据会保留真实错误，不能自动借用其他账号。
