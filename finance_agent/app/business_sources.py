@@ -29,6 +29,24 @@ def _origin(message, message_id, kind, value=None):
     return result
 
 
+def checked_revision(origin, *, actor, book, current_id, current_request):
+    from .intent_contract import BoundIntent
+    if origin is None:return {}
+    if (not isinstance(origin,BoundIntent) or origin.action!='amend'
+            or (origin.actor,origin.workbook,origin.turn_id,origin.request)!=(actor,str(book),current_id,current_request)
+            or origin.sources.get('source')!='independent_business_entry' or type(origin.target) is not dict):
+        raise PendingRequestError('修订关系缺少本轮独立业务来源。','DENIED')
+    choices={'field':{'purpose','remark'},'value_relation':{'keep','replace','clear','withdraw','unclear'},
+             'matter_relation':{'continue','new','unclear'}}
+    for key,allowed in choices.items():
+        value=origin.target.get(key)
+        if value is not None:
+            quote=origin.sources.get({'field':'field_quote','value_relation':'value_quote','matter_relation':'matter_quote'}[key])
+            if type(value) is not str or value not in allowed or type(quote) is not str or not quote.strip() or quote not in current_request:
+                raise PendingRequestError('修订关系的原话来源不属于本轮。','DENIED')
+    return origin.target
+
+
 def recover_candidate(pending, *, actor, book):
     """Recheck saved runtime business data; never restore approval or a draft.
 
@@ -74,10 +92,8 @@ def recover_candidate(pending, *, actor, book):
                 raise PermissionError('当前账号缺少企业读改权限，未恢复单票候选。')
     state = deepcopy(pending)
     if state.get('reference_collection'):
-        from .references import display_collection
-        checked=display_collection(book,actor,**state['reference_collection'])
-        if checked['status']!='SUCCESS':
-            raise ValueError('原展示候选集合已失效，请重新查询。')
+        from .references import validate_collection_origin
+        validate_collection_origin(book,actor,state['reference_collection'])
     state['missing_fields'] = tuple(state['missing_fields'])
     return state
 
@@ -118,19 +134,7 @@ def bind_request(args, previous, *, actor, book, current_id, current_request, ta
     # A read clarification or arbitrary model pending is not a change source.
     if previous and previous.get('business_action') != 'single_invoice':
         previous = None
-    revision={}
-    if revision_origin is not None:
-        if (not isinstance(revision_origin,BoundIntent) or revision_origin.action!='amend'
-                or (revision_origin.actor,revision_origin.workbook,revision_origin.turn_id,revision_origin.request)
-                   !=(actor,str(book),current_id,current_request)
-                or revision_origin.sources.get('source')!='independent_business_entry'):
-            raise PendingRequestError('修订关系缺少本轮独立业务来源。','DENIED')
-        revision=revision_origin.target
-        for key in ('field','value_relation'):
-            if revision.get(key) is not None:
-                quote=revision_origin.sources.get('field_quote' if key=='field' else 'value_quote')
-                if type(quote) is not str or not quote.strip() or quote not in current_request:
-                    raise PendingRequestError('修订关系的原话来源不属于本轮。','DENIED')
+    revision=checked_revision(revision_origin,actor=actor,book=book,current_id=current_id,current_request=current_request)
     value_relation=revision.get('value_relation')
     prior_scope = deepcopy((previous or {}).get('scope',{}))
     old_change = deepcopy((previous or {}).get('change',{}))

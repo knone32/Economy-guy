@@ -369,6 +369,8 @@ class SessionHost:
             state, operation = 'COMPLETED', None
             try:
                 agent.ask(text)
+                if getattr(agent,'started_new_matter',False):
+                    self.store.detach_inactive_for_new_matter(seq)
                 proposal = (agent.last_response or {}).get('invoice_change')
                 if proposal is not None and self._confirm is not None:
                     agent.last_response.pop('invoice_change')

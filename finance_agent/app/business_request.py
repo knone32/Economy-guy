@@ -272,7 +272,9 @@ DEFINITION = {
       'legacy':{'output':{'kind':'legacy','turn_action':'continue|pause|stop','action_quote':'pause/stop须引用当前原话，continue可省略',
           'field':'仅单票办理当前明确的新字段purpose|remark；未改或未知省略','field_quote':'给field时须引用当前字段要求原话',
           'value_relation':'已有单票待补时独立判断 keep保留、replace新内容替换（可尚缺值）、clear明确清空、withdraw撤回旧内容待补、unclear关系未明；不是执行模型的relation参数',
-          'value_quote':'给value_relation时必须引用当前原话；只补票号可据当前补充表达keep，但continue本身不能证明值保留'},
+          'value_quote':'给value_relation时必须引用当前原话；只补票号可据当前补充表达keep，但continue本身不能证明值保留',
+          'matter_relation':'先独立判断 continue旧事项、new明确新事项、unclear归属不明；值replace不表示新事项',
+          'matter_quote':'须引用当前原话；新事项遇有效旧待补先询问旧事项暂缓或取消，处置前不覆盖旧事项'},
           'use':'发起、补充、更正、替换、暂缓、恢复或取消修改/管理事项，包括新内容尚未给全的变更。交原办理owner保留待补、核对身份与权限、生成预览和确认；不在读取target中继承旧指标或登记待写值。此route本身不授权任何读写。',
           'turn_action':'省略/null同continue，表示正常办理，缺内容时等待补值；要求不提交也用continue，不能据此推断暂停或取消。可选quote省略/null同空串，但pause/stop及已给field仍须非空当前原话来源。仅明确暂缓本次单票事项才pause；明确取消才stop。pause/stop是本轮业务关系解释，不是授权；管理待办仍走原管理工具。新办理须先由原owner核实并建立候选，再执行明确暂缓。'},
       'general':{'output':{'kind':'general','text':'回答'},'use':'一般对话或知识说明，不提供当前账簿事实或操作回执。'}},
@@ -368,9 +370,15 @@ def native_pending_context(pending, *, actor=None, book=None):
         from .invoice_action import public_state
         state=recover_candidate(pending,actor=actor,book=Path(book).resolve())
         public=public_state(state)
-        return {'status':'unsubmitted_business_context',
+        view={'status':'unsubmitted_business_context',
                 'source':{'kind':'native_user_request','quote':state['source_request']},
                 'known':public['known'],'missing_fields':public['missing_fields']}
+        if state.get('reference_collection'):
+            from .references import display_collection
+            selected=display_collection(book,actor,**state['reference_collection'])
+            view['selection_scope_status']=selected['status']
+            if selected['status']=='SUCCESS':view['candidate_objects']=[entry['key'] for entry in selected['data']]
+        return view
     except (ValueError,TypeError,PermissionError,OSError,sqlite3.Error):
         return None
 
@@ -417,6 +425,7 @@ def messages(request,current_catalog,*,trusted_scope=None,previous_request=None,
         '明确暂缓或取消单票时分别用pause/stop，并用action_quote引用当前原话；后续执行提案不能扩大本轮动作。'
         '单票办理已明确要改用途或备注时，用field=purpose|remark及field_quote保留当前字段要求；字段未知或本轮未更正时省略，由原owner继承有效待补。'
         '有原单票待补时，独立给value_relation及当前value_quote，分别判断保留、替换、明确清空、撤回待补或关系未明；不能用continue代替值修订判断，也不看执行提案的replace。'
+        '另用matter_relation/matter_quote判断事项归属；不能按票号是否命中旧集合代替判断。新事项遇旧待补先询问处置，不并行或静默覆盖。'
         '该route不授予业务读取或写入许可。已确定为读取但业务对象或目标不清时用read+unresolved，不能擅自删目标。'},
         {'role':'user','content':__import__('json').dumps({'request':request,'read_catalog':current_catalog,
             'trusted_scope':scope,'previous_requirement':previous_request.metadata() if previous_request else None,

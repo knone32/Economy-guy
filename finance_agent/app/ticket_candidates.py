@@ -27,6 +27,25 @@ def initialize(db):
 
 
 class TicketCandidates:
+    def detach_inactive_for_new_matter(self,seq):
+        """Keep paused rows/tombstones; only detach this chat's inactive pointer."""
+        self.validate()
+        if self.invoice_token is None:return
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            token=self.invoice_token
+            if self._candidate_token(db)!=token or self._turn_invoice_tokens.get(seq)!=token:
+                raise ValueError('事项归属修订已变化，请刷新。')
+            row=db.execute('SELECT state FROM invoice_candidates WHERE id=? AND revision=? AND workbook=? AND actor=?',
+                (*token,self.identity,self.actor)).fetchone()
+            if row is None or row['state'] not in {'PAUSED','CANCELLED','COMPLETED'}:
+                raise ValueError('旧事项尚未处置，不能开启新事项。')
+            changed=db.execute("UPDATE chats SET candidate_id=NULL,candidate_revision=NULL,invoice_pending=NULL WHERE id=? AND workbook=? AND actor=? AND state='ACTIVE'",
+                (self.chat,self.identity,self.actor)).rowcount
+            if changed!=1:raise ValueError('会话归属已变化。')
+        self.invoice_token=None
+        self._turn_invoice_tokens[seq]=None
+
     def validate_invoice_revision(self):
         self.validate()
         with self.connection() as db:

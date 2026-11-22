@@ -118,6 +118,26 @@ def reference_catalog(path, user_id, scope=None, *, display_ids=None):
         connection.close()
 
 
+def validate_collection_origin(path, user_id, collection):
+    """Restore unapproved requirements, not a live selection or any approval.
+
+    Retired owned anchors preserve the old requirement through pause/cancel of
+    live context. Dispatch still requires display_collection's active sources.
+    """
+    if (type(collection) is not dict or set(collection)!={'display_ids','anchor_ids'}
+            or any(type(values) not in (list,tuple) or not values or len(values)>64
+                or any(type(v) is not str or not v for v in values) for values in collection.values())):
+        raise ValueError('原展示集合来源无效。')
+    ids=collection['anchor_ids']
+    with closing(open_existing(path,readonly=True)) as db:
+        rows=db.execute('SELECT anchor_id,display_id,company_id FROM reference_anchors WHERE user_id=? AND anchor_id IN ('
+            +','.join('?' for _ in ids)+')',(user_id,*ids)).fetchall()
+        if {row['anchor_id'] for row in rows}!=set(ids) or any(row['display_id'] not in collection['display_ids'] for row in rows):
+            raise ValueError('原展示集合不属于该账号或已丢失。')
+        if any(not all(check_permission(db,user_id,row['company_id'],op).allowed for op in ('read','modify')) for row in rows):
+            raise PermissionError('原展示集合的办理权限已变化。')
+
+
 def display_collection(path, user_id, display_ids, anchor_ids=None):
     """Read the original owned display set; contains no approval or stored values."""
     try:

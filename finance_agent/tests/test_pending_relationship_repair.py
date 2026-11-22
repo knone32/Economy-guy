@@ -85,3 +85,77 @@ class PendingRevisionRepairTests(unittest.TestCase):
         self.assertEqual(outcome['status'],'WAITING_USER');self.assertEqual(state['change'],{'field':['remark']})
         self.assertEqual(state['provenance']['field']['kind'],'independent_business_field_intent')
         self.assertIsNone(proposal);self.assertEqual(reads,[])
+
+
+class MatterOwnershipRepairTests(unittest.TestCase):
+    setUp=PendingRevisionRepairTests.setUp
+    tearDown=PendingRevisionRepairTests.tearDown
+    facts=PendingRevisionRepairTests.facts
+    origin=PendingRevisionRepairTests.origin
+    def matter_origin(self,text,matter='continue',value='keep',field=None):
+        origin=self.origin(text,value,field)
+        return BoundIntent(origin.action,origin.actor,origin.workbook,origin.turn_id,origin.request,
+            {**origin.target,'matter_relation':matter},{**origin.sources,'matter_quote':text})
+    def seed_set(self):
+        from app.business_sql import BusinessSQL
+        from app.provenance import ScopeProof
+        self.agent=Agent('U001',self.book,lambda *_:{},mode='mock');self.agent.trace_id='display-'+str(len(self.facts()['invoice_audit']))
+        self.agent.context.display_ids=[]
+        scope={'company_id':['C001'],'periods':[(2026,9)]}
+        with closing(BusinessSQL(self.book,'U001',ScopeProof('U001',scope,dict.fromkeys(scope,'user_current')))) as db:
+            actual,data,_=db.query("SELECT company_id,invoice_no,invoice_date,amount_cents,remark FROM invoices WHERE invoice_no IN ('F002','F004')")
+        result={'ok':True,'status':'SUCCESS','data':data,'evidence':{'source':'current_sqlite','scope':actual,'query_scope':data.pop('query_scope')}}
+        self.agent.record_query_display([('query_business_sql',result)])
+        text='甲企业刚才这两张里选一张改备注为“集合内待核”，等我选票。'
+        outcome,state,proposal,_=change_invoice(self.agent,{'field':'remark','new_value':'集合内待核'},None,text,
+            revision_origin=self.matter_origin(text,value='replace',field='remark'))
+        self.assertIsNone(proposal);self.assertIn('reference_collection',state)
+        return state
+    def test_gate_before_collection_and_continue_still_selects_only_original_member(self):
+        state=self.seed_set();before=copy.deepcopy(state)
+        text='另外新办甲企业F008，备注填“新事项”。'
+        result,held,proposal,reads=change_invoice(self.agent,{'company_id':'C001','invoice_no':'F008','field':'remark','new_value':'新事项'},state,text,
+            revision_origin=self.matter_origin(text,'new','replace','remark'))
+        self.assertTrue(result['evidence']['matter_disposition_required']);self.assertEqual(held,before);self.assertIsNone(proposal);self.assertFalse(reads)
+        unclear='F008。'
+        result,held,proposal,reads=change_invoice(self.agent,{'invoice_no':'F008','relation':'replace'},state,unclear,
+            revision_origin=self.origin(unclear))
+        self.assertTrue(result['evidence']['matter_disposition_required']);self.assertEqual(held,before);self.assertFalse(reads)
+        limited='就在这两张里的F008。'
+        result,held,proposal,_=change_invoice(self.agent,{'invoice_no':'F008','relation':'replace'},state,limited,revision_origin=self.matter_origin(limited))
+        self.assertEqual(result['status'],'AMBIGUOUS');self.assertIsNone(proposal)
+        selected='选F004，沿用刚才的备注。'
+        result,_,proposal,_=change_invoice(self.agent,{'invoice_no':'F004'},state,selected,revision_origin=self.matter_origin(selected))
+        self.assertIsNotNone(proposal,result);self.assertEqual(tuple(proposal['invoice_nos']),('F004',));self.assertEqual(proposal['new_value'],'集合内待核')
+        from app.references import invalidate_references
+        invalidate_references(self.book,'U001')
+        result,_,proposal,_=change_invoice(self.agent,{'invoice_no':'F004'},state,selected,revision_origin=self.matter_origin(selected))
+        self.assertNotEqual(result['status'],'SUCCESS');self.assertIsNone(proposal)
+    def test_original_store_disposition_then_new_preview_preserves_old_record(self):
+        from app.session_store import SessionStore
+        from app.session_host import SessionHost
+        for disposition in ('pause','cancel'):
+            with self.subTest(disposition=disposition):
+                state=self.seed_set();store=SessionStore(Path(self.tmp.name)/(disposition+'.sqlite'),self.book,'U001')
+                store.set_invoice_pending(state,state='ACTIVE');captured=[];replies=[]
+                def model(*_):return replies.pop(0)
+                host=SessionHost(store,lambda actor,book:Agent(actor,book,model,mode='mock'),confirm=lambda payload:(captured.append(payload) or False))
+                try:
+                    old_token=store.invoice_token
+                    text='另外新办甲企业F008，备注填“新事项”。'
+                    semantic={'role':'assistant','content':json.dumps({'kind':'legacy','field':'remark','field_quote':'备注填“新事项”',
+                        'value_relation':'replace','value_quote':text,'matter_relation':'new','matter_quote':text},ensure_ascii=False)}
+                    args={'company_id':'C001','invoice_no':'F008','field':'remark','new_value':'新事项'}
+                    replies[:]=[semantic,tool(args)]
+                    gated=host.send_message(text,expected=host.snapshot()['context']);self.assertFalse(captured);self.assertEqual(store.invoice_token[0],old_token[0])
+                    if disposition=='pause':host.pause_current(expected=gated['context'])
+                    else:host.cancel_current(expected=gated['context'])
+                    with store.connection() as db:old=dict(db.execute('SELECT * FROM invoice_candidates WHERE id=?',(old_token[0],)).fetchone())
+                    self.assertEqual(old['state'],'PAUSED' if disposition=='pause' else 'CANCELLED')
+                    if disposition=='pause':self.assertTrue(any(row['id']==old_token[0] for row in store.list_invoice_candidates()))
+                    replies[:]=[semantic,tool(args)]
+                    view=host.send_message(text,expected=host.snapshot()['context']);self.assertEqual(len(captured),1,view)
+                    preview=captured[0]['snapshot']['preview'];self.assertEqual(preview[0]['invoice_no'],'F008');self.assertEqual(preview[0]['new_value'],'新事项')
+                    with store.connection() as db:retained=dict(db.execute('SELECT * FROM invoice_candidates WHERE id=?',(old_token[0],)).fetchone())
+                    self.assertEqual(retained,old);self.assertNotEqual(store.invoice_token[0],old_token[0])
+                finally:store.close()

@@ -648,6 +648,7 @@ class Agent:
         business_handoff = None
         current_request = text
         self.paused_invoice_candidate = None
+        self.started_new_matter = False
         self.ticket_preview_candidate = None
         displayed_invoices = self.context.displayed_sql_invoices
         self.context.displayed_sql_invoices = None
@@ -2107,6 +2108,7 @@ class Agent:
 
         def accept_invoice_transition(result,next_pending,planned,runtime_reads,action):
             nonlocal active_pending,explicit_pending_applied,invoice_change
+            if result.get('evidence',{}).get('new_matter_accepted'):self.started_new_matter=True
             read_results.extend(runtime_reads)
             if (result['status'] in {'WAITING_USER','WAITING_CONFIRMATION'}
                     or result.get('evidence',{}).get('business_state_updated')):
@@ -2118,8 +2120,13 @@ class Agent:
             fresh=any(name=='get_invoice' and read['status']=='SUCCESS'
                 and all(read['data'].get(key)==known.get(key) for key in ('company_id','invoice_no'))
                 for name,read in runtime_reads)
+            collection_ready=False
+            if next_pending and next_pending.get('reference_collection'):
+                from .references import display_collection
+                collection_ready=display_collection(self.db_path,self.user_id,**next_pending['reference_collection'])['status']=='SUCCESS'
             if (action=='pause' and result['status']=='WAITING_USER' and next_pending
-                    and fresh and not next_pending.get('blocked_reason')):
+                    and (fresh or collection_ready) and not next_pending.get('blocked_reason')
+                    and not result.get('evidence',{}).get('matter_disposition_required')):
                 paused=self.pause_invoice_update()
                 if paused is not None:
                     active_pending=None
@@ -2402,7 +2409,7 @@ class Agent:
                     if type(route) is not dict:raise BusinessRequestError('读取要求结构无效。')
                     if (business_format_repair_used or business_read_reentry) and route.get('kind') != 'read':
                         raise BusinessRequestError('读取要求结构补正不能切换为其他业务路径。','INVALID_ARGUMENTS')
-                    if route.get('kind')=='legacy' and set(route)<={'kind','turn_action','action_quote','field','field_quote','value_relation','value_quote'}:
+                    if route.get('kind')=='legacy' and set(route)<={'kind','turn_action','action_quote','field','field_quote','value_relation','value_quote','matter_relation','matter_quote'}:
                         action=route.get('turn_action')
                         if action is None:action='continue'
                         quote=route.get('action_quote')
@@ -2412,6 +2419,12 @@ class Agent:
                         if field_quote is None:field_quote=''
                         value_relation=route.get('value_relation')
                         value_quote=route.get('value_quote') or ''
+                        matter_relation=route.get('matter_relation')
+                        matter_quote=route.get('matter_quote') or ''
+                        if (matter_relation is not None and (type(matter_relation) is not str or matter_relation not in {'continue','new','unclear'})
+                                or type(matter_quote) is not str or matter_quote and matter_quote not in current_request
+                                or matter_relation is not None and not matter_quote.strip() or matter_relation is None and matter_quote):
+                            raise BusinessRequestError('事项归属须有当前原话的独立来源。','INVALID_ARGUMENTS')
                         if (value_relation is not None and (type(value_relation) is not str or value_relation not in {'keep','replace','clear','withdraw','unclear'})
                                 or type(value_quote) is not str or value_quote and value_quote not in current_request
                                 or value_relation is not None and not value_quote.strip()
@@ -2431,12 +2444,13 @@ class Agent:
                         business_turn_field=field
                         from .intent_contract import BoundIntent
                         business_revision_origin=BoundIntent('amend',actor,str(self.db_path),self.trace_id,current_request,
-                            {'field':field,'value_relation':value_relation},
-                            {'source':'independent_business_entry','field_quote':field_quote,'value_quote':value_quote})
+                            {'field':field,'value_relation':value_relation,'matter_relation':matter_relation},
+                            {'source':'independent_business_entry','field_quote':field_quote,'value_quote':value_quote,'matter_quote':matter_quote})
                         self.messages.append({'role':'user','name':'harness_business_action',
                             'content':json.dumps({'turn_action':action,'source_quote':quote,
                                 **({'field':field,'field_source_quote':field_quote} if field is not None else {}),
                                 'value_relation':value_relation,'value_quote':value_quote,
+                                'matter_relation':matter_relation,'matter_quote':matter_quote,
                                 'interpretation':'independent_model_business_relation',
                                 'business_authorization':False},ensure_ascii=False)})
                         # Advertise only reachable capabilities for this owner.

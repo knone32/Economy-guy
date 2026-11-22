@@ -53,11 +53,22 @@ def bind_clarification(agent, fields, previous, request, *, field=None, defer_pr
 
 def change_invoice(agent, args, previous, request, *, defer_preview=False,revision_origin=None):
     """Return result, pending state, candidate and actual runtime read evidence."""
+    collection=None
+    matter=None
     try:
+        from .business_sources import checked_revision
+        revision=checked_revision(revision_origin,actor=agent.user_id,book=agent.db_path,current_id=agent.trace_id,current_request=request)
+        matter=revision.get('matter_relation')
+        if previous and (matter=='new' or previous.get('reference_collection') and matter!='continue'):
+            message=('请先明确旧待选事项是保留暂缓还是取消；处置后才能独立办理新事项。' if matter=='new' else
+                '请明确本次是在原集合中继续选票，还是发起新事项；原待补保持不变。')
+            return tool_result('WAITING_USER',data=public_state(previous),error=message,evidence={
+                'source':'harness_business_action','user_message':message,'matter_disposition_required':True,
+                'business_state_updated':False,'business_authorization':False}),previous,None,[]
         target_origin = None
         displays = agent.context.display_ids
         collection=(previous or {}).get('reference_collection')
-        if collection is None and not agent.context.references_blocked and displays:
+        if collection is None and matter!='new' and not agent.context.references_blocked and displays:
             available=display_collection(agent.db_path,agent.user_id,displays)
             if available['status']=='SUCCESS' and len({tuple(sorted(e['key'].items())) for e in available['data']})>1:
                 collection=available['evidence']['reference_collection']
@@ -105,6 +116,7 @@ def change_invoice(agent, args, previous, request, *, defer_preview=False,revisi
             'source':'harness_business_action','user_message':str(error),
             'reason':getattr(error,'reason','source_or_identity'),
             'business_state_updated':getattr(error,'state_updated',False),
+            'new_matter_accepted':previous is None and matter=='new' and partial is not None,
             **({'conflicting_slots':[{'target_year':'year','target_month':'month'}.get(key,key) for key in error.conflicting_slots],
                 'retryable_after_slot_correction':True}
                if getattr(error,'conflicting_slots',None) else {}),
@@ -117,14 +129,15 @@ def change_invoice(agent, args, previous, request, *, defer_preview=False,revisi
         # later fails. Never return the superseded previous change.
         return tool_result(status,error=message,evidence={
             'source':'harness_business_action','user_message':message,
-            'business_state_updated':True,'business_authorization':False}), candidate, None, list(reads)
+            'business_state_updated':True,'new_matter_accepted':previous is None and matter=='new',
+            'business_authorization':False}), candidate, None, list(reads)
     known = public_state(candidate)['known']
     def waiting(reads=()):
         question = ('请明确要修改的字段和对应内容，或确认是否替换上一要求；原要求暂不继续。'
                     if candidate.get('blocked_reason') == 'ambiguous_business_choice' else None)
         return tool_result('WAITING_USER', data=public_state(candidate), evidence={
             'source':'harness_business_action', 'missing_fields':list(candidate['missing_fields']),
-            'user_message':question, 'business_authorization':False}), candidate, None, list(reads)
+            'user_message':question,'new_matter_accepted':previous is None and matter=='new', 'business_authorization':False}), candidate, None, list(reads)
     if any(key not in known for key in ('company_id', 'invoice_no')):
         return waiting()
     if not agent.workbook_available():
@@ -179,7 +192,7 @@ def change_invoice(agent, args, previous, request, *, defer_preview=False,revisi
     planned, status, error = plan_invoice_change(agent, candidate['source_request'], proposal, selection,
         authorized_periods=((day.year,day.month),), read_results=reads, scoped_edit=bound)
     result = tool_result(status, data=public_state(candidate), evidence={
-        'source':'harness_business_action', 'business_authorization':False}, error=error)
+        'source':'harness_business_action','new_matter_accepted':previous is None and matter=='new', 'business_authorization':False}, error=error)
     if planned:
         # Only source-checked business slots survive interruption. Draft,
         # request/fingerprint approval and current invoice values never do.
