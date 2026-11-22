@@ -41,8 +41,20 @@ def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
     try:
         from .gui_server import main as serve
+        launch_root=Path(sys.executable).resolve().parent if getattr(sys,'frozen',False) else None
+        if launch_root is not None:
+            account_file=launch_root/'config/accounts.json'
+            account=json.loads(account_file.read_text(encoding='utf-8'))
+            if (account.get('identity_mode')!='local_trusted_simulation'
+                    or account.get('active_user_id') not in {item['user_id'] for item in account['accounts']}):
+                raise ValueError('本机模拟账号配置无效')
+            for option,value in (('--user',account['active_user_id']),('--profile',account['model_profile']),
+                    ('--port',0),
+                    ('--profiles-file',launch_root/'config/model_profiles.toml'),
+                    ('--profiles-local',launch_root/'config/model_profiles.local.json')):
+                if option not in args and not any(a.startswith(option+'=') for a in args):args += [option,str(value)]
         if '--db' not in args and not any(arg.startswith('--db=') for arg in args):
-            book, sessions = demo_paths(os.environ.get('ECONOMYGUY_DEMO_DIR'))
+            book, sessions = demo_paths(launch_root/'data' if launch_root is not None else os.environ.get('ECONOMYGUY_DEMO_DIR'))
             args += ['--db', str(book)]
             if '--session' not in args and not any(arg.startswith('--session=') for arg in args):
                 args += ['--session', str(sessions)]
@@ -50,7 +62,9 @@ def main(argv=None):
             if option not in args and not any(arg.startswith(option+'=') for arg in args):
                 value=startup_environment(variable)
                 if value:args += [option, value]
-        if '--open' not in args:
+        if launch_root is not None and '--embedded' not in args:
+            args.append('--embedded')
+        elif '--embedded' not in args and '--open' not in args:
             args.append('--open')
         print('本机工作台；U001/U002 为比赛模拟身份，不是登录认证。')
         print('缺配置请使用原工作台配置入口；本启动器不会索取、保存或打印密钥。')

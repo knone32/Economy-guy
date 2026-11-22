@@ -59,6 +59,16 @@
     .app[data-view="settings"] > .sidebar,
     .app[data-view="settings"] > .chat-panel,
     .app[data-view="settings"] > .context { display: none; }
+    .app[data-view="workspace"] > .sidebar,.app[data-view="workspace"] > .chat-panel,
+    .app[data-view="workspace"] > .context,.app[data-view="records"] > .sidebar,
+    .app[data-view="records"] > .chat-panel,.app[data-view="records"] > .context {display:none}
+    .app[data-view="workspace"] > #workspace-view,.app[data-view="records"] > #records-view {display:block}
+    .workspace-controls {display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin:12px 0}
+    .workspace-controls label {display:grid;gap:5px;font-size:12px;color:var(--muted)}
+    input,select {font:inherit;padding:8px;border:1px solid var(--line);border-radius:7px;max-width:100%}
+    .business-table {width:100%;border-collapse:collapse;font-size:13px}
+    .business-table td,.business-table th {padding:9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+    .business-scroll {overflow:auto}.workspace-facts {white-space:pre-wrap;line-height:1.7;font-size:13px}
     .app[data-view="todos"] > #todos-view,
     .app[data-view="settings"] > #settings-view { display: block; }
     .view-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 14px; }
@@ -208,6 +218,8 @@
     <nav class="nav" aria-label="工作台导航">
       <button class="nav-btn active" data-view="chat">对话</button>
       <button class="nav-btn" data-view="todos">待办</button>
+      <button class="nav-btn" data-view="workspace">业务查询</button>
+      <button class="nav-btn" data-view="records">记录</button>
       <button class="nav-btn" data-view="settings">设置</button>
     </nav>
     <div class="identity">
@@ -300,7 +312,7 @@
       </section>
       <section class="settings-card">
         <h2>已有 Profile</h2>
-        <div class="sub">来自原配置目录的可见 Profile；只用于下次启动命令，不热切换。</div>
+        <div class="sub">可直接切换已有Profile；须先处理待补、预览或未知提交。</div>
         <select id="profile-select" aria-label="选择已有 Profile"></select>
         <div class="settings-note" id="profile-note">读取中…</div>
         <pre id="profile-command"></pre>
@@ -308,7 +320,59 @@
         <button class="btn small" id="copy-profile-command">复制启动命令</button>
         <div class="settings-warning" id="switch-gaps"></div>
       </section>
+      <section class="settings-card">
+        <h2>账号与账簿</h2><p class="sub">本机模拟身份，非登录认证。由受信宿主重新绑定，旧上下文和批准不随切换继承。</p>
+        <select id="binding-select" aria-label="宿主登记的账号和账簿"></select>
+        <button class="btn small" id="apply-binding">切换绑定</button>
+        <h3>导入为新账簿</h3><input type="file" id="workbook-file" accept=".xlsx">
+        <button class="btn small" id="import-book">导入xlsx（不覆盖当前库）</button>
+      </section>
+      <section class="settings-card">
+        <h2>模型配置与本机密钥</h2><p class="sub">仅配置当前模拟账号的Profile；密钥写入Windows凭据库，不进入账簿、聊天或交付包。</p>
+        <div class="workspace-controls">
+          <label>配置名称<input id="edit-profile-name" value="shared-flash" autocomplete="off"></label>
+          <label>服务商<select id="edit-provider"><option value="deepseek">DeepSeek</option><option value="openai">OpenAI</option><option value="openai-compatible">兼容服务</option></select></label>
+          <label>模型<input id="edit-model" value="deepseek-flash"></label>
+          <label>HTTPS服务地址<input id="edit-url" value="https://api.deepseek.com"></label>
+          <label>API密钥<input id="edit-key" type="password" autocomplete="new-password" placeholder="留空不更改已有密钥"></label>
+        </div><button class="btn primary small" id="save-profile">保存配置 / 本机密钥</button>
+      </section>
     </div>
+  </section>
+  <section class="panel workspace-view" id="workspace-view">
+    <div class="view-head"><div><h1>业务查询</h1><p>复用原只读服务，无需调用AI；展示后登记可信引用，继续办理仍须核权、重读与确认。</p></div></div>
+    <div class="workspace-controls">
+      <label>企业<select id="browse-company"></select></label>
+      <label>账期<input id="browse-period" type="month" list="browse-known-periods"><datalist id="browse-known-periods"></datalist></label>
+      <label>业务<select id="browse-kind">
+        <option value="list_invoice_directory">发票目录</option><option value="get_invoice">指定发票详情</option>
+        <option value="list_bank_transactions">银行流水</option><option value="get_finance_summary">综合财务汇总</option>
+        <option value="check_missing_purpose">用途缺项检查</option><option value="get_applicable_rules">当前适用规则</option>
+        <option value="list_rule_versions">规则版本</option><option value="list_materials">业务资料目录</option>
+      </select></label>
+      <label>票号 / 规则编号<input id="browse-reference" placeholder="例如 F005 / R002"></label>
+      <label>银行方向<select id="browse-direction"><option value="">全部收支</option><option>收入</option><option>支出</option></select></label>
+      <label>排序<select id="browse-sort"><option value="date">日期</option><option value="amount">金额</option><option value="invoice_no">票号</option></select></label>
+      <button class="btn primary" id="browse-run">查询</button>
+      <button class="btn small" id="browse-prev">上一页</button><button class="btn small" id="browse-next">下一页</button>
+    </div><div class="hint" id="browse-status"></div>
+    <div class="workspace-facts" id="browse-facts"></div><div class="business-scroll" id="browse-table"></div>
+    <div class="settings-card" style="margin-top:16px"><h2>业务助手与偏好</h2>
+      <p class="sub">助手来自当前账号已有配置；偏好更改复用原管理预览与真人确认，不改变发票或权限。</p>
+      <div class="workspace-controls"><label>已启用助手<select id="assistant-select"></select></label>
+        <button class="btn small" id="apply-assistant">切换业务助手</button></div>
+      <div class="workspace-controls"><label>偏好操作<select id="preference-action"><option value="create">新增</option><option value="update">修改</option><option value="delete">删除</option></select></label>
+        <label>名称<input id="preference-key" maxlength="80"></label><label>内容<input id="preference-value" maxlength="500"></label>
+        <button class="btn small" id="prepare-preference">核对企业偏好更改</button></div>
+      <div class="buttons"><button class="btn small" id="ask-preferences">查看企业偏好</button>
+      <button class="btn small" id="ask-material">查阅资料原文</button></div>
+      <div class="workspace-controls"><label>个人阅读习惯<select id="personal-detail"><option>简洁</option><option>详细</option><option>普通</option></select></label>
+        <button class="btn small" id="save-personal">核对个人阅读习惯</button><span class="hint" id="personal-current"></span></div>
+    </div>
+  </section>
+  <section class="panel workspace-view" id="records-view">
+    <div class="view-head"><div><h1>业务记录</h1><p>当前账号和账簿下的会话及操作回执，均为当时记录；当前事实需要重新读取。</p></div></div>
+    <div id="records-list"></div>
   </section>
 </div>
 
@@ -444,6 +508,7 @@ function render() {
   renderPreview();
   renderTodos();
   renderSettings();
+  if (typeof renderWorkspace === 'function') renderWorkspace();
   updatePreviewWatch();
   if (S.error) toast(S.error, true);
   else if (S.notice) toast(S.notice);
@@ -885,5 +950,6 @@ $("copy-profile-command").addEventListener("click", async () => {
 
 refresh().catch((error) => toast(error.message, true));
 </script>
+<script src="/workspace.js"></script>
 </body>
 </html>

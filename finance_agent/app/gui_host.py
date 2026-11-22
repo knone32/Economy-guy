@@ -79,6 +79,7 @@ class GuiHost:
         self._last_context = None
         self._confirmation = None
         self._confirmation_expired = False
+        self._closing=False
         self._connection_info = {
             "mode": self.mode,
             "connected": False,
@@ -93,6 +94,8 @@ class GuiHost:
                                 require_display_ack=True, profiles=self.profiles)
         self._last = self.host.snapshot()
         self._last_context = self._last.get("context")
+        self._bindings={}
+        self._register_book(self.db_path)
 
     # ------------------------------------------------------------------ agent factory
     def _factory(self, actor, workbook):
@@ -102,7 +105,15 @@ class GuiHost:
                 options["template"] = self.profiles_file
             if self.profiles_local is not None:
                 options["local"] = self.profiles_local
-            connection, self.startup_diagnostics = self.profiles.resolve_with_diagnostics(actor,self.profile)
+            try:
+                connection, self.startup_diagnostics = self.profiles.resolve_with_diagnostics(actor,self.profile)
+            except (ProfileError,PermissionError) as error:
+                self.startup_diagnostics=getattr(error,'diagnostic',{'status':'CONFIG_UNAVAILABLE'})
+                self._connection_info={'mode':'live','connected':False,'profile':self.profile,
+                    'model':None,'base_url':None,'provider':None,'message':'请先在设置中配置模型和本机密钥。'}
+                def unavailable(*args):raise GuiError('模型尚未配置，未发送API请求。')
+                return Agent(actor,workbook,model=unavailable,mode='mock',trace_path=self.trace_path,
+                    max_context_chars=self._max_context_chars)
             bound = connection
             self.profile = bound.profile.profile_name
             self._connection_info = {
@@ -132,7 +143,7 @@ class GuiHost:
     def _settings(self):
         """Presentation of host-owned connection config; no secrets, no switch."""
         info = dict(self._connection_info)
-        live = info.get("mode") == "live"
+        live = self.mode == "live"
         if live and info.get("connected"):
             status, label = "CONFIGURED", "已有配置已绑定；服务调用另行验证"
         elif live:
@@ -170,13 +181,118 @@ class GuiHost:
                 "base_url": info.get("base_url"),
             },
             "profiles": profiles,
+            "bindings":[{'id':key,'label':value['label'],'current':value['actor']==self.user_id and value['book']==self.db_path}
+                        for key,value in getattr(self,'_bindings',{}).items()],
+            "companies":self.workspace_catalog(),
+            "assistants":self.assistant_choices(),
+            "assistant_id":self.host.agent.assistant_id,
+            "personal_detail":self.store.personal_detail(),
             "launch": self.launch_description(),
             "switching": {
-                "account": "账号须由受信宿主重新核权绑定；当前本机账号为模拟身份，不是登录认证。",
-                "workbook": "账簿须由受信宿主重新绑定会话；未配置宿主选择策略时不开放页面切换。",
+                "account": "可选择宿主登记的模拟账号；切换会重新核权，不是登录认证。",
+                "workbook": "可选择已登记账簿或将xlsx导入为新库；原库不覆盖，待补和批准不跨绑定继承。",
                 "model": "已有 Profile 可通过原宿主切换；待补、预览和未知提交须先处理。",
             },
         }
+
+    def _register_book(self, book):
+        """Host-owned options; browser receives opaque selectors, never authority."""
+        book=Path(book).resolve()
+        with closing(sqlite3.connect(book.as_uri()+'?mode=ro',uri=True)) as db:
+            users=db.execute('SELECT user_id,name FROM users').fetchall()
+        for actor,name in users:
+            if not any(b['actor']==actor and b['book']==book for b in self._bindings.values()):
+                self._bindings[uuid.uuid4().hex]={'actor':actor,'book':book,'label':f'{name}（{actor}） · {book.name}'}
+
+    def workspace_catalog(self):
+        from .queries import available_periods
+        rows=[]
+        try:
+            with closing(sqlite3.connect(self.db_path.as_uri()+'?mode=ro',uri=True)) as db:
+                db.row_factory=sqlite3.Row
+                for company in company_access(self.db_path,self.user_id):
+                    if company['read']:
+                        rows.append({**company,'periods':[r[0] for r in available_periods(db,self.user_id,company['company_id'])]})
+        except (OSError,ValueError,sqlite3.Error):pass
+        return rows
+
+    def assistant_choices(self):
+        try:
+            with closing(sqlite3.connect(self.db_path.as_uri()+'?mode=ro',uri=True)) as db:
+                if not db.execute("SELECT 1 FROM sqlite_master WHERE name='assistant_config'").fetchone():return []
+                return [{'id':key,'name':json.loads(body)['name']} for key,body in db.execute(
+                    "SELECT id,body FROM assistant_config WHERE owner=? AND kind='assistant' AND enabled=1",(self.user_id,))]
+        except (OSError,ValueError,sqlite3.Error):return []
+
+    def select_assistant(self, identifier, context=None):
+        from .assistant_config import refresh_assistant
+        def change(expected):
+            with self.host._command(expected):
+                self.host._transition_ready()
+                if identifier not in {item['id'] for item in self.assistant_choices()}:
+                    raise GuiError('当前账号没有这个已启用的业务助手。')
+                agent=self.host.agent;old=agent.assistant_id;tools=agent.allowed_tools
+                agent.assistant_id=identifier
+                try:refresh_assistant(agent)
+                except Exception:agent.assistant_id=old;agent.allowed_tools=tools;raise
+            return self.host.snapshot()
+        return self._command(change,context)
+
+    def preference_change(self, value, context=None):
+        return self._start_action(lambda expected:self.host.manage_preference(None if value.get('scope')=='personal' else value.get('company_id'),
+            value.get('action'),value.get('key'),value.get('value',''),expected=expected),context)
+
+    def read_business(self, name, arguments, context=None):
+        return self._command(lambda expected:self.host.read_business(name,arguments,expected=expected),context)
+
+    def select_binding(self, selector, context=None):
+        choice=self._bindings.get(selector)
+        if choice is None:raise GuiError('该账号或账簿未由宿主登记，请刷新。')
+        def factory():
+            book=choice['book'];actor=choice['actor']
+            session=self.session_path if book==self.db_path else book.parent/'sessions.sqlite3'
+            return SessionStore(session,book,actor),self._factory,self.profiles
+        return self.rebind_from_host(factory,context=context)
+
+    def import_workbook(self, name, content, context=None):
+        import base64
+        from .cli_workspaces import import_workspace
+        if not isinstance(name,str) or not name.lower().endswith('.xlsx'):
+            raise GuiError('只接受原导入器支持的xlsx账簿，导入为新库，不覆盖当前库。')
+        with self.host._command(context or self._last_context):
+            self.host._transition_ready()
+            data=base64.b64decode(content,validate=True)
+            if not 0<len(data)<=5_000_000:raise GuiError('账簿文件为空或超过5MB。')
+            root=self.session_path.parent/'imports'/uuid.uuid4().hex;root.mkdir(parents=True)
+            original=root/'source.xlsx';original.write_bytes(data)
+            book=root/'workbook.sqlite3'
+            import_workspace(original,book)
+            self._register_book(book)
+        return self.snapshot(notice='已导入为独立账簿，请在设置中选择新绑定；原账簿未覆盖。')
+
+    def save_profile(self, value, context=None):
+        from .model_config import add_profile,resolve_connection
+        from .win_vault import WindowsVault,profile_target
+        from dataclasses import asdict
+        with self.host._command(context or self._last_context):
+            self.host._transition_ready()
+            name=str(value.get('profile_name','')).strip()
+            existing=[p for p in visible_profiles(self.user_id,**self.profiles.options) if p['profile_name']==name]
+            if existing:
+                profile=resolve_connection(self.user_id,name,require_key=False,**self.profiles.options).profile
+                if any(value.get(k) and value[k]!=getattr(profile,k) for k in ('provider','model','base_url')):
+                    raise GuiError('修改连接身份请另建Profile名称，原配置保持不变。')
+            else:
+                public={'profile_name':name,'scope':'user','owner_user_id':self.user_id,
+                    'provider':value.get('provider'),'model':value.get('model'),'base_url':value.get('base_url'),
+                    'api_key_env':'ECONOMYGUY_'+uuid.uuid4().hex.upper(),'protocol':'auto'}
+                add_profile(public,user_id=self.user_id,**self.profiles.options)
+                profile=resolve_connection(self.user_id,name,require_key=False,**self.profiles.options).profile
+            secret=value.get('api_key','')
+            if secret:
+                if type(secret) is not str:raise GuiError('密钥格式无效。')
+                WindowsVault().write(profile_target(profile,self.user_id),secret)
+        return self.snapshot(notice='配置已保存；密钥仅保存在本机Windows凭据库。请选择该Profile并使用。')
 
     def launch_description(self):
         """Only non-secret, host-bound arguments; never reconstruct identity in JS."""
@@ -288,7 +404,7 @@ class GuiHost:
     # ------------------------------------------------------------------ send worker
     def _worker_run(self, text, expected):
         try:
-            raw = self.host.send_message(text, expected=expected)
+            raw = text(expected) if callable(text) else self.host.send_message(text, expected=expected)
             self._last = raw
             self._last_context = raw.get("context")
             self._error = None
@@ -307,11 +423,18 @@ class GuiHost:
                 self._cond.notify_all()
 
     def send(self, text, context=None):
+        if self._closing:raise GuiError('工作台正在关闭，请重新启动。')
+        if self.mode=='live' and not self._connection_info.get('connected'):
+            raise GuiError('请先在设置中保存模型密钥并选用Profile；本轮未发送API请求。')
         text = str(text or "").strip()
         if not text:
             raise GuiError("消息不能为空。")
         if len(text) > 4000:
             raise GuiError("本轮消息过长，请缩小范围。")
+        return self._start_action(text,context)
+
+    def _start_action(self, text, context=None):
+        """Reuse the original worker/confirmation bridge for a trusted command."""
         with self._cond:
             if self._busy or self._confirmation:
                 raise GuiError("当前受理尚未结束，请先完成预览、暂缓或取消。")
@@ -576,6 +699,7 @@ class GuiHost:
             "receipt": receipt,
             "persistence": self._persistence(raw),
             "current_result": current,
+            "workspace": raw.get('workspace'),
             "busy": bool(self._busy),
             "business_status": status,
             "notice": None,
@@ -602,6 +726,7 @@ class GuiHost:
 
     # ------------------------------------------------------------------ session commands
     def _command(self, action, context=None):
+        if self._closing:raise GuiError('工作台正在关闭，请重新启动。')
         expected = context or self._last_context
         if not isinstance(expected, dict):
             raise GuiError("缺少当前会话上下文，请刷新页面。")
@@ -704,3 +829,11 @@ class GuiHost:
 
     def close(self):
         self.store.close()
+
+    def request_close(self, context):
+        with self._cond:
+            if self._busy or self._confirmation:raise GuiError('请先处理运行请求或当前预览。')
+            with self.host._command(context):
+                self.host._transition_ready()
+                self._closing=True
+        return {'window_close_allowed':True}

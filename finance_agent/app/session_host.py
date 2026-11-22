@@ -177,6 +177,7 @@ class SessionHost:
                         and self._display_ready() else None),
             'conversation': self.conversation_view(),
             'result': current_result if not historical else None,
+            'workspace': response.get('ui_result') if not historical else None,
             'historical_result': current_result if historical else None})
 
     def conversation_view(self):
@@ -212,6 +213,39 @@ class SessionHost:
                 response['display_anchors'] = anchors
                 self.store.acknowledge_display(trace, agent.context.reference_state_snapshot())
                 response['display_acknowledged'] = True
+        return self.snapshot()
+
+    def manage_preference(self, company, action, key, value, *, expected):
+        """Use the same source-bound management confirmation as TUI settings."""
+        from .persistence import ManagementIntent,ManagementTurn,confirm_management
+        from .preferences import manage_preference
+        from .stage2_schema import open_existing
+        from contextlib import closing
+        personal=company is None
+        if (action not in ({'set','delete'} if personal else {'create','update','delete'}) or type(key) is not str or type(value) is not str
+                or len(key)>80 or len(value)>500 or redact([key,value])!=[key,value]):
+            raise ValueError('请选择有效偏好操作并移除可能的凭据。')
+        with self._command(expected):
+            self._transition_ready();actor=self.store.actor
+            text='企业偏好：'+str(company)+'；'+str(key)+'；'+str(value)
+            intent=ManagementIntent(actor,'display_preference' if personal else 'preference',text,action,turn=ManagementTurn(actor))
+            def service(witness):
+                if personal:return self.store.manage_detail(action,value,witness)
+                return manage_preference(self.store.workbook,actor,company,action,key,value,witness)
+            try:
+                proposed=service(intent)
+                if proposed['status']!='WAITING_CONFIRMATION':raise SessionConflict(proposed.get('error') or '偏好未准备。')
+                old=(proposed['data'].get('current') or {}).get('value','（无）')
+                body=f'当前账号 {actor}\n企业 {company}\n偏好 {key}\n原值 {old}\n新值 {value if action!="delete" else "（删除）"}\n仅影响表达偏好，不修改发票或权限。'
+                if self._approval('确认企业偏好更改',body,'preference') is True:
+                    outcome=service(confirm_management(intent,proposed['data']))
+                    message=('偏好已保存并回读。' if outcome['status']=='SUCCESS' and outcome.get('evidence',{}).get('preference_readback_verified')
+                             else outcome.get('error') or '偏好当前值尚未核实，请重新查询。')
+                else:message='已取消企业偏好修改，未保存。'
+                seq=self.store.begin(text,self._agent.mode);self._agent.trace_id=uuid4().hex
+                self._agent.last_response={'category':'operation_result','text':message,'tool_results':[]}
+                self._save(seq,len(self._agent.messages),message)
+            finally:intent.turn.active=False
         return self.snapshot()
 
     def _display_ready(self):
@@ -410,6 +444,58 @@ class SessionHost:
                 self._save(seq, offset, '本轮中断，请核查当前状态。', state=state, operation=operation)
                 raise
             self._save(seq, offset, output, state=state, operation=operation)
+        return self.snapshot()
+
+    def read_business(self, name, arguments, *, expected):
+        """Structured UI equivalent of the existing TUI read-only menus.
+
+        No model proposal or SQL is accepted; original Handler ACL/schema and
+        the existing save/render/ACK path remain authoritative.
+        """
+        allowed={'list_invoice_directory','get_invoice','list_bank_transactions',
+            'get_finance_summary','check_missing_purpose','get_applicable_rules',
+            'list_rule_versions','list_materials','open_material_reference','manage_preference'}
+        if name not in allowed or type(arguments) is not dict:
+            raise SessionConflict('该入口只允许已登记的只读业务查询。')
+        if name=='manage_preference' and arguments.get('action')!='list':
+            raise SessionConflict('偏好写入必须走原预览确认入口。')
+        from .tool_registry import handle_tool,validate_arguments
+        from .provenance import ScopeProof
+        from .responses import render_tool_failure
+        with self._command(expected):
+            self._transition_ready()
+            if self.require_display_ack and self._display_ready() and not (self._agent.last_response or {}).get('display_acknowledged'):
+                raise SessionConflict('请先展示并核对当前查询结果。')
+            args=validate_arguments(name,json.dumps(arguments,ensure_ascii=False))
+            agent=self._agent
+            scope={key:[args[key]] for key in ('company_id','year','month','invoice_no') if key in args}
+            if args.get('year') and args.get('month'):scope['periods']=[(args['year'],args['month'])]
+            labels={'list_invoice_directory':'发票目录','get_invoice':'发票详情','list_bank_transactions':'银行流水',
+                'get_finance_summary':'综合汇总','check_missing_purpose':'用途缺项','get_applicable_rules':'适用规则',
+                'list_rule_versions':'规则版本','list_materials':'业务资料','open_material_reference':'资料原文','manage_preference':'企业偏好'}
+            text='界面只读查询：'+labels[name]+'；企业 '+str(args.get('company_id',''))
+            if args.get('year'):text+='；%s年%s月'%(args['year'],args.get('month',0))
+            if args.get('invoice_no'):text+='；发票 '+args['invoice_no']
+            seq=self.store.begin(text,agent.mode);offset=len(agent.messages)
+            agent.trace_id=uuid4().hex
+            agent.coordinator.begin(text)
+            agent.business_request=agent._last_business_request=None
+            agent.context.begin(text,len(agent.messages),explicit=scope)
+            raw=json.dumps(args,ensure_ascii=False);call_id='ui-'+agent.trace_id
+            result=handle_tool(name,raw,self.store.actor,self.store.workbook,
+                allowed_tools=agent.allowed_tools,expected_scope=scope,
+                provenance=ScopeProof(self.store.actor,scope,dict.fromkeys(scope,'user_current')))
+            output=render_information([(name,result)]) if result['ok'] else render_tool_failure(result['status'],name,result)
+            agent.messages.extend([{'role':'user','content':text},
+                {'role':'assistant','content':None,'tool_calls':[{'id':call_id,'type':'function',
+                    'function':{'name':name,'arguments':raw}}]},
+                {'role':'tool','tool_call_id':call_id,'content':json.dumps(result,ensure_ascii=False)},
+                {'role':'assistant','content':output}])
+            agent.last_response={'category':'database_query','text':output,'tool_results':[(name,result)],
+                'write_expected':False,'delivery_source':'structured_ui_original_service',
+                'ui_result':{'name':name,'arguments':args,'result':result},
+                'execution':{'model_requests':0,'actual_tool_calls':1,'stop_reason':result['status']}}
+            self._save(seq,offset,output)
         return self.snapshot()
 
     def _item_decision(self, body):

@@ -11,7 +11,6 @@ import json
 import secrets
 import sys
 import threading
-import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -59,7 +58,7 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             length = 0
-        if length <= 0 or length > 200_000:
+        if length <= 0 or length > (7_000_000 if self.path=='/api/import_workbook' else 200_000):
             raise GuiError("请求体为空或过大。")
         raw = self.rfile.read(length)
         try:
@@ -103,6 +102,20 @@ class Handler(BaseHTTPRequestHandler):
                 return host.open_task(str(value.get('company_id','')),str(value.get('task_id','')),context=value.get('context'))
             if name == 'profile':
                 return host.switch_profile(str(value.get('profile_name','')),context=value.get('context'))
+            if name == 'read_business':
+                return host.read_business(value.get('name'),value.get('arguments'),context=value['context'])
+            if name == 'binding':
+                return host.select_binding(value.get('selector'),context=value['context'])
+            if name == 'import_workbook':
+                return host.import_workbook(value.get('name'),value.get('content'),context=value['context'])
+            if name == 'profile_save':
+                return host.save_profile(value,context=value['context'])
+            if name == 'assistant':
+                return host.select_assistant(value.get('identifier'),context=value['context'])
+            if name == 'preference':
+                return host.preference_change(value,context=value['context'])
+            if name == 'close':
+                return host.request_close(value['context'])
             raise GuiError("未知操作。")
         except GuiError as error:
             self._error(409, str(error), "conflict")
@@ -114,6 +127,10 @@ class Handler(BaseHTTPRequestHandler):
             self._error(500, "本机宿主处理失败；未确认任何业务成功。", "host_failure")
 
     def do_GET(self):
+        if self.path=='/workspace.js':
+            data=(Path(__file__).resolve().parents[1]/'gui/workspace.js').read_bytes()
+            self.send_response(200);self.send_header('Content-Type','application/javascript; charset=utf-8')
+            self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data);return
         # The page carries the per-process token; the initial browser
         # navigation cannot set X-GUI-Token. JSON endpoints still require it.
         if self.path in {"/", "/index.html"}:
@@ -150,7 +167,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         route = self.path.removeprefix("/api/")
         if route not in {"message", "switch", "new", "preview_confirm", "preview_cancel",
-                         "pause", "cancel", "resume", "inspect", "acknowledge", "task_details", "task_open", "profile"}:
+                         "pause", "cancel", "resume", "inspect", "acknowledge", "task_details", "task_open", "profile",
+                         "read_business","binding","import_workbook","profile_save","assistant","preference","close"}:
             self._error(404, "未找到。", "not_found")
             return
         try:
@@ -188,6 +206,7 @@ def main(argv=None):
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--trace", type=Path, default=None)
     parser.add_argument("--open", action="store_true", help="启动后打开默认浏览器")
+    parser.add_argument("--embedded", action="store_true", help="使用原生WebView2内嵌窗口")
     args = parser.parse_args(argv)
     if not args.db.is_file():
         print("账簿不存在：" + str(args.db), file=sys.stderr)
@@ -212,16 +231,28 @@ def main(argv=None):
     except OSError as error:
         print("无法监听本机端口：" + str(error), file=sys.stderr)
         return 2
-    url = "http://%s:%d/" % (args.host, args.port)
+    url = "http://%s:%d/" % (args.host, server.server_address[1])
     print("Economy-guy GUI:", url)
     print("账号/账簿：%s / %s" % (args.user, host.db_path))
-    print("本机受信宿主；浏览器不能传 user_id/approved/confirmed。按 Ctrl+C 停止。")
-    if args.open:
-        threading.Timer(0.4, lambda: webbrowser.open(url)).start()
+    print("本机受信宿主；浏览器不能传 user_id/approved/confirmed。"+
+        ("处理完待补、预览或未知提交后关闭内嵌窗口退出。" if args.embedded else "按 Ctrl+C 停止。"))
+    worker=None
     try:
-        server.serve_forever()
+        if args.embedded:
+            from .embedded_browser import start_window
+            worker=threading.Thread(target=server.serve_forever,daemon=True)
+            worker.start()
+            start_window(url,token)
+        else:
+            if args.open:
+                import webbrowser
+                threading.Timer(0.4,lambda:webbrowser.open(url)).start()
+            server.serve_forever()
     except KeyboardInterrupt:
         pass
+    except Exception as error:
+        print('工作台窗口启动失败：'+str(error),file=sys.stderr)
+        return 2
     finally:
         server.shutdown()
         server.server_close()
