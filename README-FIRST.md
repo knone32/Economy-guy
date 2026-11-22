@@ -1,4 +1,4 @@
-> 本包为 pending-relationships 独立修复候选，未发布。程序、冷启动和 Live 不混算；同 SHA 冷启动回执随包外附。新模型验收尚待另行授权。修复与接口见 [记录](docs/ops/PENDING-RELATIONSHIP-REPAIR.md)。
+> 本包为跨月范围与事项候选恢复的修复候选，未发布。新增边界仅离线验证；既有Live、冷启动及真人证据保留原SHA，不迁移为本包成绩。源码SHA、同版回归及ZIP哈希见包外FROZEN.public.json。修复说明见 [记录](docs/ops/SCOPE-CANDIDATE-RESTORE.md)。
 
 # 当前 GUI 交付入口
 

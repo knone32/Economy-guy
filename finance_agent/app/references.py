@@ -2,6 +2,7 @@ from contextlib import closing
 """展示锚点的单一存储及当前发票重查；不保存业务字段或写入授权。"""
 import json
 import sqlite3
+from datetime import date
 from uuid import uuid4
 from .stage2_schema import open_existing
 from .permissions import check_permission
@@ -33,30 +34,27 @@ def _available(connection):
     return bool(connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='reference_anchors'").fetchone())
 
 
+def _record_display(connection, user_id, display_id, groups):
+    anchors=[]
+    for group in groups:
+        scope,keys=group['scope'],group['keys']
+        company=scope['company_id']
+        if not check_permission(connection,user_id,company,'read').allowed:continue
+        if not keys or any(key['company_id']!=company for key in keys):
+            raise ValueError('展示锚点必须使用同企业联合键')
+        anchor_id=uuid4().hex
+        connection.execute("""INSERT INTO reference_anchors
+            (anchor_id,display_id,user_id,company_id,year,month,source,keys_json)
+            VALUES (?,?,?,?,?,?,?,?)""",(anchor_id,display_id,user_id,company,
+            scope.get('year'),scope.get('month'),group['source'],json.dumps(keys)))
+        anchors.append({'anchor_id':anchor_id,'scope':scope,'source':group['source'],'count':len(keys)})
+    return anchors
+
+
 def record_display(path, user_id, display_id, groups):
     """仅由真实展示路径调用；按展示顺序保存联合键，不持久化用途、金额等旧值。"""
-    connection = open_existing(path)
-    try:
-        with connection:
-            if not _available(connection):
-                return []
-            anchors = []
-            for group in groups:
-                scope, keys = group["scope"], group["keys"]
-                company = scope["company_id"]
-                if not check_permission(connection,user_id,company,"read").allowed:
-                    continue
-                if not keys or any(key["company_id"] != company for key in keys):
-                    raise ValueError("展示锚点必须使用同企业联合键")
-                anchor_id = uuid4().hex
-                connection.execute("""INSERT INTO reference_anchors
-                    (anchor_id,display_id,user_id,company_id,year,month,source,keys_json)
-                    VALUES (?,?,?,?,?,?,?,?)""", (anchor_id,display_id,user_id,company,
-                    scope.get("year"),scope.get("month"),group["source"],json.dumps(keys)))
-                anchors.append({"anchor_id":anchor_id,"scope":scope,"source":group["source"],"count":len(keys)})
-            return anchors
-    finally:
-        connection.close()
+    with closing(open_existing(path)) as connection,connection:
+        return _record_display(connection,user_id,display_id,groups) if _available(connection) else []
 
 
 def invalidate_references(path, user_id, *, invoice=None):
@@ -118,24 +116,53 @@ def reference_catalog(path, user_id, scope=None, *, display_ids=None):
         connection.close()
 
 
-def validate_collection_origin(path, user_id, collection):
-    """Restore unapproved requirements, not a live selection or any approval.
-
-    Retired owned anchors preserve the old requirement through pause/cancel of
-    live context. Dispatch still requires display_collection's active sources.
-    """
+def _collection_origin_rows(db, user_id, collection):
     if (type(collection) is not dict or set(collection)!={'display_ids','anchor_ids'}
             or any(type(values) not in (list,tuple) or not values or len(values)>64
                 or any(type(v) is not str or not v for v in values) for values in collection.values())):
         raise ValueError('原展示集合来源无效。')
-    ids=collection['anchor_ids']
+    ids=list(dict.fromkeys(collection['anchor_ids']))
+    rows=db.execute('SELECT * FROM reference_anchors WHERE user_id=? AND anchor_id IN ('
+        +','.join('?' for _ in ids)+')',(user_id,*ids)).fetchall()
+    if {row['anchor_id'] for row in rows}!=set(ids) or any(row['display_id'] not in collection['display_ids'] for row in rows):
+        raise ValueError('原展示集合不属于该账号或已丢失。')
+    if any(not all(check_permission(db,user_id,row['company_id'],op).allowed for op in ('read','modify')) for row in rows):
+        raise PermissionError('原展示集合的办理权限已变化。')
+    indexed={row['anchor_id']:row for row in rows}
+    return [indexed[key] for key in ids]
+
+
+def validate_collection_origin(path, user_id, collection):
+    """Validate saved ownership, not live selection, current facts or approval."""
     with closing(open_existing(path,readonly=True)) as db:
-        rows=db.execute('SELECT anchor_id,display_id,company_id FROM reference_anchors WHERE user_id=? AND anchor_id IN ('
-            +','.join('?' for _ in ids)+')',(user_id,*ids)).fetchall()
-        if {row['anchor_id'] for row in rows}!=set(ids) or any(row['display_id'] not in collection['display_ids'] for row in rows):
-            raise ValueError('原展示集合不属于该账号或已丢失。')
-        if any(not all(check_permission(db,user_id,row['company_id'],op).allowed for op in ('read','modify')) for row in rows):
-            raise PermissionError('原展示集合的办理权限已变化。')
+        _collection_origin_rows(db,user_id,collection)
+
+
+def rebind_candidate_collection(db, user_id, collection, display_id):
+    """Original matter only; caller owns the candidate/anchor transaction.
+
+    Never reactivate retired anchors or expose unrelated historical displays.
+    Re-read every original key and check its anchored period before creating
+    new identity-only sources. No values or approval credentials are restored.
+    """
+    groups=[]
+    for row in _collection_origin_rows(db,user_id,collection):
+        keys=json.loads(row['keys_json'])
+        if (type(keys) is not list or not keys or any(type(key) is not dict
+                or set(key)!={'company_id','invoice_no'} or key['company_id']!=row['company_id']
+                or any(type(v) is not str or not v for v in key.values()) for key in keys)):
+            raise ValueError('原事项候选身份不完整，请重新查询。')
+        for key in keys:
+            current=get_invoice(db,user_id,key['company_id'],key['invoice_no'])
+            if current is None:raise ValueError('原事项候选已不存在，请重新查询。')
+            day=date.fromisoformat(current['invoice_date'])
+            if any(row[field] is not None and row[field]!=value for field,value in (('year',day.year),('month',day.month))):
+                raise ValueError('原事项候选已离开原展示账期，请重新查询。')
+        groups.append({'scope':{key:row[key] for key in ('company_id','year','month')},
+            'source':'restored_invoice_candidate','keys':keys})
+    anchors=_record_display(db,user_id,display_id,groups)
+    if len(anchors)!=len(groups):raise PermissionError('原事项候选权限已变化。')
+    return {'display_ids':[display_id],'anchor_ids':[anchor['anchor_id'] for anchor in anchors]}
 
 
 def display_collection(path, user_id, display_ids, anchor_ids=None):

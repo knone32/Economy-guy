@@ -437,6 +437,8 @@ class SessionHost:
                     or self._agent.pending_intent):
                 raise SessionConflict('Finish or pause the current work before restoring another candidate')
             pending = self.store.resume_invoice_candidate(candidate_id, revision)
+            self._agent.coordinator.cancel_update()
+            self._agent.coordinator.receipt=self._agent._receipt('NOT_SUBMITTED')
             self._agent.restore_invoice_candidate(pending)
             self._agent.paused_invoice_candidate = None
             if self._agent.last_response:

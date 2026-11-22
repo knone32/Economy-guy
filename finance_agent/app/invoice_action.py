@@ -76,7 +76,7 @@ def change_invoice(agent, args, previous, request, *, defer_preview=False,revisi
         displays = agent.context.display_ids
         collection=(previous or {}).get('reference_collection')
         reference=revision.get('reference_relation')
-        if reference=='displayed' and agent.context.references_blocked:
+        if reference=='displayed' and agent.context.references_blocked and not collection:
             return tool_result('AMBIGUOUS',error='展示引用已失效，请重新查询候选。'),previous,None,[]
         if collection is None and reference not in {'none','unclear'} and (matter!='new' or reference=='displayed') and not agent.context.references_blocked and displays:
             available=display_collection(agent.db_path,agent.user_id,displays)

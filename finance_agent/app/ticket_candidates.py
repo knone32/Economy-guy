@@ -117,30 +117,44 @@ class TicketCandidates:
         return found
 
     def resume_invoice_candidate(self, candidate_id, revision):
-        """Claim a fresh revision; restoring identical data retires old approvals."""
+        """Revalidate this matter and claim a new revision, never old approval."""
+        from contextlib import closing
         from .business_sources import recover_candidate
+        from .references import rebind_candidate_collection
+        from .stage2_schema import open_existing
         self.validate()
-        with self.connection() as db:
+        # One attached SQLite transaction updates both identity-only anchors
+        # and the original Store row. Any validation/persistence error rolls
+        # back both, leaving the paused candidate and its revision unchanged.
+        with closing(open_existing(self.workbook)) as db,db:
+            db.execute('ATTACH DATABASE ? AS candidate_store',(self.path.resolve().as_uri()+'?mode=rw',))
             db.execute('BEGIN IMMEDIATE')
-            row = db.execute('''SELECT pending FROM invoice_candidates WHERE id=? AND revision=?
-                AND workbook=? AND actor=? AND state IN ('ACTIVE','PAUSED')''',
+            chat=db.execute("SELECT candidate_id,candidate_revision FROM candidate_store.chats WHERE id=? AND workbook=? AND actor=? AND state='ACTIVE'",
+                (self.chat,self.identity,self.actor)).fetchone()
+            actual=(chat['candidate_id'],chat['candidate_revision']) if chat and chat['candidate_id'] else None
+            if chat is None or actual!=self.invoice_token:raise ValueError('当前会话或事项修订已变化。')
+            row=db.execute("""SELECT pending FROM candidate_store.invoice_candidates WHERE id=? AND revision=?
+                AND workbook=? AND actor=? AND state IN ('ACTIVE','PAUSED')""",
                 (candidate_id,revision,self.identity,self.actor)).fetchone()
-            if row is None:
-                raise ValueError('单票候选已更新或结束，请重新查看待续单票。')
-            pending = json.loads(row['pending'])
-            recover_candidate(pending,actor=self.actor,book=self.workbook)
-            changed = db.execute('''UPDATE invoice_candidates SET revision=revision+1,state='PAUSED',updated=CURRENT_TIMESTAMP
-                WHERE id=? AND revision=? AND workbook=? AND actor=? AND state IN ('ACTIVE','PAUSED')''',
-                (candidate_id,revision,self.identity,self.actor)).rowcount
-            if changed != 1:
-                raise ValueError('单票候选已更新或结束，请重新查看待续单票。')
-            claimed = revision+1
-            changed = db.execute('''UPDATE chats SET candidate_id=?,candidate_revision=?,invoice_pending=?
-                WHERE id=? AND workbook=? AND actor=? AND state='ACTIVE' ''',
+            if row is None:raise ValueError('单票候选已更新或结束，请重新查看待续单票。')
+            pending=recover_candidate(json.loads(row['pending']),actor=self.actor,book=self.workbook)
+            claimed=revision+1
+            if pending.get('reference_collection'):
+                previous=pending['reference_collection']
+                pending['reference_collection']=rebind_candidate_collection(db,self.actor,previous,
+                    'candidate:'+candidate_id+':'+str(claimed)+':'+uuid4().hex)
+                pending['provenance']['reference_collection']={'kind':'revalidated_matter_collection',
+                    'candidate_id':candidate_id,'revision':claimed,'previous_collection':previous}
+            changed=db.execute("""UPDATE candidate_store.invoice_candidates
+                SET pending=?,revision=revision+1,state='ACTIVE',updated=CURRENT_TIMESTAMP
+                WHERE id=? AND revision=? AND workbook=? AND actor=? AND state IN ('ACTIVE','PAUSED')""",
+                (json.dumps(pending,ensure_ascii=False),candidate_id,revision,self.identity,self.actor)).rowcount
+            if changed!=1:raise ValueError('单票候选修订冲突，请重新查看。')
+            changed=db.execute("""UPDATE candidate_store.chats SET candidate_id=?,candidate_revision=?,invoice_pending=?
+                WHERE id=? AND workbook=? AND actor=? AND state='ACTIVE'""",
                 (candidate_id,claimed,self._invoice_pending_json(pending),self.chat,self.identity,self.actor)).rowcount
-            if changed != 1:
-                raise ValueError('Invoice candidate is outside the active chat')
-        self.invoice_token = candidate_id,claimed
+            if changed!=1:raise ValueError('Invoice candidate is outside the active chat')
+        self.invoice_token=candidate_id,claimed
         return pending
 
     def pause_invoice_candidate(self):

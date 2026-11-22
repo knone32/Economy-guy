@@ -9,3 +9,15 @@
 程序回归test_scope_candidate_restore.CrossMonthScopeTests：未选票保留2026-09、备注与原集合，零单票读取/预览；随后选择8月F011返回SCOPE_MISMATCH且月份/备注不丢；再选9月F001 fresh读取后预览原备注要求。发票/审计逐行不变。CROSS-MONTH-BASELINE.log保留KeyError原失败，AFTER通过。最早BEFORE日志为夹具使用多月SQL快照而无法登记单月锚点，修正为两次真实单月读取同次展示，不计产品首错。
 
 本地原始日志位于evidence-root/scope-resume-3a5-20261122。事项恢复另行收口；最终源码SHA、同版回归记录与新ZIP由冻结清单绑定。仅程序证据，不迁移Live或真人成绩。
+
+## 第二项：事项专属候选恢复
+
+旧 resume_invoice_candidate 只核对历史锚点归属，既没有重读候选现状，也没有建立新活动引用；暂停留下的全局引用拦截因此阻断续办。现由原 TicketCandidates/SessionHost 恢复入口按账号、账簿、候选ID与修订读取原事项，逐张重核存在性、读改权限及原锚点账期；建立新的身份引用，保留原备注与明确月份。不会重新激活旧锚点或以当前别的事项集合替代原集合，全局历史引用仍受拦截。
+
+原恢复 owner 在一个附加 SQLite 事务里保存新引用、候选新修订与当前会话绑定；错误回滚两处元数据。原协调器退休旧准备/确认，恢复不重建授权。只有当前待补所持的具体集合能进入后续核验；选定后仍核集合成员、要求账期和 fresh 当前值，正式批准/提交机制不变。
+
+RESTORE-BASELINE.log保留修复前两个失败：恢复未重读原集合、账期已变仍被恢复。RESTORE-AFTER.log验证原事项恢复后由原Agent.ask/change_invoice到原预览并程序取消，另一事项的候选不串入，旧准备凭据不能重新确认。RESTORE-TRANSACTION-AND-SCOPE.log额外验证本次新增事务在持久化失败时不泄漏新锚点或修订；并验证账期漂移/撤权拒绝、跨月反例及架构依赖。程序夹具未执行批准或财务写入。
+
+## 冻结和成绩口径
+
+冻结清单FROZEN.public.json关联源码完整SHA、同版有限回归日志与SOURCE源码ZIP的SHA256。ZIP直接由git archive生成并逐项核对源码，不带本机Profile密钥、会话库或原始Trace；日志/回执随包外附，不修改ZIP。新边界仅程序验证，不迁移3a5a3f7 Live成绩，也未重跑F014、结账或完整提交链。未做本ZIP的新冷启动或真人GUI验收，历史启动和真人证据只保留对应原SHA。
