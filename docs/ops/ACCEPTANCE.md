@@ -1,3 +1,5 @@
+> 2026-11-23 Word/CSV交付分支启动已收口：产品b436abd仅将d8ce333已验证原生缓存隔离并入3d121a0，所有导入代码/夹具不变。用户实际3d121a0目录正常无调试启动及新b436abd ZIP独立解压启动均ready+ui_ready、正常退出。原目录及原ZIP链接已热修，原日志/ZIP保留内部归档；新包SHA256 57b8a1988a1bd421f3a7535eb9942e563b6eff20a1348d58ea5c2f0273e9f694。仅验证新集成交接，未重跑导入或业务矩阵、未迁移Live成绩、未批准业务写入。证据 artifacts/native-host-20261122/word-csv-startup-3d121a0/FINAL.json。
+
 > 2026-11-23 交付收口：运行源码 c7b0c9bf4f5c80ab3d663a57b4f08cab1629bac7，清洁包位于 E:/beside/清洁包/Economy-guy-提交版-c7b0c9b.zip。独立含空格路径、不同cwd、无参数冻结EXE双就绪/任务预览与取消/正常退出通过；前一候选3a483ab的查询及ACK复用。发票、审计、任务行均未变。未新增Live或代点批准。GUI完整入口与历史验证仍见工程文档，开发材料不混入提交包。最终ZIP SHA256 d01c8f9c78a07d2a215df3247baa0f81d456f875820517ec77449699c1210db3；只有打包说明及工程记录在后续提交调整，运行EXE不变。
 
 > 2026-11-23 当前交付准备：原生EXE及TUI→GUI完整入口映射见 [功能清单](GUI-TUI-COVERAGE.md)。本轮仅补GUI薄适配、实际窗口与清洁包，不迁移历史Live首分。精确冻结SHA和独立解压启动另以包内DELIVERY-VERSION及交付核对记录为准；真人批准不代点。以下保留历史证据。

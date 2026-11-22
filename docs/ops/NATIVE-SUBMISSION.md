@@ -1,3 +1,5 @@
+> 2026-11-23 Word/CSV交付分支启动已收口：产品b436abd仅将d8ce333已验证原生缓存隔离并入3d121a0，所有导入代码/夹具不变。用户实际3d121a0目录正常无调试启动及新b436abd ZIP独立解压启动均ready+ui_ready、正常退出。原目录及原ZIP链接已热修，原日志/ZIP保留内部归档；新包SHA256 57b8a1988a1bd421f3a7535eb9942e563b6eff20a1348d58ea5c2f0273e9f694。仅验证新集成交接，未重跑导入或业务矩阵、未迁移Live成绩、未批准业务写入。证据 artifacts/native-host-20261122/word-csv-startup-3d121a0/FINAL.json。
+
 > 2026-11-23 当前Word/CSV分支补启动修复：用户包3d121a0仍报0x800700AA；feature/word-csv-import实际从782f7bd分出，未包含d8ce333缓存隔离。当前仅恢复已验证d8ce333的GuiWindow.cs与对应原生二进制，保留3d121a0全部Word/CSV代码、接口及夹具。此前实际正常启动/重启证明保留，只验证当前包集成与用户目录，不重新跑导入或业务矩阵。
 
 > 2026-11-23 启动修复：用户报告onefile bootloader “Could not create temporary directory”。当前系统TEMP写入探针成功，C盘33.84GiB/E盘246.03GiB，无法追回截图进程的具体环境。打包改为onedir，运行库随包，不再启动解压；冻结入口把本进程及原生子进程TEMP/TMP指向程序旁data/runtime-temp，不改系统设置。下一验收只检查故意无效TEMP下的解压包原生双就绪，不重跑业务链。
