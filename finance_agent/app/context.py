@@ -132,10 +132,20 @@ class ContextBuilder:
                     self.scope = dict(previous)
             except sqlite3.Error:
                 self.diagnostics.append("references_unavailable")
-        conflict = any(key in previous and not set(values).issubset(previous[key]) for key,values in explicit.items())
+        def subset(key, values, prior):
+            # Complete periods are pairs, not independent year/month sets.
+            # JSON-restored lists and runtime tuples represent the same pair.
+            if key == 'periods':
+                def pairs(items):
+                    if any(type(pair) not in (list,tuple) or len(pair)!=2
+                           or any(type(value) is not int for value in pair) for pair in items):
+                        raise ValueError('Incomplete period pair')
+                    return {tuple(pair) for pair in items}
+                try:return pairs(values).issubset(pairs(prior))
+                except (TypeError,ValueError):return False
+            return set(values).issubset(prior)
+        conflict = any(key in previous and not subset(key,values,previous[key]) for key,values in explicit.items())
         date_fields = {"year", "month"}
-        if "periods" in previous and "periods" in explicit:
-            conflict = conflict or explicit["periods"] != previous["periods"]
         if conflict or reset:
             # 范围槽位独立更正；旧对象/引用失效，不丢失其他已明确槽位。
             self.scope = {} if reset else {key:value for key,value in previous.items()
