@@ -2115,6 +2115,15 @@ class Agent:
                 self.pending_intent=active_pending=next_pending
                 explicit_pending_applied=True
                 invoice_change=planned
+                if (next_pending and not next_pending['scope'].get('invoice_no')
+                        and result.get('evidence',{}).get('business_state_updated')
+                        and result['status'] in {'SCOPE_MISMATCH','NO_DATA'}):
+                    # A rejected point lookup is not the current task target.
+                    # Keep the owner's month/value and original candidate set;
+                    # a subsequent valid choice must not retire that set merely
+                    # because it differs from this rejected tentative number.
+                    self.context.scope.pop('invoice_no',None)
+                    self.context.sources.pop('invoice_no',None)
             known=invoice_business_state(next_pending)['known'] if next_pending else {}
             # Pause only after the original owner has fresh-read a unique key.
             fresh=any(name=='get_invoice' and read['status']=='SUCCESS'
@@ -2559,6 +2568,43 @@ class Agent:
                         # legacy lexical hints no longer describe its action.
                         invoice_write = False
                         scoped_edit = None
+                        # Exact paired targets need no model-authored SQL.
+                        # Reuse the same handlers, budgets, proof adapters and
+                        # final selection checks, keeping every target separate.
+                        from .business_request_delivery import invoice_target_reads
+                        point_reads=invoice_target_reads(req,actor,self.db_path)
+                        if (point_reads and 'get_invoice' in self.allowed_tools
+                                and any(t['function']['name']=='get_invoice' for t in turn_tools)):
+                            initial_stamp=workbook_stamp()
+                            self.trace('business_request.target_reads',{'request_hash':req.request_hash,
+                                'reads':point_reads,'source':'bound_request_targets','generated_sql':False})
+                            for point in point_reads:
+                                arguments=point['arguments'];raw=json.dumps(arguments,ensure_ascii=False)
+                                ready=self.user_id==actor and self.workbook_available()
+                                blocked=execution.dispatch('get_invoice',raw) if ready else 'ERROR'
+                                result=(tool_result(blocked,error='目标读取未执行：身份、账簿或工具预算不可用。') if blocked else
+                                    self.dispatch_tool('get_invoice',raw,actor,self.db_path,
+                                        allowed_tools=self.allowed_tools,execution=execution))
+                                target_ids=(result.get('evidence',{}).get('business_request') or {}).get('target_ids',())
+                                if result['status']=='SUCCESS' and point['target_id'] not in target_ids:
+                                    result=tool_result('SCOPE_MISMATCH',error='当前发票未核实为该独立目标，未交付。')
+                                read_results.append(('get_invoice',result))
+                                execution.observe('get_invoice',arguments,result)
+                                self.trace('business_request.target_read',{'target_id':point['target_id'],
+                                    'period':point['period'],'arguments':arguments,'result':result})
+                                if result['status']!='SUCCESS':break
+                            stable=initial_stamp==workbook_stamp()
+                            catalog=answer_catalog(read_results,self.write_receipt,self.trace_id)
+                            refs=[ref for ref,fact in catalog.items() if fact.get('type')=='result']
+                            selected=select_current_answer(refs,catalog) if refs and stable else None
+                            if selected is not None and answer_selection_assessment['complete']:
+                                runtime_fact_completion=True
+                                execution.stop('ANSWERED')
+                                return finish(selected,store=False,category='database_query',final_only=True)
+                            if not execution.stop_reason:execution.stop('UNVERIFIED_RESULT')
+                            notice=('目标读取期间账簿发生变化，请重新核对；本轮未宣称完整交付。' if not stable else
+                                selected or '尚未完整核实全部独立目标，未交付完整查询。')
+                            return finish(notice,store=False,category='database_query',final_only=True)
                         if sql_workspace is not None:sql_workspace.close()
                         values={'company_id':sorted({c for t in req.targets for c in t.company_ids}),
                                 'periods':sorted({p for t in req.targets for p in t.periods})}

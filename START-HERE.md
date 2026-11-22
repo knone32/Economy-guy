@@ -1,4 +1,4 @@
-> 本包为完整账期子集与撤旧换新窄修候选，未发布。程序、Live、真人证据分别记账；原恢复成绩保留，不迁移为新包成绩。冻结SHA、回归与ZIP哈希见包外FROZEN.public.json，说明见 [记录](docs/ops/SUBSET-REPLACEMENT.md)。
+> 本包为成对独立target逐项读取的窄修候选，未发布。原Live成绩保留，当前SHA/程序/Live/ZIP见包外FROZEN.public.json；说明见 [记录](docs/ops/PAIRED-TARGET-READS.md)。
 
 # 从这里启动当前 GUI 工作台
 

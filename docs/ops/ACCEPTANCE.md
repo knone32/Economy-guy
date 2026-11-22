@@ -1,5 +1,11 @@
 # 验收（V3；不同SHA不拼接）
 
+## 2026-11-22 当前窄修：已绑定成对target逐项读取
+
+基线6ea84b9，原A_SUBSET首错为SQL证明器unsupported_disjunction；语义和SQL配对关系正确，9月子集修复未被Live覆盖。优先按已绑定精确target分别调用原get_invoice，经原覆盖/事实渲染汇合，不扩OR证明器或摊平成两个IN。[实现与有限回归](PAIRED-TARGET-READS.md)。
+
+程序验证两项目标完整交付及后续9月成员选择；单项目标/日期不符仍partial。仅回归原A链，B改口与恢复通过保留，不重复。冻结SHA与Live实际结果以本地evidence-root/paired-target-6ea-20261122/FROZEN.public.json为准；程序、Live、真人分别记账。
+
 ## 2026-11-22 当前收口：完整账期子集与撤旧换新
 
 基线493876b。原外部Live为3条、1通过/2阻断，15请求/126371 tokens；恢复通过原分保留。页面完整35行改口Trace经SHA256验证，两个原脚本已复现；ZIP本体未下载，不冒称校验原ZIP字节。

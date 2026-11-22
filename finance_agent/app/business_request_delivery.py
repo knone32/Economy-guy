@@ -121,6 +121,31 @@ def _condition_key(condition):
     return json.dumps(condition, ensure_ascii=False, sort_keys=True)
 
 
+def invoice_target_reads(request, actor, book):
+    """Map bound, unique invoice-detail targets to the existing point reader.
+
+    This does not interpret SQL or flatten relationships. Other metrics, filters
+    and ambiguous/set targets remain on their existing execution paths.
+    """
+    _frame(request,actor,book)
+    if request.unresolved or len(request.targets)<2:return None
+    reads=[];keys=set()
+    for target in request.targets:
+        if (target.object!='invoices' or len(target.company_ids)!=1 or len(target.periods)!=1
+                or target.seller is not None and target.seller.mode!='none'
+                or target.group_by or target.comparisons or target.purpose_check or target.directory or target.reference
+                or not target.metrics or any(metric.operation!='details' for metric in target.metrics)
+                or len(target.filters)!=1):return None
+        identity=target.filters[0]
+        if identity.field!='invoice_no' or identity.operator!='=' or type(identity.value) is not str:return None
+        key=target.company_ids[0],identity.value
+        if key in keys:return None
+        keys.add(key)
+        reads.append({'target_id':target.target_id,'period':target.periods[0],
+                      'arguments':{'company_id':key[0],'invoice_no':key[1]}})
+    return tuple(reads)
+
+
 def _proof_filter(condition):
     value=list(condition.value) if isinstance(condition.value,tuple) else condition.value
     # Empty-string spells positive blank. False must remain False.
