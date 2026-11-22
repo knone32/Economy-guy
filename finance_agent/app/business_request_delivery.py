@@ -121,6 +121,14 @@ def _condition_key(condition):
     return json.dumps(condition, ensure_ascii=False, sort_keys=True)
 
 
+def _exact_invoice_filter(condition):
+    if condition.field != 'invoice_no':return None
+    if condition.operator == '=' and type(condition.value) is str:return condition.value
+    if (condition.operator == 'IN' and isinstance(condition.value,(list,tuple))
+            and len(condition.value)==1 and type(condition.value[0]) is str):return condition.value[0]
+    return None
+
+
 def invoice_target_reads(request, actor, book):
     """Map bound, unique invoice-detail targets to the existing point reader.
 
@@ -137,8 +145,9 @@ def invoice_target_reads(request, actor, book):
                 or not target.metrics or any(metric.operation!='details' for metric in target.metrics)
                 or len(target.filters)!=1):return None
         identity=target.filters[0]
-        if identity.field!='invoice_no' or identity.operator!='=' or type(identity.value) is not str:return None
-        key=target.company_ids[0],identity.value
+        number=_exact_invoice_filter(identity)
+        if number is None:return None
+        key=target.company_ids[0],number
         if key in keys:return None
         keys.add(key)
         reads.append({'target_id':target.target_id,'period':target.periods[0],
@@ -695,7 +704,7 @@ def check_dedicated(request, name, result, actor, book):
                       and len(rows) == 1 and rows[0].get('invoice_no') == scope.get('invoice_no'))
     detail_targets = targets if TOOL_SPECS[name].read_mode == 'monthly' else [
         target for target in targets if single_invoice and any(
-            f.field == 'invoice_no' and f.operator == '=' and f.value == scope['invoice_no']
+            _exact_invoice_filter(f) == scope['invoice_no']
             for f in target.filters)]
     if object_name == 'invoices' and detail_targets:
         from .business_sql import TABLES

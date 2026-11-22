@@ -21,7 +21,7 @@ class PairedTargetReadTests(unittest.TestCase):
             targets.append({'target_id':'i'+str(index),'object':'invoices','company_ids':['C001'],
                 'company_quote':'甲企业','periods':[[2026,month]],'period_quote':f'2026年{month}月',
                 'seller':{'mode':'none','value':'','quote':'票号、开票日期和备注'},
-                'filters':[{'field':'invoice_no','operator':'=','value':number,'quote':number}],
+                'filters':[{'field':'invoice_no','operator':'IN','value':[number],'quote':number}],
                 'metrics':[{'operation':'details','field':field,'quote':quote} for field,quote in
                     [('invoice_no','票号'),('invoice_date','开票日期'),('remark','备注')]]})
         self.q=deque([envelope({'kind':'read','targets':targets,'unresolved':[]})]);self.model_calls=[]

@@ -465,8 +465,9 @@ class Agent:
                         'periods':sorted({p for target in req.targets for p in target.periods})}
                 values['year']=sorted({y for y,m in values['periods']})
                 values['month']=sorted({m for y,m in values['periods']})
-                numbers={f.value for target in req.targets if target.object=='invoices' for f in target.filters
-                         if f.field=='invoice_no' and f.operator=='=' and isinstance(f.value,str)}
+                from .business_request_delivery import _exact_invoice_filter
+                numbers={number for target in req.targets if target.object=='invoices' for f in target.filters
+                         if (number:=_exact_invoice_filter(f)) is not None}
                 existing=kwargs.get('provenance')
                 if (isinstance(existing,ScopeProof) and existing.actor==req.actor
                         and existing.sources.get('invoice_no') in READ_SOURCES):
