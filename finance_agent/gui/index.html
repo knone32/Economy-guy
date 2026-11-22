@@ -271,7 +271,7 @@
     <div class="view-head">
       <div>
         <h1>待办</h1>
-        <p>核对业务缺项和暂缓修改；按钮只调用原 SessionHost 支持的入口。</p>
+        <p>核对业务缺项和暂缓修改；可查看详情、补充内容或继续办理。</p>
       </div>
       <span class="spacer"></span>
       <button class="btn small" id="refresh-todos">刷新状态</button>
@@ -861,7 +861,7 @@ function renderPreview() {
   const backdrop = el("div", "modal-backdrop");
   const modal = el("div", "modal");
   modal.append(el("h2", "", preview.title || "原业务预览 · 真人确认"));
-  modal.append(el("div", "sub", "尚未保存。确认后由原事务入口提交并新连接回读。"));
+  modal.append(el("div", "sub", "尚未保存。确认后保存，并核对保存结果。"));
   if (!(preview.items || []).length) {
     modal.append(el("div", "pending", preview.text || "没有可展示的预览字段。"));
   }
@@ -882,7 +882,7 @@ function renderPreview() {
     box.append(el("div", "hint", "影响 1 张；未改字段保持原样。"));
     modal.append(box);
   }
-  modal.append(el("div", "hint", "浏览器只提交确认动作；不传 approved/confirmed，也不保存批准凭证。"));
+  modal.append(el("div", "hint", "请核对当前对象、修改内容和影响范围；确认后系统才会保存。"));
   const foot = el("div", "foot");
   const cancel = el("button", "btn danger", "取消预览");
   cancel.dataset.action = "preview-cancel";

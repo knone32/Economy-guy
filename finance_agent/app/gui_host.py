@@ -370,7 +370,7 @@ class GuiHost(WorkspaceActions):
                 "new_value": draft.get("new_value"),
             })
         body = str(payload.get("body") or "原业务预览")
-        text = body + "\n\n尚未保存。确认后由原事务入口提交并新连接回读。"
+        text = body + "\n\n尚未保存。确认后保存，并核对保存结果。"
         return {"id": item["id"], "text": text, "items": items,
                 "count": len(items), "kind": payload.get("kind") or "single",
                 "title": payload.get("title") or "原业务预览"}

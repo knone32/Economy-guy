@@ -114,6 +114,7 @@ class WorkspaceTests(unittest.TestCase):
     def test_task_creation_requires_original_confirmation_and_cancel_keeps_no_task(self):
         view=self.host.task_change({'company_id':'C001','action':'create','year':2026,'month':9,'note':'本机任务入口'})
         self.assertIsNone(view['error']);self.assertTrue(view['preview']);self.assertEqual(view['preview']['kind'],'task')
+        self.assertNotIn('task_id',view['preview']['text']);self.assertIn('本次操作',view['preview']['text'])
         self.host.cancel_preview(view['preview']['id'],context=view['context']);self.host._worker.join(5)
         with closing(sqlite3.connect(self.book)) as db:self.assertEqual(db.execute('SELECT count(*) FROM tasks').fetchone()[0],0)
 

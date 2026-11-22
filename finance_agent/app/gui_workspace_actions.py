@@ -28,7 +28,17 @@ class WorkspaceActions:
                         return manage_task(self.db_path,actor,value.get('company_id'),action,intent=witness,**args)
                     result=service(intent)
                     if result['status']=='WAITING_CONFIRMATION':
-                        if self.host._approval('确认任务更改',text+'\n仅管理任务；不会自动修改发票。','task') is True:
+                        current=result['data'].get('current') or {}
+                        labels={'create':'新建缺用途任务','update':'补充任务说明','correct':'更正任务账期与说明',
+                            'wait':'设为等待补充','pause':'暂缓任务','resume':'恢复任务','complete':'核验并完成任务','cancel':'取消任务'}
+                        statuses={'ACTIVE':'办理中','WAITING_USER':'等待补充','PAUSED':'已暂缓','COMPLETED':'已完成','CANCELLED':'已取消'}
+                        year=args.get('year') if action in {'create','correct'} else current.get('year')
+                        month=args.get('month') if action in {'create','correct'} else current.get('month')
+                        body=f"企业：{self._company_name(value.get('company_id'))}\n账期：{year} 年 {month} 月\n本次操作：{labels[action]}\n当前状态：{statuses.get(current.get('status'),'尚未创建')}"
+                        if action in {'update','correct'}:body+='\n原说明：'+str((current.get('context') or {}).get('note') or '未填写')
+                        if action in {'create','update','correct'}:body+='\n新说明：'+str(args.get('note') or '未填写')
+                        body+='\n影响范围：仅此任务，不会自动修改发票。\n尚未保存，请核对后确认。'
+                        if self.host._approval('确认任务更改',body,'task') is True:
                             result=service(confirm_management(intent,result['data']))
                         else:result={'status':'CANCELLED','error':'已取消任务更改，未保存。'}
                     if not result.get('ok') and result['status']!='CANCELLED':
