@@ -14,7 +14,7 @@ from .tool_registry import tool_result
 from .intent_contract import BoundIntent
 from .invoice_batch import plan_invoice_change
 from .tui_intent import excluded_invoice_ids
-from .references import resolve_reference
+from .references import resolve_reference, display_collection
 
 
 BUSINESS_KEYS = ('company_id', 'invoice_no', 'year', 'month', 'field', 'new_value')
@@ -56,7 +56,31 @@ def change_invoice(agent, args, previous, request, *, defer_preview=False):
     try:
         target_origin = None
         displays = agent.context.display_ids
-        if (previous is None and not agent.context.references_blocked
+        collection=(previous or {}).get('reference_collection')
+        if collection is None and not agent.context.references_blocked and displays:
+            available=display_collection(agent.db_path,agent.user_id,displays)
+            if available['status']=='SUCCESS' and len({tuple(sorted(e['key'].items())) for e in available['data']})>1:
+                collection=available['evidence']['reference_collection']
+        if collection:
+            available=display_collection(agent.db_path,agent.user_id,**collection)
+            if available['status']!='SUCCESS':
+                return available,previous,None,[]
+            if args.get('invoice_no'):
+                from .business_object_sources import amendment_sources
+                literal,_,_=amendment_sources(request,None,actor=agent.user_id,book=agent.db_path,
+                    invoice_candidates=[args['invoice_no']])
+                selected=[entry for entry in available['data'] if entry['key']['invoice_no']==args['invoice_no']
+                    and (not literal.get('company_id') or entry['key']['company_id'] in literal['company_id'])]
+                keys={tuple(sorted(entry['key'].items())) for entry in selected}
+                if literal.get('invoice_no')!=[args['invoice_no']] or len(keys)!=1:
+                    return tool_result('AMBIGUOUS',error='请在原展示集合中明确企业和票号；不会代选或选择集合外对象。'),previous,None,[]
+                chosen=selected[-1]
+                resolved=resolve_reference(agent.db_path,agent.user_id,chosen['ordinal'],anchor_id=chosen['anchor_id'],
+                    display_ids=collection['display_ids'])
+                if resolved['status']!='SUCCESS':return resolved,previous,None,[]
+                target_origin=BoundIntent('read',agent.user_id,str(agent.db_path),agent.trace_id,request,
+                    dict(resolved['evidence']['scope']),{'source':'runtime_display_reference','reference':resolved['evidence']['reference']})
+        if (target_origin is None and previous is None and not collection and not agent.context.references_blocked
                 and isinstance(displays, list) and displays):
             # Both tool proposals and final clarifications may omit keys held
             # by the same unique trusted display. Supplied keys must still agree.
@@ -75,12 +99,18 @@ def change_invoice(agent, args, previous, request, *, defer_preview=False):
             current_id=agent.trace_id, current_request=request, business_continuation=True,
             target_origin=target_origin)
     except PendingTransitionError as error:
+        partial=getattr(error,'pending_state',None)
+        if collection and partial is not None:partial['reference_collection']=collection
         return tool_result(getattr(error, 'status', 'SCOPE_MISMATCH'), error=str(error), evidence={
             'source':'harness_business_action','user_message':str(error),
             'reason':getattr(error,'reason','source_or_identity'),
             'business_state_updated':getattr(error,'state_updated',False),
+            **({'conflicting_slots':[{'target_year':'year','target_month':'month'}.get(key,key) for key in error.conflicting_slots],
+                'retryable_after_slot_correction':True}
+               if getattr(error,'conflicting_slots',None) else {}),
             **({'needs_value_reference_decision':True} if getattr(error,'repairable_reference',False) else {}),
             'business_authorization':False}), getattr(error,'pending_state',previous), None, []
+    if collection:candidate['reference_collection']=collection
     candidate['business_action'] = 'single_invoice'
     def stopped(status, message, reads=()):
         # Binding a replacement takes effect even if fresh reading/planning

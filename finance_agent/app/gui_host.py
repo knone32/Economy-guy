@@ -13,6 +13,7 @@ import os
 import sqlite3
 import threading
 import uuid
+import sys
 from contextlib import closing
 from pathlib import Path
 
@@ -101,21 +102,9 @@ class GuiHost:
                 options["template"] = self.profiles_file
             if self.profiles_local is not None:
                 options["local"] = self.profiles_local
-            bound = resolve_connection(actor, self.profile, require_key=False, **options)
-            key = None
-            try:
-                from .win_vault import WindowsVault, profile_target
-            except ImportError:
-                pass
-            else:
-                try:
-                    key = WindowsVault().read(profile_target(bound.profile, actor))
-                except Exception:
-                    key = None
-            key = key or os.environ.get(bound.profile.api_key_env, "").strip()
-            if not key:
-                raise ProfileError("当前配置缺少 API 密钥；请先用原配置入口保存到 Windows 凭据或环境变量。")
-            connection = ModelConnection(bound.profile, key)
+            connection, self.startup_diagnostics = self.profiles.resolve_with_diagnostics(actor,self.profile)
+            bound = connection
+            self.profile = bound.profile.profile_name
             self._connection_info = {
                 "mode": "live",
                 "connected": True,
@@ -150,8 +139,8 @@ class GuiHost:
             status, label = "UNAVAILABLE", "真实模型未连接"
         else:
             status, label = "MOCK", "脚本模型（非 Live）"
-        template = self.profiles_file or DEFAULT_TEMPLATE
-        local = self.profiles_local or DEFAULT_LOCAL
+        template = self.profiles.options['template']
+        local = self.profiles.options['local']
         profiles = []
         try:
             for profile in visible_profiles(self.user_id, template, local):
@@ -181,12 +170,23 @@ class GuiHost:
                 "base_url": info.get("base_url"),
             },
             "profiles": profiles,
+            "launch": self.launch_description(),
             "switching": {
                 "account": "账号须由受信宿主重新核权绑定；当前本机账号为模拟身份，不是登录认证。",
                 "workbook": "账簿须由受信宿主重新绑定会话；未配置宿主选择策略时不开放页面切换。",
                 "model": "已有 Profile 可通过原宿主切换；待补、预览和未知提交须先处理。",
             },
         }
+
+    def launch_description(self):
+        """Only non-secret, host-bound arguments; never reconstruct identity in JS."""
+        argv=[sys.executable,str(Path(__file__).resolve().parents[1]/'run_gui.py'),
+            '--db',str(self.db_path.resolve()),'--session',str(self.store.path.resolve()),'--user',self.user_id,
+            '--profiles-file',str(Path(self.profiles.options['template']).resolve()),
+            '--profiles-local',str(Path(self.profiles.options['local']).resolve())]
+        if self.profile:argv += ['--profile',self.profile]
+        if getattr(self,'launch_port',None):argv += ['--port',str(self.launch_port)]
+        return {'shell':'PowerShell','argv':argv,'command':"& "+' '.join("'"+arg.replace("'","''")+"'" for arg in argv)}
 
     # ------------------------------------------------------------------ confirmation bridge
     def _confirm(self, payload):
@@ -570,6 +570,7 @@ class GuiHost:
             "pending": self._pending(raw),
             "candidates": self._candidates(raw),
             "tasks": self._tasks(raw),
+            "task_focus": raw.get('task_focus'),
             "settings": self._settings(),
             "preview": self._confirmation_view(),
             "receipt": receipt,

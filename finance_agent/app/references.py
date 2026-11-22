@@ -118,6 +118,31 @@ def reference_catalog(path, user_id, scope=None, *, display_ids=None):
         connection.close()
 
 
+def display_collection(path, user_id, display_ids, anchor_ids=None):
+    """Read the original owned display set; contains no approval or stored values."""
+    try:
+        with closing(open_existing(path,readonly=True)) as db:
+            db.execute('BEGIN')
+            rows=_candidates(db,user_id,{},'',authorized_only=False,display_ids=display_ids)
+            if anchor_ids is not None:
+                if type(anchor_ids) not in (list,tuple) or not anchor_ids:
+                    return result('AMBIGUOUS',error='展示集合引用无效。')
+                rows=[row for row in rows if row['anchor_id'] in anchor_ids]
+                if {row['anchor_id'] for row in rows}!=set(anchor_ids):
+                    return result('NOT_FOUND',error='原展示集合已失效，请重新查询。')
+            if not rows:return result('NOT_FOUND',error='没有有效的已展示候选集合。')
+            entries=[]
+            for row in rows:
+                if not check_permission(db,user_id,row['company_id'],'read').allowed:
+                    return result('DENIED',error='原展示集合没有读取权限。')
+                for index,key in enumerate(json.loads(row['keys_json']),1):
+                    entries.append({'key':key,'anchor_id':row['anchor_id'],'ordinal':index})
+            return result('SUCCESS',entries,{'reference_collection':{'display_ids':list(display_ids),
+                'anchor_ids':[row['anchor_id'] for row in rows]}})
+    except (OSError,sqlite3.Error,ValueError,TypeError):
+        return result('ERROR',error='无法核实原展示集合，请重新查询。')
+
+
 def resolve_reference(path, user_id, ordinal, scope=None, anchor_id="", *, display_ids=None,
                       coalesce_identical_singletons=False):
     """先找用户实际展示锚点，再鉴权并重读SQLite；不足以唯一定位则追问。"""

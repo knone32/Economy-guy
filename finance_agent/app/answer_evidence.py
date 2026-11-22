@@ -94,21 +94,23 @@ def catalog(results, receipt, turn_id):
                     text=(f'{scope}：按实际用途规则缺项 {amount} 张。' if unit=='count' else
                           f'{scope}：实际用途规则缺项金额 {display(amount,"cents")}。')
                     add(key+'.required_missing.'+str(number),'规则缺项指标',text,**info)
-        if name in {'get_finance_summary', 'get_annual_finance_summary'} and isinstance(data, dict):
+        summary = (data if name in {'get_finance_summary','get_annual_finance_summary'} else
+                   evidence.get('finance_summary') if name=='list_bank_transactions' else None)
+        if isinstance(summary, dict):
             basis_text = render_summary_basis(evidence.get('rule'))
             basis_ref = prefix + key + '.basis' if basis_text else None
             if basis_ref:
                 add(key + '.basis', '统计口径与规则来源', scope + '\n' + basis_text, type='basis', parent_ref=parent)
             for field, (label, unit) in SUMMARY_FIELDS.items():
-                if field in data:
-                    add(key + '.' + field, label, f'{scope}：{label} {data[field]} {unit}。')
+                if field in summary:
+                    add(key + '.' + field, label, f'{scope}：{label} {summary[field]} {unit}。')
                     if basis_ref:
                         facts[prefix + key + '.' + field]['basis_ref'] = basis_ref
                     table = 'invoices' if field.startswith('invoice_') else 'bank_transactions'
                     operation = 'count_rows' if field.endswith('_count') else 'sum'
                     conditions = [] if table == 'invoices' else [{'field': 'direction', 'operator': '=',
                         'value': '收入' if field.startswith('bank_income') else '支出'}]
-                    amount = data[field] if operation == 'count_rows' else cents(data[field])
+                    amount = summary[field] if operation == 'count_rows' else cents(summary[field])
                     subject = ' / '.join(str(evidence.get('scope', {}).get(k, '')) for k in ('company_id',)) + ' · ' + label
                     cohort = measure_basis({'status': 'VERIFIED', 'scope': evidence.get('scope', {}), 'conditions': conditions})
                     facts[prefix + key + '.' + field].update(scalar(amount, unit='count' if operation == 'count_rows' else 'cents',

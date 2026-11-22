@@ -84,6 +84,10 @@ class ReadComparison:
     left_period: tuple
     right_period: tuple
     source: Source
+    left_target_id: str | None = None
+    right_target_id: str | None = None
+    left_company_id: str | None = None
+    right_company_id: str | None = None
 
     def __post_init__(self):_freeze_fields(self,'left_period','right_period')
 
@@ -305,7 +309,7 @@ DEFINITION = {
       'bank_transactions':['transaction_no','transaction_date','direction','counterparty_name','remark','amount_cents','*']},
    'metrics':'每项operation/field及可核来源；current原话由顶层quote或Source.quote承载；field限metric_fields中的本对象字段；张数用count(*)，合计金额用sum(amount_cents)。用户枚举明细字段时，每个字段分别用details(field)，逐条金额用details(amount_cents)；details(*)仅表示整条记录全部业务字段，不能代替指定列。续办所需身份由Runtime另行核验，不增加用户要求显示的字段',
    'group_by':'只用groups中本对象实际字段或period，不传SQL表达式',
-   'comparisons':'每项operation=subtract或compare，metric_operation/metric_field须已在同target.metrics中；left_period/right_period均在该target.periods内，quote须当前原话',
+   'comparisons':'每项operation=subtract或compare，metric_operation/metric_field须为双方已要求的同一指标；quote须当前原话。left_period/right_period分别属于双方target；left_target_id/right_target_id省略表示当前target。跨企业须提供left_company_id/right_company_id，分别在相应target.company_ids内；多企业target须按company_id分组。两侧仅引用独立要求的目标身份，不传金额或差额真值。',
    'revision_relation':{'allowed':['update','replace','clarify'],'default':'update',
       'source':'update省略或显式声明且无relation_quote/空字符串完全同义，不新增替换权限；提供非空quote仍核当前原话；replace/clarify必须当前relation_quote',
       'replace':'必须提供previous_target_id，引用previous_requirement中实际旧目标；新目标仍须当前来源和权限核实；允许明确新查询不保留旧seller/filter',
@@ -696,7 +700,12 @@ def bind(content,*,actor,book,turn_id,request,revision=1,trusted_scope=None,prev
         company_context=company_declaration.kind=='context'
         company_source=(Source('unresolved','','company_id') if not ids else
             Source('context','', 'scope.company_id') if company_context else _source(company_quote,request,'company_id'))
-        if not ids:pass
+        if not ids:
+            if company_quote:
+                from .business_object_sources import unreadable_company_mentions
+                quote=_source(company_quote,request,'company_id').quote
+                if unreadable_company_mentions(quote,actor=actor,book=book):
+                    raise BusinessRequestError('当前账号无权读取您指定的企业，未查询数据。','DENIED')
         elif company_context:
             if trusted.get('company_id'):
                 if len(trusted['company_id'])!=1 or tuple(ids)!=tuple(trusted['company_id']):
@@ -741,7 +750,10 @@ def bind(content,*,actor,book,turn_id,request,revision=1,trusted_scope=None,prev
                     f'{previous.revision}/{previous.request_hash}/{prior.target_id}.periods')
         else:
             period_quote=_source(period_quote,request,'periods').quote
-            literal_period=request_scope(period_quote)
+            period_sources={}
+            literal_period=request_scope(period_quote,period_sources=period_sources)
+            if len(period_sources['explicit_years'])>1 and period_sources['omitted_year_months']:
+                raise BusinessRequestError('省略年份存在多个前件，请明确完整年月。','AMBIGUOUS')
             inherited_years=set(trusted.get('year',())) or {y for y,m in trusted.get('periods',())}
             if (not literal_period.get('year') and literal_period.get('month') and len(inherited_years)==1):
                 wanted={(next(iter(inherited_years)),m) for m in literal_period['month']}
@@ -878,14 +890,17 @@ def bind(content,*,actor,book,turn_id,request,revision=1,trusted_scope=None,prev
                 unresolved.append(target_id+'.bank_direction')
         comparisons=[]
         for c in item.get('comparisons',[]):
-            if (type(c) is not dict or set(c)!={'operation','metric_operation','metric_field','left_period','right_period','quote'}
+            required={'operation','metric_operation','metric_field','left_period','right_period','quote'}
+            optional={'left_target_id','right_target_id','left_company_id','right_company_id'}
+            if (type(c) is not dict or not required<=set(c) or set(c)-required-optional
                     or c['operation'] not in {'subtract','compare'}
                     or (c['metric_operation'],c['metric_field']) not in {(m.operation,m.field) for m in metrics}):
                 raise BusinessRequestError('比较目标须对应实际查询指标。')
             left,right=_pair(c['left_period']),_pair(c['right_period'])
-            if left not in pairs or right not in pairs:raise BusinessRequestError('比较账期超出当前读取目标。','SCOPE_MISMATCH')
+            if any(key in c and (type(c[key]) is not str or not c[key]) for key in optional):
+                raise BusinessRequestError('比较双方须引用明确的目标和企业身份。','INVALID_ARGUMENTS')
             comparisons.append(ReadComparison(c['operation'],c['metric_operation'],c['metric_field'],left,right,
-                                              _source(c['quote'],request,'comparison')))
+                _source(c['quote'],request,'comparison'),**{key:c[key] for key in optional if key in c}))
         old=None
         if previous:
             old_id=item.get('previous_target_id')
@@ -918,6 +933,20 @@ def bind(content,*,actor,book,turn_id,request,revision=1,trusted_scope=None,prev
             tuple(group),tuple(comparisons),company_source,period_source,relation,relation_source,previous_id,
             purpose_check,directory,reference))
     if len({t.target_id for t in targets})!=len(targets):raise BusinessRequestError('读取目标标识重复。','INVALID_ARGUMENTS')
+    by_id={target.target_id:target for target in targets}
+    for owner in targets:
+        for comparison in owner.comparisons:
+            for side in ('left','right'):
+                target=by_id.get(getattr(comparison,side+'_target_id') or owner.target_id)
+                company=getattr(comparison,side+'_company_id')
+                if (target is None or target.object!=owner.object
+                        or getattr(comparison,side+'_period') not in target.periods
+                        or (comparison.metric_operation,comparison.metric_field) not in {(m.operation,m.field) for m in target.metrics}
+                        or company is not None and (company not in target.company_ids
+                            or len(target.company_ids)>1 and 'company_id' not in target.group_by)):
+                    raise BusinessRequestError('比较双方不属于独立要求中的同口径读取目标。','SCOPE_MISMATCH')
+                if len(target.company_ids)>1 and company is None:
+                    unresolved.append(owner.target_id+'.comparison_'+side+'_company')
     selected=tuple(sorted({c for t in targets for c in t.company_ids}))
     req=BusinessRequest(actor,str(Path(book).resolve()),turn_id,revision,Source('current',request),digest(request),
                         digest(read_catalog(book,actor,company_ids=selected)),tuple(targets),tuple(dict.fromkeys(unresolved)),

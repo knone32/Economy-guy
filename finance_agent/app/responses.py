@@ -75,13 +75,13 @@ _EXPLANATION_MARKER = re.compile(r"\[\[([A-Za-z][\w.-]*)\]\]")
 _QUOTED_DATA = re.compile(r'“[^”\r\n]*”|‘[^’\r\n]*’|「[^」\r\n]*」|『[^』\r\n]*』|"[^"\r\n]*"')
 
 
-def request_scope(text, include_update_aliases=False):
+def request_scope(text, include_update_aliases=False, *, period_sources=None):
     """Current business targets exclude quoted data; literal mention indexes stay separate.
 
     A quoted value can still be saved verbatim by the existing edit coordinator.
     It cannot silently grant a second company, invoice or period to that edit.
     """
-    return explicit_scope(_without_quoted_data(text), include_update_aliases)
+    return explicit_scope(_without_quoted_data(text), include_update_aliases,period_sources=period_sources)
 
 
 def _without_quoted_data(text):
@@ -412,7 +412,7 @@ def render_grounded_explanation(text, facts, user_text=""):
     return rendered + "\n\n" + evidence
 
 
-def explicit_scope(text, include_update_aliases=False):
+def explicit_scope(text, include_update_aliases=False, *, period_sources=None):
     """仅提取用户明确的编号与数字日期字面量，不做业务意图关键词路由。"""
     companies = sorted(set(re.findall(r"(?<![A-Za-z0-9])C\d+(?![A-Za-z0-9])",text,flags=re.IGNORECASE)))
     invoices = re.findall(r"(?<![A-Za-z0-9])F\d+(?![A-Za-z0-9])",text,flags=re.IGNORECASE)
@@ -470,6 +470,14 @@ def explicit_scope(text, include_update_aliases=False):
         rf"(?<![\d一二三四五六七八九十这那该同每第])({month_literal})\s*月", remaining)}
     if not periods and len(years) == len(months) == 1:
         periods.add((next(iter(years)), next(iter(months))))
+    # An omitted year can refer to one uniquely stated year. Never form a
+    # Cartesian product when the same source has competing explicit years.
+    explicit_years = years | {year for year, _ in periods}
+    if period_sources is not None:
+        period_sources.update(explicit_years=sorted(explicit_years),omitted_year_months=sorted(months),
+            relation='unique_explicit_year' if len(explicit_years)==1 else 'unresolved_year')
+    if len(explicit_years) == 1:
+        periods.update((next(iter(explicit_years)), month) for month in months)
     if periods:
         result["periods"] = sorted(periods)
     years.update(year for year, month in periods)
@@ -1277,7 +1285,10 @@ def render_information(results):
             if totals and name=='list_bank_transactions' and 'amount_rule' in outcome['evidence']:
                 for prefix, label in [('bank_income', '收入'), ('bank_expense', '支出')]:
                     if prefix + '_total' in totals:
-                        parts.append(f"本轮银行{label} {totals[prefix + '_total']} 元（{totals[prefix + '_count']}条）。")
+                        count=totals.get(prefix+'_count')
+                        parts.append(f"本轮银行{label} {totals[prefix + '_total']} 元"+(f"（{count}条）" if count is not None else '')+'。')
+                    elif prefix+'_count' in totals:
+                        parts.append(f"本轮银行{label} {totals[prefix+'_count']} 条。")
                 add_scope({**outcome['evidence'], 'rule': outcome['evidence']['amount_rule']})
         elif name != "prepare_invoice_update":
             parts.append("本轮查询结果（业务数据，不是操作回执）：" + json.dumps(data, ensure_ascii=False))

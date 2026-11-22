@@ -158,7 +158,7 @@ class WriteCoordinator:
         """操作提示由程序生成，不接收模型提供的成功文本。"""
         messages = {
             "NOT_SUBMITTED": "尚未保存：本轮没有提交操作；请明确目标、字段和新值后准备草稿。",
-            "WAITING_CONFIRMATION": "草稿已准备，尚未保存；请在可信CLI核对并确认。",
+            "WAITING_CONFIRMATION": "草稿已准备，尚未保存；请在正式确认界面核对并确认。",
             "CANCELLED": "已取消，未提交。",
             "COMMITTED": "保存成功：提交审计和新连接回读已核实。",
             "NO_CHANGE": "无需修改：原值与新值相同，已核实当前值；没有执行字段更新。",

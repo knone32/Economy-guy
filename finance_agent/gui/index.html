@@ -435,6 +435,11 @@ function render() {
   renderPending();
   renderCandidates();
   renderTasks();
+  const focus = S.task_focus;
+  const focusedTask = focus && (S.tasks || []).find(t => t.company_id === focus[0] && t.task_id === focus[1]);
+  $("turn-state").textContent = !focus ? "未进入待办" : focusedTask
+    ? "当前待办：" + (focusedTask.company_name || focus[0]) + " · " + focusedTask.year + "-" + focusedTask.month + " · " + focus[1]
+    : "当前待办：" + focus.join(" / ") + "（详情暂不可用）";
   renderReceipt();
   renderPreview();
   renderTodos();
@@ -594,16 +599,7 @@ function renderProfileCommand() {
   const command = $("profile-command");
   if (!command) return;
   const settings = S.settings || {};
-  const account = settings.account || {};
-  if (!selectedProfile) {
-    command.textContent = "";
-    return;
-  }
-  const db = String(account.workbook || "").replaceAll('"', '\\"');
-  const user = String(account.user_id || "").replaceAll('"', '\\"');
-  const profile = String(selectedProfile).replaceAll('"', '\\"');
-  command.textContent = 'cd finance_agent\n'
-    + 'python run_gui.py --db "' + db + '" --user "' + user + '" --profile "' + profile + '" --open';
+  command.textContent = (settings.launch || {}).command || "当前宿主尚未提供可复用启动描述。";
 }
 
 function renderSessions() {

@@ -134,7 +134,7 @@ class SessionHost:
         paused = bool(getattr(agent, 'paused_invoice_candidate', None))
         # A command receipt is newer than the preceding model answer. Keep the
         # latter as explicitly historical, never as the current action prompt.
-        historical = cancelled or paused
+        historical = cancelled or paused or bool(response.get('display_retired'))
         results = response.get('tool_results') or []
         current_result = {'text': response.get('text'), 'category': response.get('category'),
                           'coverage': response.get('business_request_final_coverage'),
@@ -437,6 +437,8 @@ class SessionHost:
             pending = self.store.resume_invoice_candidate(candidate_id, revision)
             self._agent.restore_invoice_candidate(pending)
             self._agent.paused_invoice_candidate = None
+            if self._agent.last_response:
+                self._agent.last_response['display_retired'] = True
             self._persistence = {'status':'SAVED','error':None}
         return self.snapshot()
 

@@ -26,6 +26,7 @@ class GuiServer(ThreadingHTTPServer):
         self.token = token
         self.html = html
         super().__init__(address, Handler)
+        host.launch_port = self.server_address[1]
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -197,6 +198,8 @@ def main(argv=None):
                        profiles_file=args.profiles_file, profiles_local=args.profiles_local)
     except Exception as error:
         print("无法启动 GUI：" + str(error), file=sys.stderr)
+        if isinstance(getattr(error,'diagnostic',None),dict):
+            print(json.dumps(error.diagnostic,ensure_ascii=False),file=sys.stderr)
         return 2
     token = secrets.token_urlsafe(24)
     html_path = Path(__file__).resolve().parents[1] / "gui" / "index.html"

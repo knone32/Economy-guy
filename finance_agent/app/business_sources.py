@@ -41,7 +41,7 @@ def recover_candidate(pending, *, actor, book):
         raise ValueError('单票候选的账号或账簿不匹配，请重新发起。')
     allowed = {'request_id','actor','workbook','request','source_request','scope','change',
                'model_managed','business_action','provenance','missing_fields','superseded',
-               'on_hold','blocked_reason'}
+               'on_hold','blocked_reason','reference_collection'}
     if (set(pending) - allowed or any(type(pending.get(key)) is not str or not pending[key]
             for key in ('request_id','request','source_request'))
             or pending['request'] != pending['source_request']
@@ -73,6 +73,11 @@ def recover_candidate(pending, *, actor, book):
             if not all(check_permission(db,actor,company,operation).allowed for operation in ('read','modify')):
                 raise PermissionError('当前账号缺少企业读改权限，未恢复单票候选。')
     state = deepcopy(pending)
+    if state.get('reference_collection'):
+        from .references import display_collection
+        checked=display_collection(book,actor,**state['reference_collection'])
+        if checked['status']!='SUCCESS':
+            raise ValueError('原展示候选集合已失效，请重新查询。')
     state['missing_fields'] = tuple(state['missing_fields'])
     return state
 
@@ -208,6 +213,22 @@ def bind_request(args, previous, *, actor, book, current_id, current_request, ta
              'value_scope_overlap','AMBIGUOUS')
     scope_patch = {}
     scope_origins = {}
+    conflicts=[arg for key,arg in (('company_id','company_id'),('year','target_year'),('month','target_month'),('invoice_no','invoice_no'))
+               if arg in args and args[arg] not in (current.get(key) or prior_scope.get(key,()) or reference_scope.get(key,()))]
+    if conflicts:
+        # The original proposal remains rejected. Independently bind only its
+        # other source-checked slots into the same unapproved pending owner.
+        # Explicit user date restrictions are inferred by that binding, never
+        # discarded merely because a generated date conflicted with them.
+        corrected={key:value for key,value in args.items() if key not in conflicts}
+        partial=bind_request(corrected,previous,actor=actor,book=book,current_id=current_id,
+                             current_request=current_request,target_origin=target_origin)
+        partial['blocked_reason']='source_conflict'
+        error=PendingRequestError('部分候选参数没有本轮来源，请补正这些槽位；其余已核实内容保留，未生成预览。','SCOPE_MISMATCH')
+        error.pending_state,error.state_updated=partial,True
+        error.reason='object_source'
+        error.conflicting_slots=conflicts
+        raise error
     for key, arg in (('company_id','company_id'),('year','target_year'),('month','target_month'),('invoice_no','invoice_no')):
         if arg in args:
             available = current.get(key) or prior_scope.get(key,()) or reference_scope.get(key, ())
@@ -218,7 +239,7 @@ def bind_request(args, previous, *, actor, book, current_id, current_request, ta
             scope_patch[key] = [args[arg]]
             scope_origins[key] = (_origin(current_request,current_id,'current_identifier',str(args[arg]))
                 if args[arg] in current.get(key,()) else
-                {'kind':'verified_pending_scope','request_id':previous['request_id']} if previous else
+                {'kind':'verified_pending_scope','request_id':previous['request_id']} if previous and args[arg] in prior_scope.get(key,()) else
                 {'kind':'trusted_reference','reference':deepcopy(target_origin.sources['reference'])})
             if key == 'company_id' and args[arg] in current.get(key, ()):
                 origins = [item for item in object_origins['company_mentions'] if item['company_id'] == args[arg]]

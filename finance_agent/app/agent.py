@@ -2482,6 +2482,12 @@ class Agent:
                             if any(v.endswith('.metrics') for v in req.unresolved):fields.append('所需金额、张数或明细')
                             question=('请明确'+'、'.join(fields)+'。' if fields else
                                 '当前读取要求仍待明确，请补充对象、指标或筛选条件。')
+                            # Keep the semantic stage's unresolved question,
+                            # rather than replacing a missing invoice identity
+                            # with only the runtime's generic company/date slots.
+                            declared=[value for value in req.unresolved if not any(
+                                value.startswith(target.target_id+'.') for target in req.targets)]
+                            if declared:question+=' 还需澄清：'+'；'.join(declared)+'。'
                             if names and not fields:question='请先明确完整销售方，或明确要查名称包含范围。可区分候选：'+'、'.join(names[:20])+'。'
                             execution.stop('WAITING_USER')
                             return finish(question,store=False,category='clarification',chat_notice=question,final_only=True)
@@ -3226,6 +3232,16 @@ class Agent:
                                         self.trace('business.value_reference_repair', {'retry':1,'physical_write':False})
                                     result=accept_invoice_transition(result,next_pending,planned,
                                         runtime_reads,business_turn_action)
+                                    if (result.get('evidence',{}).get('retryable_after_slot_correction')
+                                            and not scope_repair_used and len(calls)==1
+                                            and execution.model_requests < min(execution.block_limit,self.max_requests)
+                                            and execution.actual_tools < self.max_tools and planned is None):
+                                        # Reuse the original bounded correction window. The
+                                        # failed proposal remains rejected and paired; its
+                                        # replacement must re-enter the same source owner.
+                                        scope_repair_used=repair_scope=True
+                                        self.trace('business.source_slot_repair',{'retry':1,
+                                            'conflicting_slots':result['evidence']['conflicting_slots'],'physical_write':False})
                             except (TypeError,ValueError):
                                 from .business_sources import suspend
                                 if self.user_id == actor:

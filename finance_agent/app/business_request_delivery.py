@@ -110,7 +110,7 @@ def preflight(request, name, args, actor, book):
             allowed = (seller is None and target.filters
                        and all(_directions(f)
                                and (TOOL_SPECS[name].condition_mode == 'direction'
-                                    or TOOL_SPECS[name].condition_mode == 'direction_arg' and _directions(f) == {args.get('direction')})
+                                    or TOOL_SPECS[name].condition_mode == 'direction_arg' and {args.get('direction')} <= _directions(f))
                                for f in target.filters))
             if not allowed:
                 raise RequestDeliveryError('此工具不能落实本轮附加筛选，请使用支持该条件的查询。',
@@ -697,6 +697,19 @@ def check_dedicated(request, name, result, actor, book):
         fields, _ = _summary_fields(request, scope)
         accepted['evidence']['finance_summary'] = {
             k: v for k, v in accepted['evidence']['finance_summary'].items() if k in fields}
+        summary=accepted['evidence']['finance_summary']
+        proofs=accepted['evidence']['business_request'].setdefault('measures',[])
+        for field,value in summary.items():
+            obj,operation,column,direction=SUMMARY_FIELDS[field]
+            if obj!=object_name or (type(value) is not int if operation=='count' else cents(value) is None):
+                raise RequestDeliveryError('分方向程序合计缺少合法单位证据。','SQL_EVIDENCE_UNSUPPORTED')
+            conditions=([{'field':'direction','operator':'=','value':direction}] if direction else [])
+            for target in targets:
+                if field not in _summary_fields(request,scope,targets=(target,))[0]:continue
+                proofs.append({'target_id':target.target_id,'operation':operation,'field':column,
+                    'scope':deepcopy(scope),'dimensions':{'direction':direction} if direction else {},
+                    'conditions':conditions,'all_groups':True,
+                    'basis':measure_basis({'status':'VERIFIED','scope':scope,'conditions':conditions})})
     return accepted
 
 
@@ -817,7 +830,7 @@ def _proven_scalars(request, facts, results):
             for proof in measures:
                 target = next((t for t in request.targets if t.target_id == proof['target_id']), None)
                 dimensions = proof.get('dimensions') or {}
-                if TOOL_SPECS[name].result_adapter == 'summary':
+                if TOOL_SPECS[name].result_adapter == 'summary' or 'finance_summary' in (result.get('evidence') or {}):
                     dimensions = {k: v for k, v in dimensions.items() if k != 'direction'}
                 if (target is not None and metric[0] == target.object
                         and (operation, metric[2] or '*') == (proof['operation'], proof['field'])
@@ -839,20 +852,24 @@ def _comparison_requirements(request, item, facts, proven):
     matches = set()
     for _, lp in proven.get(item['left'], ()):
         for _, rp in proven.get(item['right'], ()):
-            if lp['target_id'] != rp['target_id']:
-                continue
-            target = next(t for t in request.targets if t.target_id == lp['target_id'])
-            for number, comparison in enumerate(target.comparisons):
+            for target,number,comparison in ((t,n,c) for t in request.targets for n,c in enumerate(t.comparisons)):
+                left_target=next((t for t in request.targets if t.target_id==(comparison.left_target_id or target.target_id)),None)
+                right_target=next((t for t in request.targets if t.target_id==(comparison.right_target_id or target.target_id)),None)
+                if (left_target is None or right_target is None or lp['target_id']!=left_target.target_id
+                        or rp['target_id']!=right_target.target_id):continue
+                left_companies={comparison.left_company_id} if comparison.left_company_id else set(left_target.company_ids)
+                right_companies={comparison.right_company_id} if comparison.right_company_id else set(right_target.company_ids)
                 same_groups = {k: v for k, v in lp.get('dimensions', {}).items()
-                               if not k.endswith(('_date_month', '_date_year'))} == {
+                               if k!='company_id' and not k.endswith(('_date_month', '_date_year'))} == {
                                    k: v for k, v in rp.get('dimensions', {}).items()
-                                   if not k.endswith(('_date_month', '_date_year'))}
+                                   if k!='company_id' and not k.endswith(('_date_month', '_date_year'))}
                 if (item['op'] == comparison.operation
                         and (lp['operation'], lp['field']) == (rp['operation'], rp['field'])
                         == (comparison.metric_operation, comparison.metric_field)
                         and _periods(left['scope']) == {comparison.left_period}
                         and _periods(right['scope']) == {comparison.right_period}
-                        and _companies(left['scope']) == _companies(right['scope']) and same_groups):
+                        and _companies(left['scope']) == left_companies
+                        and _companies(right['scope']) == right_companies and same_groups):
                     matches.add((target.target_id, number))
     return matches
 
