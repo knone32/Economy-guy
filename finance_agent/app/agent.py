@@ -2137,6 +2137,16 @@ class Agent:
             self.trace('business.state',{'pending':self.pending_intent,'preview':bool(planned)})
             return result
 
+        def hold_failed_business_semantics():
+            nonlocal active_pending,explicit_pending_applied
+            if active_pending and active_pending.get('business_action')=='single_invoice':
+                from .business_sources import suspend
+                active_pending=self.pending_intent=suspend(active_pending,current_request,self.trace_id,
+                    actor=actor,book=self.db_path,reason='unverified_business_semantics')
+                explicit_pending_applied=True
+                self.trace('business.semantic_unresolved',{'pending':self.pending_intent,
+                    'old_change_executable':False,'new_change_authorized':False})
+
         for index in range(self.max_requests):
             model_text = model_change = rejected_reply = None
             try:
@@ -2312,10 +2322,12 @@ class Agent:
                         from .business_request import schema_restatement_messages
                         context = schema_restatement_messages(context, error_code=business_format_error)
                 except (BusinessRequestError,ValueError,OSError,sqlite3.Error) as error:
+                    hold_failed_business_semantics()
                     execution.stop('ERROR')
                     return finish('无法核实当前业务目录，请重新打开账簿。',store=False,category='clarification',final_only=True)
                 request_tools = []
                 if len(json.dumps(context,ensure_ascii=False)) > self.context.max_chars:
+                    hold_failed_business_semantics()
                     execution.stop('CONTEXT_LIMIT')
                     return finish('当前完整业务目录超过可处理范围，请缩小企业范围。',store=False,category='clarification',final_only=True)
                 self.trace('business_request.semantic_input',{'tools_allowed':False,'sql_supplied':False,
@@ -2344,6 +2356,7 @@ class Agent:
                     raise ValueError('受限最终答复阶段禁止业务工具分发')
             except ModelOutputTruncated:
                 execution.stop('OUTPUT_TRUNCATED')
+                if business_phase:hold_failed_business_semantics()
                 self.trace('error', {'category':'model_output_truncated'})
                 if read_finish_active and read_finish_reason is not None:
                     return finish_reference_fallback('OUTPUT_TRUNCATED')
@@ -2357,6 +2370,7 @@ class Agent:
                 self.trace('budget.refused', error.metadata())
                 budget_refusal = error.metadata()
                 if business_phase:
+                    hold_failed_business_semantics()
                     execution.stop('REQUEST_BUDGET_EXCEEDED')
                     return finish('读取要求尚未核实；本次预算不足，未执行财务查询。',store=False,category='clarification',final_only=True)
                 if read_finish_active and read_finish_reason is not None:
@@ -2380,6 +2394,7 @@ class Agent:
                 return finish('\n'.join(filter(None, (render_information(read_results), notice))),
                               store=False, category='database_query' if read_results else 'clarification', chat_notice=notice)
             except Exception:
+                if business_phase:hold_failed_business_semantics()
                 self.coordinator.pending = None
                 if allow_prepare:
                     self.write_receipt = self._receipt("ERROR")
@@ -2392,6 +2407,7 @@ class Agent:
                 self.trace("model_reply", redact(wire_reply))
             if business_phase:
                 if calls:
+                    hold_failed_business_semantics()
                     self.messages.append(reply)
                     for forbidden in calls:
                         execution.requested_tools += 1
@@ -2450,14 +2466,19 @@ class Agent:
                             try:checked_change(change,current_request)
                             except PendingTransitionError as error:
                                 raise BusinessRequestError(str(error),'INVALID_ARGUMENTS') from error
+                        from .intent_contract import BoundIntent
+                        from .business_sources import checked_revision
+                        origin=BoundIntent('amend',actor,str(self.db_path),self.trace_id,current_request,
+                            {'field':field,'value_relation':value_relation,'matter_relation':matter_relation,'reference_relation':reference_relation,'pending_change':change},
+                            {'source':'independent_business_entry','field_quote':field_quote,'value_quote':value_quote,'matter_quote':matter_quote,'reference_quote':reference_quote})
+                        try:checked_revision(origin,actor=actor,book=self.db_path,current_id=self.trace_id,current_request=current_request)
+                        except PendingTransitionError as error:
+                            raise BusinessRequestError(str(error),'INVALID_ARGUMENTS') from error
                         business_phase=False
                         business_action_route=True
                         business_turn_action=action
                         business_turn_field=field
-                        from .intent_contract import BoundIntent
-                        business_revision_origin=BoundIntent('amend',actor,str(self.db_path),self.trace_id,current_request,
-                            {'field':field,'value_relation':value_relation,'matter_relation':matter_relation,'reference_relation':reference_relation,'pending_change':change},
-                            {'source':'independent_business_entry','field_quote':field_quote,'value_quote':value_quote,'matter_quote':matter_quote,'reference_quote':reference_quote})
+                        business_revision_origin=origin
                         self.messages.append({'role':'user','name':'harness_business_action',
                             'content':json.dumps({'turn_action':action,'source_quote':quote,
                                 **({'field':field,'field_source_quote':field_quote} if field is not None else {}),
@@ -2565,8 +2586,11 @@ class Agent:
                             'reason':'invalid_read_requirement_structure', 'tools_allowed':False,
                             'uses_existing_loop':True, 'failed_model_body_supplied':False})
                         continue
+                    hold_failed_business_semantics()
                     status=getattr(error,'status','AMBIGUOUS');execution.stop(status)
                     notice=str(error)
+                    if active_pending and active_pending.get('blocked_reason')=='unverified_business_semantics':
+                        notice+=' 原修改要求已转为待澄清，不会继续旧内容；尚未保存。'
                     names=getattr(error,'candidates',())
                     if names:notice+='可区分候选：'+'、'.join(names[:20])+'。'
                     return finish(notice,store=False,category='clarification',chat_notice=notice,final_only=True)

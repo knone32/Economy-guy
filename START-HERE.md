@@ -1,4 +1,4 @@
-> 本包为跨月范围与事项候选恢复的修复候选，未发布。新增边界仅离线验证；既有Live、冷启动及真人证据保留原SHA，不迁移为本包成绩。源码SHA、同版回归及ZIP哈希见包外FROZEN.public.json。修复说明见 [记录](docs/ops/SCOPE-CANDIDATE-RESTORE.md)。
+> 本包为完整账期子集与撤旧换新窄修候选，未发布。程序、Live、真人证据分别记账；原恢复成绩保留，不迁移为新包成绩。冻结SHA、回归与ZIP哈希见包外FROZEN.public.json，说明见 [记录](docs/ops/SUBSET-REPLACEMENT.md)。
 
 # 从这里启动当前 GUI 工作台
 

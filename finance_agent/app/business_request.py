@@ -272,7 +272,7 @@ DEFINITION = {
       'legacy':{'output':{'kind':'legacy','turn_action':'continue|pause|stop','action_quote':'pause/stop须引用主动处置整个事项的当前原话，continue可省略',
           'action_reason':{'enum':['await_selection','await_value','continue_matter','defer_matter','cancel_matter'], 'required_for':['pause','stop'],'meaning':'前3项对应continue；主动暂缓整个事项defer_matter才对应pause，取消cancel_matter对应stop。值须为精确枚举，解释留在quote外；等待输入与禁止保存不改变生命周期'},
           'field':'仅单票办理当前明确的新字段purpose|remark；未改或未知省略','field_quote':'给field时须引用当前字段要求原话',
-          'value_relation':'已有单票待补时独立判断 keep保留、replace新内容替换（可尚缺值）、clear明确清空、withdraw撤回旧内容待补、unclear关系未明；不是执行模型的relation参数',
+          'value_relation':{'enum':['keep','replace','clear','withdraw','unclear'],'meaning':'keep保留有效内容；replace撤旧并重新定义（含换字段并给出新内容，也可尚缺值）；withdraw只撤旧且尚无确定新值；clear明确清空；unclear关系待澄清。withdraw/unclear与确定pending_change互斥，clear只能携带空新值。不是执行提案relation，也不表示另起事项'},
           'value_quote':'给value_relation时必须引用当前原话；只补票号可据当前补充表达keep，但continue本身不能证明值保留',
           'matter_relation':'先独立判断 continue旧事项、new明确新事项、unclear归属不明；值replace不表示新事项',
           'matter_quote':'须引用当前原话；新事项遇有效旧待补先询问旧事项暂缓或取消，处置前不覆盖旧事项',
@@ -443,7 +443,7 @@ def messages(request,current_catalog,*,trusted_scope=None,previous_request=None,
         'legacy可带turn_action=continue|pause|stop；省略即continue，缺内容或要求不提交不等于暂缓。'
         'action_reason独立表达阻塞原因或事项处置：await_selection/await_value/continue_matter对应continue，defer_matter对应pause，cancel_matter对应stop；pause/stop必须给action_reason。等用户选票或补值是当前活动办理等待输入，不是主动移出办理；不允许保存只限制执行，不改变生命周期。action_quote须支持主动处置整个事项；后续执行提案不能扩大动作。'
         '单票办理已明确要改用途或备注时，用field=purpose|remark及field_quote保留当前字段要求；当前新值已给时必须用pending_change={field,new_value,source:{kind:current,quote:当前原话片段}}保留确切值；未知不传。它与最终澄清共用同一候选结构，后续执行不能静默丢弃或改写它；原owner核来源和权限。字段未知或本轮未更正时省略，由原owner继承有效待补。'
-        '有原单票待补时，独立给value_relation及当前value_quote，分别判断保留、替换、明确清空、撤回待补或关系未明；不能用continue代替值修订判断，也不看执行提案的replace。'
+        '有原单票待补时独立给value_relation及当前value_quote；撤旧同时换字段/给新内容是replace，withdraw只表示撤旧且没有确定新值，两者不能混用。pending_change与关系必须一致，不可撤旧后丢掉已给的新内容。引文只能各取当前原话连续片段，不能用省略号拼接；引用不清时输出关系未明，不臆造来源。不能用continue代替值修订判断，也不看执行提案的replace。'
         '另用matter_relation/matter_quote判断事项归属；不能按票号是否命中旧集合代替判断。新事项遇旧待补先询问处置，不并行或静默覆盖。'
         '另用reference_relation=displayed|none|unclear及reference_quote表达目标与前文展示的关系；新发起修改也可从刚才展示集合里选择，事项新旧与引用关系分别判断。候选由Runtime核实，不在语义输出中代选。'
         '该route不授予业务读取或写入许可。已确定为读取但业务对象或目标不清时用read+unresolved，不能擅自删目标。'},

@@ -62,6 +62,9 @@ def checked_revision(origin, *, actor, book, current_id, current_request):
         change=checked_change(origin.target['pending_change'],current_request)
         if origin.target.get('field',change['field']) not in (None,change['field']):
             raise PendingRequestError('独立候选字段与本轮字段关系冲突。','DENIED')
+        relation=origin.target.get('value_relation')
+        if relation in {'withdraw','unclear'} or relation=='clear' and change['new_value']!='':
+            raise PendingRequestError('撤回或未决关系不能同时携带确定新值；撤旧并换新须表达为replace。','AMBIGUOUS')
     return origin.target
 
 
@@ -121,9 +124,9 @@ def suspend(previous, request, current_id, *, actor, book, reason):
     if not previous or (previous.get('actor'),previous.get('workbook')) != (actor,str(book)):
         return previous
     state = deepcopy(previous)
-    state['on_hold'] = {'change':deepcopy(previous.get('change',{})),
-                        'request_id':previous.get('request_id'),
-                        'provenance':deepcopy(previous.get('provenance',{}))}
+    state['on_hold'] = (deepcopy(previous['on_hold']) if not previous.get('change') and previous.get('on_hold') else
+        {'change':deepcopy(previous.get('change',{})), 'request_id':previous.get('request_id'),
+         'provenance':deepcopy(previous.get('provenance',{}))})
     state['change'] = {}
     state.setdefault('provenance',{}).pop('field',None)
     state['provenance'].pop('new_value',None)
