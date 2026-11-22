@@ -2713,13 +2713,14 @@ class Agent:
                             execution.stop('DENIED')
                             return finish('本轮身份已变化，未执行业务动作。',store=False)
                         result,next_pending,planned,runtime_reads=bind_invoice_clarification(
-                            self,fields,active_pending,current_request,field=business_turn_field)
+                            self,fields,active_pending,current_request,field=business_turn_field,defer_preview=action=='pause')
                         result=accept_invoice_transition(result,next_pending,planned,runtime_reads,action)
                         execution.stop(result['status'])
                         missing=result.get('evidence',{}).get('missing_fields',())
                         notice=result.get('evidence',{}).get('user_message') or result.get('error')
                         if not notice:
-                            notice=(render_clarification({'missing_fields':missing}) if missing else
+                            notice=('本次修改要求已核对，请在正式确认界面核对原值和新值；尚未保存。' if planned else
+                                    render_clarification({'missing_fields':missing}) if missing else
                                     '本次办理内容已保留，尚未保存；请明确继续或更正。')
                         return finish(notice,store=False,category='clarification',
                                       missing_fields=missing,chat_notice=notice)
@@ -3457,7 +3458,7 @@ class Agent:
                         and result.get('evidence', {}).get('source') == 'current_sqlite'):
                     completed_read_calls[signature] = {'id': call['id'], 'stamp': workbook_stamp(),
                                                        'scope': result['evidence'].get('scope', {})}
-                if fn.get('name')!='set_schedule':
+                if fn.get('name') not in {'set_schedule','change_invoice'}:
                     read_results.append((fn.get('name'),result))
                 self.messages.append(message)
                 self.trace("tool_result", {"request": call, "result": result})

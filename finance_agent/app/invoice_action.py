@@ -29,7 +29,7 @@ def public_state(pending):
     return {'known': known, 'missing_fields': list(pending.get('missing_fields', ()))}
 
 
-def bind_clarification(agent, fields, previous, request, *, field=None):
+def bind_clarification(agent, fields, previous, request, *, field=None, defer_preview=False):
     """Use structured field candidates and original display identity, never prose."""
     editable=set(fields)&{'purpose','remark'}
     args=({'field':field} if field is not None else
@@ -46,9 +46,9 @@ def bind_clarification(agent, fields, previous, request, *, field=None):
             return tool_result('WAITING_USER',evidence={'source':'harness_business_action',
                 'missing_fields':['invoice_no'],'business_authorization':False},
                 error='没有唯一可信的当前单票，请先明确要办理的发票。'),None,None,[]
-    # A final clarification does not request a preview. The original owner
-    # rechecks scope/ACL/current values and retains only unapproved slots.
-    return change_invoice(agent,args,previous,request,defer_preview=True)
+    # The output envelope cannot override the current business action. Missing
+    # values still wait; an explicitly paused action must not create a preview.
+    return change_invoice(agent,args,previous,request,defer_preview=defer_preview)
 
 
 def change_invoice(agent, args, previous, request, *, defer_preview=False):
