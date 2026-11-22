@@ -1,3 +1,5 @@
+> 2026-11-23 已验证启动修复：运行源码782f7bd，onedir清洁包在独立含空格解压路径、TEMP/TMP/TMPDIR均指向普通文件的条件下无参数启动成功，原生导航及UI双就绪、正常退出；原生程序实际运行于包内_internal，而非_MEI解压目录。只验启动，发票/审计/任务行不变，API0；未重跑业务或代点批准。新包SHA256 eed3384af64b4e0a0b0c1e2f6f5063f8fa658079d7896b832b84f9150354ec33，证据 artifacts/native-host-20261122/TEMP-FIX-782f7bd.json。历史旧包已归档。
+
 > 2026-11-23 启动修复：用户报告onefile bootloader “Could not create temporary directory”。当前系统TEMP写入探针成功，C盘33.84GiB/E盘246.03GiB，无法追回截图进程的具体环境。打包改为onedir，运行库随包，不再启动解压；冻结入口把本进程及原生子进程TEMP/TMP指向程序旁data/runtime-temp，不改系统设置。下一验收只检查故意无效TEMP下的解压包原生双就绪，不重跑业务链。
 
 > 2026-11-23 交付收口：运行源码 c7b0c9bf4f5c80ab3d663a57b4f08cab1629bac7，清洁包位于 E:/beside/清洁包/Economy-guy-提交版-c7b0c9b.zip。独立含空格路径、不同cwd、无参数冻结EXE双就绪/任务预览与取消/正常退出通过；前一候选3a483ab的查询及ACK复用。发票、审计、任务行均未变。未新增Live或代点批准。GUI完整入口与历史验证仍见工程文档，开发材料不混入提交包。最终ZIP SHA256 d01c8f9c78a07d2a215df3247baa0f81d456f875820517ec77449699c1210db3；只有打包说明及工程记录在后续提交调整，运行EXE不变。

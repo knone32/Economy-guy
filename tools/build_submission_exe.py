@@ -67,7 +67,7 @@ def main():
              'model_profile':'shared-flash','accounts':accounts,'permissions_reference_only':permissions,
              'authority':'Actual permissions are checked against the workbook; this is not production login.'}
     (output/'config/accounts.json').write_text(json.dumps(account,ensure_ascii=False,indent=2),encoding='utf-8')
-    (output/'使用说明.txt').write_text('Economy-guy 财税工作台\n\n1. 解压整个文件夹，双击 EconomyGuy.exe。\n2. 已备好演示账簿和账户配置，可直接查询发票、银行流水、用途缺项和规则。\n3. 对话、待办、业务查询、记录和设置均在窗口顶部；发票详情可带入对话继续办理。\n4. 修改内容先在预览中核对，再由本人确认保存；暂时不办理时可选择暂缓或取消。\n5. 模型配置在“设置”中管理；本机已有凭据可直接使用，需要时填写自己的API密钥。\n6. 账簿和会话保存在本文件夹的 data 目录，移动程序时请一并保留。\n\n运行环境：Windows 10/11 x64、.NET Framework 4.6.2+、Microsoft WebView2 Runtime。无需安装Python。\n',encoding='utf-8-sig')
+    (output/'使用说明.txt').write_text('Economy-guy 财税工作台\n\n1. 先解压整个ZIP，再双击文件夹内的 EconomyGuy.exe。\n   请保留同目录的 _internal 运行库，不要单独拷贝EXE。\n2. 已备好演示账簿和账户配置，可直接查询发票、银行流水、用途缺项和规则。\n3. 对话、待办、业务查询、记录和设置均在窗口顶部；发票详情可带入对话继续办理。\n4. 修改内容先在预览中核对，再由本人确认保存；暂时不办理时可选择暂缓或取消。\n5. 模型配置在“设置”中管理；本机已有凭据可直接使用，需要时填写自己的API密钥。\n6. 账簿和会话保存在本文件夹的 data 目录，移动程序时请一并保留。\n\n运行环境：Windows 10/11 x64、.NET Framework 4.6.2+、Microsoft WebView2 Runtime。无需安装Python。\n',encoding='utf-8-sig')
     (output/'THIRD-PARTY-NOTICES.txt').write_text('''Native host: Microsoft WebView2 SDK libraries, reused from this workspace.
 WebView2 Runtime: https://developer.microsoft.com/microsoft-edge/webview2/
 Python runtime and third-party packages are embedded by PyInstaller from the build interpreter.
