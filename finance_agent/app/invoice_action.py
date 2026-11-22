@@ -29,6 +29,34 @@ def public_state(pending):
     return {'known': known, 'missing_fields': list(pending.get('missing_fields', ()))}
 
 
+def can_bind_selection(agent, previous, request, revision_origin):
+    """Read-only eligibility for handing a sourced selection to this owner."""
+    from .business_sources import checked_revision, checked_change
+    revision=checked_revision(revision_origin,actor=agent.user_id,book=agent.db_path,
+        current_id=agent.trace_id,current_request=request)
+    change=revision.get('pending_change')
+    if (revision.get('reference_relation')!='displayed' or change is None
+            or revision.get('field') not in {'purpose','remark'}
+            or checked_change(change,request)['field']!=revision['field']
+            or agent.context.references_blocked):return False
+    if previous:
+        if (previous.get('business_action')!='single_invoice'
+                or (previous.get('actor'),previous.get('workbook'))!=(agent.user_id,str(agent.db_path))
+                or revision.get('matter_relation')!='continue'
+                or previous.get('scope',{}).get('invoice_no')
+                or previous.get('on_hold') or previous.get('blocked_reason')):return False
+    elif revision.get('matter_relation')!='new':return False
+    collection=(previous or {}).get('reference_collection')
+    if collection:
+        available=display_collection(agent.db_path,agent.user_id,**collection)
+    elif agent.context.display_ids:
+        available=display_collection(agent.db_path,agent.user_id,agent.context.display_ids)
+    else:return False
+    return (available['status']=='SUCCESS'
+        and not available['evidence'].get('common_scope',{}).get('invoice_no')
+        and len({tuple(sorted(entry['key'].items())) for entry in available['data']})>1)
+
+
 def bind_clarification(agent, fields, previous, request, *, field=None, change=None, defer_preview=False,revision_origin=None):
     """Send source-bearing structured candidates to the original action owner."""
     editable=set(fields)&{'purpose','remark'}

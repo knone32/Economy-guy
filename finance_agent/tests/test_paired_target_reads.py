@@ -53,9 +53,11 @@ class PairedTargetReadTests(unittest.TestCase):
         text='从这两张里仅办2026年9月的，备注写“资料归档前核对”，票号等我选。'
         self.q.extend([envelope({'kind':'legacy','action_reason':'await_selection','field':'remark','field_quote':'备注写',
             'matter_relation':'new','matter_quote':text,'reference_relation':'displayed','reference_quote':'这两张',
-            'pending_change':{'field':'remark','new_value':'资料归档前核对','source':{'kind':'current','quote':'备注写“资料归档前核对”'}}}),
-            repair.tool({'field':'remark','new_value':'资料归档前核对','year':2026,'month':9})])
+            'pending_change':{'field':'remark','new_value':'资料归档前核对','source':{'kind':'current','quote':'备注写“资料归档前核对”'}}})])
+        before_selection=len(self.model_calls)
         view=host.send(text);self.assertFalse(view['preview'])
+        self.assertEqual(len(self.model_calls),before_selection+1)
+        self.assertEqual(agent.last_response['execution']['actual_tool_calls'],0)
         self.assertEqual(view['pending']['known']['month'],9)
         for number,good in [('F012',False),('F005',True)]:
             text=number

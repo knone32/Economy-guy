@@ -2526,6 +2526,24 @@ class Agent:
                             self.cancel_update()
                             execution.stop('CANCELLED')
                             return finish('已取消本轮未提交事项；此前已提交的记录不受影响。',store=False)
+                        if (invoice_proposals and action=='continue' and route.get('action_reason')=='await_selection'
+                                and len(explicit.get('invoice_no',()))!=1 and self.user_id==actor
+                                and self.workbook_available()):
+                            from .invoice_action import can_bind_selection
+                            if can_bind_selection(self,active_pending,current_request,origin):
+                                result,next_pending,planned,runtime_reads=bind_invoice_clarification(
+                                    self,('invoice_no',),active_pending,current_request,field=field,
+                                    change=change,defer_preview=True,revision_origin=origin)
+                                result=accept_invoice_transition(result,next_pending,planned,runtime_reads,action)
+                                self.trace('business_request.selection_handoff',{'status':result['status'],
+                                    'owner':'single_invoice','additional_model_requests':0,
+                                    'single_invoice_reads':len(runtime_reads),'preview':bool(planned)})
+                                execution.stop(result['status'])
+                                missing=result.get('evidence',{}).get('missing_fields',())
+                                notice=(result.get('evidence',{}).get('user_message') or result.get('error')
+                                    or render_clarification({'missing_fields':missing}))
+                                return finish(notice,store=False,category='clarification',
+                                    missing_fields=missing,chat_notice=notice,final_only=True)
                         continue
                     if route.get('kind')=='general' and set(route)=={'kind','text'} and type(route['text']) is str:
                         conflict=reply_evidence_conflict(route['text'],read_results,current_request,actor=self.user_id)
