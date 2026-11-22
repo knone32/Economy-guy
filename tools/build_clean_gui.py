@@ -60,7 +60,7 @@ def build(source, output, profile_file, profile_name):
     shutil.copytree(site,runtime/'Lib/site-packages',ignore=shutil.ignore_patterns(
         '__pycache__','*.pyc','*.pyo','pip','pip-*.dist-info'))
     (runtime/'python312._pth').write_text('Lib\nDLLs\nLib/site-packages\n../finance_agent\nimport site\n',encoding='ascii')
-    launcher='''@echo off
+    launcher=r'''@echo off
 setlocal DisableDelayedExpansion
 set "PYTHONUTF8=1"
 set "PYTHONUNBUFFERED=1"
