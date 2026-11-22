@@ -262,11 +262,29 @@ class GuiHost(WorkspaceActions):
             self.host._transition_ready()
         return self.host.snapshot()
 
-    def import_workbook(self, name, content, context=None):
+    def import_workbook(self, name, content, context=None, files=None):
+        """Create an independent workbook from the original xlsx, one fixed-
+        template docx, or the four fixed CSV files.  The xlsx request shape is
+        unchanged; conversion only produces the same four-sheet workbook that
+        the original import_workspace validates and publishes."""
+        if files is not None:
+            if name is not None or content is not None:
+                raise GuiError('导入请求不能同时提交单文件和CSV文件列表。')
+            return self._import_csv_workbook(files, context)
+        if not isinstance(name, str) or not name.strip():
+            raise GuiError('缺少导入文件名，未创建新账簿。')
+        suffix = name.lower()
+        if suffix.endswith('.xlsx'):
+            return self._import_excel_workbook(name, content, context)
+        if suffix.endswith('.docx'):
+            return self._import_word_workbook(name, content, context)
+        if suffix.endswith('.csv'):
+            raise GuiError('CSV 必须一次选择四份固定文件：企业与用户.csv、发票.csv、银行流水.csv、说明.csv。')
+        raise GuiError('只接受 .xlsx、.docx 或四份固定名称的 .csv，导入为新库，不覆盖当前库。')
+
+    def _import_excel_workbook(self, name, content, context=None):
         import base64
         from .cli_workspaces import import_workspace
-        if not isinstance(name,str) or not name.lower().endswith('.xlsx'):
-            raise GuiError('只接受原导入器支持的xlsx账簿，导入为新库，不覆盖当前库。')
         with self.host._command(context or self._last_context):
             self.host._transition_ready()
             data=base64.b64decode(content,validate=True)
@@ -277,6 +295,61 @@ class GuiHost(WorkspaceActions):
             import_workspace(original,book)
             self._register_book(book)
         return self.snapshot(notice='已导入为独立账簿，请在设置中选择新绑定；原账簿未覆盖。')
+
+    def _import_word_workbook(self, name, content, context=None):
+        from .import_formats import ImportFormatError, convert_docx
+        with self.host._command(context or self._last_context):
+            self.host._transition_ready()
+            self._error=None;self._workspace_notice=None
+            data=self._decode_import_content(content,'Word')
+            if not 0<len(data)<=5_000_000:raise GuiError('Word 文件为空或超过5MB。')
+            try:converted=convert_docx(data,name)
+            except ImportFormatError as error:
+                raise GuiError('导入失败（未创建新账簿，原账簿未变更）：Word 文件 '+
+                               Path(str(name)).name+'：'+str(error)) from None
+            self._publish_converted(converted)
+        return self.snapshot(notice='已导入为独立账簿，请在设置中选择新绑定；原账簿未覆盖。')
+
+    def _import_csv_workbook(self, files, context=None):
+        from .import_formats import ImportFormatError, convert_csv_files
+        with self.host._command(context or self._last_context):
+            self.host._transition_ready()
+            self._error=None;self._workspace_notice=None
+            try:converted=convert_csv_files(files)
+            except ImportFormatError as error:
+                raise GuiError('导入失败（未创建新账簿，原账簿未变更）：'+str(error)) from None
+            self._publish_converted(converted)
+        return self.snapshot(notice='已导入为独立账簿，请在设置中选择新绑定；原账簿未覆盖。')
+
+    @staticmethod
+    def _decode_import_content(content, label):
+        import base64,binascii
+        if not isinstance(content,str):raise GuiError(label+'文件内容缺失。')
+        try:return base64.b64decode(content,validate=True)
+        except (binascii.Error,ValueError):
+            raise GuiError(label+'文件内容不是合法Base64。') from None
+
+    def _publish_converted(self, converted):
+        """Private staging only; a failure removes it and never registers a book."""
+        import shutil
+        from .cli_workspaces import import_workspace
+        root=self.session_path.parent/'imports'/uuid.uuid4().hex;root.mkdir(parents=True)
+        try:
+            converted_file=root/'converted.xlsx';converted_file.write_bytes(converted.payload)
+            book=root/'workbook.sqlite3'
+            try:
+                import_workspace(converted_file,book)
+            except Exception as error:
+                detail=converted.explain(error)
+                message='导入失败（未创建新账簿，原账簿未变更）：'+converted.source+' 未通过原导入器校验：'
+                message+=(detail or str(error))
+                if detail:message+='（原核对错误：'+str(error)+'）'
+                raise GuiError(message) from None
+            self._register_book(book)
+        except BaseException:
+            shutil.rmtree(root,ignore_errors=True)
+            raise
+
 
     def save_profile(self, value, context=None):
         from .model_config import add_profile,resolve_connection,update_user_profile

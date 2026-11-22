@@ -47,7 +47,13 @@ def main():
         subprocess.run(command,cwd=root,stdout=log,stderr=subprocess.STDOUT,check=True)
     shutil.copytree(stage/'dist/EconomyGuy',output)
     shutil.copytree(config,output/'config')
-    (output/'功能说明.txt').write_text('工作台功能\n\n对话：业务查询、追问补充、修改要求、预览确认。\n待办：查看详情、进入办理、新建与更正任务、暂缓恢复和取消。\n业务查询：发票目录与详情、排序分页、月度年度汇总、银行收支、用途缺项、规则版本。\n资料：上传、更新版本、目录与精确原文。\n记录：切换历史对话，查看执行记录。\n设置：账户与账簿、Excel导入、已有账簿选择、模型配置、助手和阅读偏好。\n高级入口：连接诊断、结构诊断、固定脚本检查及原高级控制台。\n',encoding='utf-8-sig')
+    fixtures=root/'finance_agent/tests/fixtures'
+    samples=output/'导入样例';samples.mkdir()
+    shutil.copy2(fixtures/'example.xlsx',samples/'Excel-官方虚构账簿.xlsx')
+    shutil.copy2(fixtures/'import_samples'/'example.docx',samples/'Word-四表导入样例.docx')
+    shutil.copytree(fixtures/'import_samples'/'csv',samples/'CSV-四份固定文件')
+    shutil.copy2(fixtures/'import_samples'/'README.md',samples/'README.md')
+    (output/'功能说明.txt').write_text('工作台功能\n\n对话：业务查询、追问补充、修改要求、预览确认。\n待办：查看详情、进入办理、新建与更正任务、暂缓恢复和取消。\n业务查询：发票目录与详情、排序分页、月度年度汇总、银行收支、用途缺项、规则版本。\n资料：上传、更新版本、目录与精确原文。\n记录：切换历史对话，查看执行记录。\n设置：账户与账簿、Excel/Word/CSV导入、已有账簿选择、模型配置、助手和阅读偏好。\n高级入口：连接诊断、结构诊断、固定脚本检查及原高级控制台。\n',encoding='utf-8-sig')
     sys.path.insert(0,str(root/'finance_agent'))
     from app.gui_delivery import demo_paths
     book,_=demo_paths(output/'data')

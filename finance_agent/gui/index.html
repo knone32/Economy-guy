@@ -324,8 +324,9 @@
         <h2>账号与账簿</h2><p class="sub">本机模拟身份，非登录认证。由受信宿主重新绑定，旧上下文和批准不随切换继承。</p>
         <select id="binding-select" aria-label="宿主登记的账号和账簿"></select>
         <button class="btn small" id="apply-binding">切换绑定</button>
-        <h3>导入为新账簿</h3><input type="file" id="workbook-file" accept=".xlsx">
-        <button class="btn small" id="import-book">导入xlsx（不覆盖当前库）</button>
+        <h3>导入为新账簿</h3><input type="file" id="workbook-file" accept=".xlsx,.docx,.csv" multiple>
+        <p class="hint">Excel 或 Word 单选一个文件；CSV 一次选择 企业与用户.csv、发票.csv、银行流水.csv、说明.csv 四份固定文件。只新建独立账簿，不覆盖、不切换当前库。</p>
+        <button class="btn small" id="import-book">导入 Excel / Word / 四份 CSV（不覆盖当前库）</button>
       </section>
       <section class="settings-card">
         <h2>模型配置与本机密钥</h2><p class="sub">仅配置当前模拟账号的Profile；密钥写入Windows凭据库，不进入账簿、聊天或交付包。</p>

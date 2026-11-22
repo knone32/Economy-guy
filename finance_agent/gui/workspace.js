@@ -93,10 +93,71 @@ $('browse-run').onclick=()=>browse();
 $('browse-prev').onclick=()=>browse(Math.max(1,(S.workspace?.arguments.page||1)-1));
 $('browse-next').onclick=()=>browse((S.workspace?.arguments.page||1)+1);
 $('apply-binding').onclick=()=>act('/api/binding',{selector:$('binding-select').value});
+let importingBook=false;
+function readImportFile(file){
+  return new Promise((resolve,reject)=>{
+    const reader=new FileReader();
+    reader.onerror=()=>reject(new Error('读取文件失败：'+(file.name||'')));
+    reader.onload=()=>resolve(String(reader.result||'').split(',')[1]||'');
+    reader.readAsDataURL(file);
+  });
+}
 $('import-book').onclick=async()=>{
-  const file=$('workbook-file').files[0];if(!file){toast('请选择xlsx账簿。',true);return;}
-  if(file.size>5000000){toast('账簿超过5MB。',true);return;}
-  const reader=new FileReader();reader.onload=()=>act('/api/import_workbook',{name:file.name,content:String(reader.result).split(',')[1]});reader.readAsDataURL(file);
+  if(importingBook)return;
+  if(!S||!S.context){toast('页面尚未就绪，请稍后重试。',true);return;}
+  importingBook=true;
+  const button=$('import-book');button.disabled=true;
+  try{
+    const picked=[...($('workbook-file').files||[])];
+    if(!picked.length){toast('请选择 .xlsx、.docx 或四份固定 CSV 文件。',true);return;}
+    const contextAtPick=JSON.stringify(S.context);
+    let body;
+    if(picked.length===1){
+      const file=picked[0], name=file.name||'', extension=(name.split('.').pop()||'').toLowerCase();
+      if(!['xlsx','docx'].includes(extension)){toast('单文件导入只接受 .xlsx 或 .docx；CSV 必须一次选择四份固定文件。',true);return;}
+      if(file.size>5000000){toast('文件超过5MB。',true);return;}
+      body={name,content:await readImportFile(file)};
+    }else{
+      const fixed=['企业与用户.csv','发票.csv','银行流水.csv','说明.csv'];
+      const names=picked.map(file=>(file.name||'').split(/[\\/]/).pop());
+      const missing=fixed.filter(name=>!names.includes(name));
+      const extra=names.filter(name=>!fixed.includes(name));
+      const duplicate=[...new Set(names.filter((name,index)=>names.indexOf(name)!==index))];
+      const problems=[];
+      if(picked.length!==4)problems.push('请一次选择四份固定 CSV 文件。');
+      if(missing.length)problems.push('缺少：'+missing.join('、'));
+      if(extra.length)problems.push('不支持：'+extra.join('、'));
+      if(duplicate.length)problems.push('重复：'+duplicate.join('、'));
+      if(problems.length){toast(problems.join('；'),true);return;}
+      const total=picked.reduce((sum,file)=>sum+file.size,0);
+      if(total>5000000){toast('CSV 四份文件合计超过5MB。',true);return;}
+      const contents=await Promise.all(picked.map(file=>readImportFile(file)));
+      body={files:picked.map((file,index)=>({name:file.name,content:contents[index]}))};
+    }
+    if(JSON.stringify(S.context)!==contextAtPick){
+      toast('读取期间会话或账簿绑定已变化，请重新选择文件。',true);
+      return;
+    }
+    setBusy(true);
+    try{
+      const data=await api('/api/import_workbook',body);
+      if(!data.snapshot)throw new Error('宿主未返回导入后的快照。');
+      S=data.snapshot;render();
+      await acknowledgeDisplay();
+    }catch(error){
+      const message=error.message||'导入未完成。';
+      toast(message,true);
+      try{await refresh();}catch(_){}
+      // Keep the concrete file/table/row failure visible over stale notices.
+      toast(message,true);
+    }finally{
+      setBusy(false);
+    }
+  }catch(error){
+    toast(error.message||'导入未完成。',true);
+  }finally{
+    importingBook=false;button.disabled=false;
+  }
 };
 $('save-profile').onclick=async()=>{
   const api_key=$('edit-key').value;$('edit-key').value='';

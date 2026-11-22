@@ -108,6 +108,12 @@ class Handler(BaseHTTPRequestHandler):
             if name == 'binding':
                 return host.select_binding(value.get('selector'),context=value['context'])
             if name == 'import_workbook':
+                # Single-file xlsx/docx and the four-file CSV list are mutually
+                # exclusive request shapes on the same route.
+                if value.get('files') is not None:
+                    if value.get('name') is not None or value.get('content') is not None:
+                        raise GuiError('导入请求不能同时提交单文件和CSV文件列表。')
+                    return host.import_workbook(None, None, context=value['context'], files=value.get('files'))
                 return host.import_workbook(value.get('name'),value.get('content'),context=value['context'])
             if name == 'profile_save':
                 return host.save_profile(value,context=value['context'])

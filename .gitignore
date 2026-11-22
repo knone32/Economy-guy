@@ -64,3 +64,5 @@ artifacts/
 *.xls
 *.csv
 !/finance_agent/tests/fixtures/example.xlsx
+!/finance_agent/tests/fixtures/import_samples/
+!/finance_agent/tests/fixtures/import_samples/**
